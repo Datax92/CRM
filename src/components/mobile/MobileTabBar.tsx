@@ -72,11 +72,10 @@ export function tabsForRole(role: string | undefined): Tab[] {
     : isSubAdmin
       ? "/subadmin/team"
       : "/employee/performance/stats";
-  const reports = isAdmin
-    ? "/admin/financials/reports"
-    : isSubAdmin
-      ? "/subadmin/earnings"
-      : "/employee/performance/stats";
+  // "Money" replaces "Reports": a report was one screen among several, and one
+  // of five slots on a phone should open the whole money side of the product.
+  // Each role lands on its own hub — see `MoneyHub`.
+  const money = isAdmin ? "/admin/money" : isSubAdmin ? "/subadmin/money" : "/employee/money";
 
   return [
     { key: "home", label: "Home", d: "M4 11 12 4l8 7v9H4z", href: "/home" },
@@ -96,10 +95,12 @@ export function tabsForRole(role: string | undefined): Tab[] {
       href: team,
     },
     {
-      key: "reports",
-      label: isSubAdmin ? "Earnings" : "Reports",
-      d: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h4",
-      href: reports,
+      key: "money",
+      label: "Money",
+      // A wallet rather than a document: the slot is about money now, and the
+      // page icon should say so before the label is read.
+      d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M16 13h2",
+      href: money,
     },
   ];
 }

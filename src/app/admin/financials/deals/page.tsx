@@ -22,6 +22,7 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { useFinancials, type DealRecord } from "@/hooks/useFinancials";
 import { usePagination } from "@/hooks/usePagination";
@@ -65,6 +66,10 @@ export default function ClosedDealsPage() {
   const { role, loading: authLoading } = useAuth();
   useProtectedRoute(["admin"]);
   const isAdmin = role === "admin";
+  // A phone gets the same rows with the money under the name rather than
+  // beside it: at 390px a name, a manager, a source, a date and two figures on
+  // one line leaves nothing legible.
+  const isMobile = useIsMobile();
 
   const [rangeKey, setRangeKey] = useState<RangeKey>("ALL");
   const range = useMemo(() => resolveRange(rangeKey), [rangeKey]);
@@ -242,6 +247,10 @@ export default function ClosedDealsPage() {
             border: `1px solid ${T.line}`,
             borderRadius: 999,
             padding: 3,
+            // Scrolls rather than wrapping: three chips on two ragged lines is
+            // worse than three chips you can swipe.
+            overflowX: "auto",
+            maxWidth: "100%",
           }}
         >
           {STATE_FILTERS.map(({ key, label, icon: Icon }) => {
@@ -261,6 +270,8 @@ export default function ClosedDealsPage() {
                   fontSize: 12.5,
                   fontWeight: 600,
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                   background: on ? T.teal : "transparent",
                   color: on ? "#fff" : T.muted,
                 }}
@@ -276,7 +287,7 @@ export default function ClosedDealsPage() {
           value={employeeFilter}
           onChange={(event) => setEmployeeFilter(event.target.value)}
           aria-label="Employee"
-          style={selectStyle}
+          style={{ ...selectStyle, flex: "1 1 150px", minWidth: 0 }}
         >
           <option value="ALL">All employees</option>
           {employees.map((person) => (
@@ -290,7 +301,7 @@ export default function ClosedDealsPage() {
           value={rangeKey}
           onChange={(event) => setRangeKey(event.target.value as RangeKey)}
           aria-label="Period"
-          style={selectStyle}
+          style={{ ...selectStyle, flex: "1 1 130px", minWidth: 0 }}
         >
           {(Object.keys(RANGE_LABELS) as RangeKey[]).map((key) => (
             <option key={key} value={key}>
@@ -331,8 +342,8 @@ export default function ClosedDealsPage() {
                 onClick={() => setSelected(deal)}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 14,
+                  alignItems: isMobile ? "flex-start" : "center",
+                  gap: isMobile ? 12 : 14,
                   width: "100%",
                   textAlign: "left",
                   padding: "14px 16px",
@@ -388,7 +399,8 @@ export default function ClosedDealsPage() {
                       color: T.faint,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      whiteSpace: isMobile ? "normal" : "nowrap",
+                      lineHeight: 1.45,
                     }}
                   >
                     {nameOf.get(deal.userId ?? "") ?? "Unknown employee"}
@@ -397,26 +409,55 @@ export default function ClosedDealsPage() {
                     {describeLeadSource(deal)}
                     {deal.dealDate ? ` · ${formatBusinessDate(deal.dealDate)}` : ""}
                   </span>
+
+                  {/* On a phone the money sits under the name, in the width the
+                      name already has, rather than fighting it for the row. */}
+                  {isMobile && (
+                    <span
+                      style={{
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 8,
+                        marginTop: 6,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      <span style={{ fontSize: 14, fontWeight: 700, color: T.teal }}>
+                        {formatMoney(deal.amountReceived)}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: T.faint }}>
+                        profit {formatMoney(deal.profit)}
+                      </span>
+                    </span>
+                  )}
                 </span>
 
-                <span style={{ textAlign: "right", flexShrink: 0 }}>
-                  <span
-                    style={{
-                      display: "block",
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: T.teal,
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {formatMoney(deal.amountReceived)}
+                {!isMobile && (
+                  <span style={{ textAlign: "right", flexShrink: 0 }}>
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 14,
+                        fontWeight: 700,
+                        color: T.teal,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {formatMoney(deal.amountReceived)}
+                    </span>
+                    <span
+                      style={{ display: "block", fontSize: 11.5, color: T.faint, fontVariantNumeric: "tabular-nums" }}
+                    >
+                      profit {formatMoney(deal.profit)}
+                    </span>
                   </span>
-                  <span style={{ display: "block", fontSize: 11.5, color: T.faint, fontVariantNumeric: "tabular-nums" }}>
-                    profit {formatMoney(deal.profit)}
-                  </span>
-                </span>
+                )}
 
-                <ChevronRight size={16} style={{ color: T.faint, flexShrink: 0 }} aria-hidden />
+                <ChevronRight
+                  size={16}
+                  style={{ color: T.faint, flexShrink: 0, marginTop: isMobile ? 12 : 0 }}
+                  aria-hidden
+                />
               </button>
             );
           })}

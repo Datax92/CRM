@@ -2266,3 +2266,116 @@ a button that rewrites history does not belong on the historical record.
   pre-existing warnings. The four changed routes were smoke-tested against the
   running dev server (200 each); the screens themselves were not driven in a
   browser — no automation is available in this session.
+
+### 2026-09-02 — The half-window bug, mobile parity, and Money
+
+**The root cause of "half-window" and "stuck", found rather than styled
+around.** Every page is wrapped in `.animate-page-transition`, which carries
+`will-change: opacity, transform`. A `will-change: transform` element becomes
+the **containing block for its `position: fixed` descendants** — so a panel
+written as `position: fixed; inset: 0` inside a page is not pinned to the
+viewport at all. It is pinned to the page's content box: cropped, offset,
+scrolling the wrong thing. That is precisely "stuck in half a window", and it is
+invisible in review because the CSS reads as correct.
+
+`LeadDetailModal` had always escaped it by portalling to `document.body` —
+which is why the older leads modal looked right and the newer Closed Deal and
+Profit Distribution panels did not. Making them bigger would have changed
+nothing.
+
+**`components/ui/OverlayPanel.tsx`** is the fix and the guard: one shell that
+portals, locks scroll, closes on Escape and on a backdrop *mousedown* (not
+click, so a selection dragged out of the panel does not dismiss it), and puts
+the scroll on the **body only**, so a long form can never push its own Save
+button out of reach. A full-height sheet below 820px with
+`env(safe-area-inset-*)` padding and `100dvh` — `vh` is the largest viewport on
+a mobile browser, so a `vh`-tall sheet hides its own footer behind the URL bar —
+and a centred dialog capped at `92vh` above it.
+
+Closed Deal, Profit Distribution and Add Manager are rebuilt on it. The Data
+Bank's delete confirmation was the last un-portalled overlay and is portalled
+too. An audit of every `position: fixed` overlay in `src` now shows all of them
+going through a portal.
+
+**Money replaces Reports in the phone's bottom bar.** A report was one screen
+among several; one of five slots should open the whole money side of the
+product. `MoneyHub` is a role-scoped card list — admin gets Profit Distribution
+(badged amber with the unallocated profit when deals are waiting), Closed Deals,
+Expenses, Reports, Income Sheet, Receivables, Investments; a manager gets their
+own and their team's earnings and team performance; an employee gets their
+commission and their stats. Every card links to the page that already exists —
+nothing is duplicated. Three thin routes (`/admin/money`, `/subadmin/money`,
+`/employee/money`) so the role lands on its own list.
+
+**Team on the phone now carries the whole hierarchy.** A People / Managers
+switch at the top of the directory; the Managers view lists each manager with
+the same aggregated figures the desktop panel shows — team size, leads, won,
+revenue, conversion, folders held — and the centre button adds whichever the
+current view is a list of, so the manager form is not reachable only through a
+second control. The manager form itself is **the desktop component**, not a
+phone copy: `OverlayPanel` already renders it as a full-height sheet, so the
+phone gets every field including the team tick-list. `Reports To` was missing
+from the phone's employee form and is now there — the hierarchy was editable on
+one surface only, which is exactly the gap this round was about.
+
+**Responsive pass, not width tweaks.** Closed Deals rows put the money under
+the name on a phone rather than fighting it for the row; the state chips scroll
+instead of wrapping into a ragged block; the filter selects flex rather than
+each taking a line. The earnings table becomes cards below 820px — a
+five-column table at 390px is unreadable. Profit Distribution's share rows stack
+identity above the percentage and amount, and its percentage inputs are 16px,
+because anything smaller makes iOS Safari zoom the page on focus and leaves the
+user scrolled somewhere they did not ask to be.
+
+**Parity audit** across both surfaces: KYC, Remark/Follow-Ups, Pipeline Status,
+Pipeline Stage, lead assignment, manager and employee management, Data Bank
+folder assignment, team analytics, Closed Deals, Profit Distribution, deal
+settlement, financials and notifications all have a working mobile path.
+
+- **Validation**: `typecheck` 0 errors, `test` 219/219, `build` compiles,
+  `eslint src` back at the 7 pre-existing errors and 34 warnings (the shell's
+  mount check uses `useSyncExternalStore` rather than `setState` in an effect,
+  which this project's lint rule rejects). Six routes smoke-tested against the
+  dev server. The screens themselves were not driven in a browser — no
+  automation is available in this session — so the phone layouts are reasoned
+  from the tokens and the measurements, not observed.
+
+### 2026-09-02 — Sub admin folder read, mobile Team add buttons, Money-style distribution
+
+**"That folder no longer exists" was a permissions gate misreporting itself.**
+`FolderWorkspace` still computed `wantsData = isAdmin && !isMobile`. For a sub
+admin that is `false`, so the component subscribed to nothing at all — `folder`
+stayed `null` and the screen printed the missing-record message for a folder
+that was sitting right there, assigned to them. The page guard and the folder
+*list* had been widened to both managing roles in the previous round; the
+workspace itself was missed.
+
+Fixed to `isManager`, with the roster query scoped to their own team — which is
+also exactly the set of people they may promote a record to. Ownership is still
+enforced where it belongs: the Security Rules and `assertFolderAccess` in the
+actions, not a flag in a component.
+
+The message is also split in two, because they are different problems: a folder
+that is gone, and one that exists but was never assigned to this sub admin.
+Reporting the second as the first sent people looking for deleted data.
+
+**Mobile Team had no way to add anybody.** The add control was published
+through `useMobileCentre`, but an admin's centre slot is pinned to the Data Bank
+on every screen — so the request was silently discarded. It is now a header
+button *and* a named button above the list ("Add Employee" / "Add Manager",
+following the People/Managers switch), which is the better place regardless: it
+is visible while the list is, and it says what it adds instead of changing
+meaning with the screen. The centre request is still published for roles whose
+centre is contextual, so nothing regresses for them.
+
+**Profit Distribution has a phone screen of its own**, not the desktop page at
+390px: the teal `MobileHeader`, a three-figure well (awaiting / unallocated /
+settled), and full-width cards where the whole card is the tap target rather
+than a pill inside it. The queue cards carry the same amber "needs you" tone the
+Money hub uses for this queue, so the two screens agree about what is urgent.
+The settled list and Reopen are unchanged below it.
+
+- **Validation**: `typecheck` 0 errors, `test` 219/219, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings. Four routes
+  smoke-tested. Not driven in a browser — no automation in this session — so
+  the sub admin folder fix in particular is worth one click to confirm.

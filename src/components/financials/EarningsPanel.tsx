@@ -18,6 +18,7 @@
 import { useMemo } from "react";
 import { Wallet, TrendingUp, Users } from "lucide-react";
 import { useMyPayouts } from "@/hooks/useDistributions";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { formatMoney } from "@/lib/money";
 import { formatBusinessDate } from "@/lib/dates";
 
@@ -32,6 +33,9 @@ export function EarningsPanel({
   enabled?: boolean;
 }) {
   const { payouts, loading, error } = useMyPayouts(uid, scope, enabled);
+  // A five-column table at 390px is unreadable, so the phone gets the same rows
+  // as cards. Same data, same order — only the shape changes.
+  const isMobile = useIsMobile();
 
   const totals = useMemo(() => {
     const mine = payouts.filter((payout) => payout.recipientUid === uid);
@@ -95,6 +99,29 @@ export function EarningsPanel({
           Nothing yet. A share appears here once the admin finalises the distribution for a deal
           you were part of.
         </p>
+      ) : isMobile ? (
+        <div className="flex flex-col gap-2.5">
+          {payouts.map((payout) => (
+            <article key={payout.id} className="rounded-xl border border-[#e0eeec] bg-white px-4 py-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-[14px] font-semibold text-[#1f3b39]">
+                    {payout.customerName ?? "Client"}
+                  </p>
+                  <p className="truncate text-[11.5px] text-[#9aacaa]">
+                    {scope === "team" && (payout.recipientUid === uid ? "You" : payout.recipientName)}
+                    {scope === "team" ? " · " : ""}
+                    {payout.percentage}% share
+                    {payout.finalizedAt ? ` · ${formatBusinessDate(payout.finalizedAt)}` : ""}
+                  </p>
+                </div>
+                <p className="shrink-0 text-[15px] font-bold tabular-nums text-[#2f7d78]">
+                  {formatMoney(payout.amount)}
+                </p>
+              </div>
+            </article>
+          ))}
+        </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-[#e0eeec] bg-white">
           <table className="w-full table-fixed">

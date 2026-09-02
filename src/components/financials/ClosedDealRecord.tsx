@@ -1,32 +1,38 @@
 "use client";
 
 /**
- * The complete record of one finalised deal (§7).
+ * The complete record of one closed deal (§5, §6, §9).
  *
- * **Nothing is lost when a deal closes.** The requirement was that the closed
- * record keeps everything — client and KYC, the lead and where it came from,
- * the employee and their manager, the money, the split, and the history — and
- * this is the screen that proves it. It is assembled from the records that
- * already exist rather than from a copy made at close time:
+ * **The half-window bug was not a sizing problem.** Every page sits inside
+ * `.animate-page-transition`, which carries `will-change: transform` and so
+ * becomes the containing block for `position: fixed` descendants — this panel
+ * was pinned to the page's content box instead of the viewport, which is what
+ * "stuck in half a window" was. Making it bigger would not have helped;
+ * `OverlayPanel` portals it to `document.body`, which does.
+ *
+ * **Nothing is lost when a deal closes.** The record is assembled from what
+ * already exists rather than copied at close time:
  *
  * | shown | read from |
  * |---|---|
  * | client, amounts, service | the `closedDeals` document (frozen at sale) |
- * | KYC, stage, assignment provenance | the lead the deal points at |
+ * | KYC, status, assignment provenance | the lead the deal points at |
  * | source and folder | denormalised on the deal, lead as the fallback |
  * | profit split | `dealDistributions`, the version currently in force |
- * | history | the lead's own `events` and follow-ups |
+ * | history | the lead's own remark and follow-ups |
  *
- * The deal document holds the *frozen* facts — what the customer's details were
- * at the point of sale, what was received and payable — because those must not
- * change afterwards. Everything else is read live, so a KYC corrected next
- * month shows corrected here too. A snapshot of all of it would have been a
- * second copy to drift.
+ * The deal holds the *frozen* facts — the customer's details at the point of
+ * sale, what was received and payable — because those must not move afterwards.
+ * The rest is read live, so a KYC corrected next month reads corrected here. A
+ * snapshot of all of it would have been a second copy to drift.
+ *
+ * On a phone the sections become an accordion: the money and the client are
+ * open, the rest are a tap away. Eight stacked cards on a 390px screen is a
+ * scroll nobody finishes.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
-  X,
   User,
   Phone,
   Mail,
@@ -40,6 +46,7 @@ import {
   Wallet,
   FileText,
   History,
+  ChevronDown,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { formatPhone } from "@/lib/phone";
@@ -50,6 +57,8 @@ import { entryLabelAt } from "@/lib/followUpKind";
 import { LEAD_STATUS_LABELS } from "@/lib/leadStatus";
 import { useLeadById, useLeadHistory } from "@/hooks/useLeads";
 import { useDealDistribution } from "@/hooks/useDistributions";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { OverlayPanel, OverlayCard, OverlayFigures } from "@/components/ui/OverlayPanel";
 import { DistributionSummaryCard } from "./ProfitDistributionModal";
 import type { DealRecord } from "@/hooks/useFinancials";
 
@@ -60,10 +69,10 @@ const T = {
   line: "#dceae8",
   hair: "#f0f6f5",
   surface: "#ffffff",
-  ground: "#f3faf9",
   teal: "#2f7d78",
-  tealMid: "#3f8f8a",
   tealSoft: "#e2f0ee",
+  amber: "#a4682a",
+  amberSoft: "#fdf1e3",
 };
 
 export function ClosedDealRecord({
@@ -76,20 +85,19 @@ export function ClosedDealRecord({
   deal: DealRecord;
   employeeName?: string;
   managerName?: string;
-  /** Only an admin may read `dealDistributions` — see the rules. */
+  /** Only an admin may read `dealDistributions` — see the Security Rules. */
   isAdmin: boolean;
   onClose: () => void;
 }) {
+  const isMobile = useIsMobile();
+
   // The deal id *is* the lead id, so no lookup table is needed.
   const { lead } = useLeadById(deal.leadId ?? deal.id);
   const { followUps, events } = useLeadHistory(deal.leadId ?? deal.id);
   const { distribution } = useDealDistribution(deal.id, isAdmin);
 
   const kyc = lead?.kyc ?? null;
-  const kycRows = useMemo(
-    () => KYC_FIELDS.filter((field) => (kyc?.[field.key] ?? "").trim()),
-    [kyc]
-  );
+  const kycRows = useMemo(() => KYC_FIELDS.filter((field) => (kyc?.[field.key] ?? "").trim()), [kyc]);
 
   const source = describeLeadSource({
     source: deal.source ?? lead?.source ?? null,
@@ -98,341 +106,293 @@ export function ClosedDealRecord({
     campaignName: deal.campaignName ?? lead?.campaignName ?? null,
   });
 
+  const settled = deal.distributionStatus === "FINALIZED";
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Closed deal record"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 130,
-        background: "rgba(15, 42, 40, 0.45)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        padding: "clamp(10px, 3vw, 32px)",
-        overflowY: "auto",
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 860,
-          background: T.ground,
-          borderRadius: 18,
-          overflow: "hidden",
-          boxShadow: "0 26px 64px rgba(15,42,40,0.3)",
-        }}
-      >
-        <header
+    <OverlayPanel
+      title={deal.customer?.name ?? "Client"}
+      subtitle={`${source}${deal.dealDate ? ` · closed ${formatBusinessDate(deal.dealDate)}` : ""}`}
+      icon={<span style={{ fontSize: 15, fontWeight: 700 }}>{(deal.customer?.name ?? "?").slice(0, 2).toUpperCase()}</span>}
+      maxWidth={860}
+      onClose={onClose}
+      headerAside={
+        <span
           style={{
-            padding: "18px 22px 20px",
-            color: "#fff",
-            background: `linear-gradient(135deg, ${T.teal} 0%, ${T.tealMid} 100%)`,
+            borderRadius: 999,
+            padding: "4px 11px",
+            fontSize: 10.5,
+            fontWeight: 700,
+            letterSpacing: "0.5px",
+            whiteSpace: "nowrap",
+            background: settled ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.14)",
+            border: "1px solid rgba(255,255,255,0.4)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-              <span
-                aria-hidden
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 44,
-                  height: 44,
-                  borderRadius: 12,
-                  background: "rgba(255,255,255,0.18)",
-                  border: "1.5px solid rgba(255,255,255,0.5)",
-                  flexShrink: 0,
-                  fontSize: 15,
-                  fontWeight: 600,
-                }}
-              >
-                {(deal.customer?.name ?? "?").slice(0, 2).toUpperCase()}
-              </span>
-              <div style={{ minWidth: 0 }}>
-                <h2
-                  style={{
-                    fontSize: 18,
-                    fontWeight: 700,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {deal.customer?.name ?? "Client"}
-                </h2>
-                <p style={{ fontSize: 12.5, opacity: 0.88 }}>
-                  {source}
-                  {deal.dealDate ? ` · closed ${formatBusinessDate(deal.dealDate)}` : ""}
+          {settled ? "SETTLED" : "AWAITING SPLIT"}
+        </span>
+      }
+      headerExtra={
+        <OverlayFigures
+          items={[
+            { label: "Received", value: formatMoney(deal.amountReceived) },
+            { label: "Payable", value: formatMoney(deal.payableAmount) },
+            { label: "Net Profit", value: formatMoney(deal.profit), strong: true },
+          ]}
+        />
+      }
+    >
+      <Group title="Client" icon={<User size={13} />} mobile={isMobile} defaultOpen>
+        <Facts
+          rows={[
+            {
+              icon: <Phone size={12} />,
+              label: "Phone",
+              value: deal.customer?.phone ? formatPhone(deal.customer.phone) : null,
+            },
+            { icon: <Mail size={12} />, label: "Email", value: deal.customer?.email },
+            { icon: <IdCard size={12} />, label: "CNIC", value: deal.customer?.cnic },
+            { icon: <MapPin size={12} />, label: "City", value: deal.customer?.city },
+            { icon: <MapPin size={12} />, label: "Address", value: deal.customer?.address },
+          ]}
+        />
+      </Group>
+
+      <Group title="Deal" icon={<Wallet size={13} />} mobile={isMobile} defaultOpen>
+        <Facts
+          rows={[
+            { icon: <FileText size={12} />, label: "Sold", value: deal.serviceDescription },
+            { icon: <Wallet size={12} />, label: "Category", value: deal.dealCategory },
+            { icon: <Wallet size={12} />, label: "Payment method", value: deal.paymentMethod },
+            {
+              icon: <CalendarDays size={12} />,
+              label: "Entered",
+              value: deal.enteredAt ? formatBusinessDateTime(deal.enteredAt) : null,
+            },
+            { icon: <FileText size={12} />, label: "Notes", value: deal.notes },
+          ]}
+        />
+      </Group>
+
+      <Group title="Ownership & source" icon={<Users size={13} />} mobile={isMobile}>
+        <Facts
+          rows={[
+            { icon: <UserCheck size={12} />, label: "Employee", value: employeeName ?? lead?.assigneeName },
+            { icon: <Users size={12} />, label: "Manager", value: managerName ?? "Admin (directly)" },
+            {
+              icon: <User size={12} />,
+              label: "Assigned by",
+              value: lead?.assignedByName
+                ? `${lead.assignedByName}${lead.assignedByRole ? ` (${lead.assignedByRole})` : ""}`
+                : null,
+            },
+            { icon: <Database size={12} />, label: "Source", value: source },
+            {
+              icon: <CalendarDays size={12} />,
+              label: "Lead created",
+              value: lead?.createdAt ? formatBusinessDate(lead.createdAt) : null,
+            },
+          ]}
+        />
+      </Group>
+
+      {/* The client record as it stands now — corrections after the sale show
+          here, which is the point of KYC being the client record. */}
+      <Group
+        title="Know Your Client"
+        icon={<IdCard size={13} />}
+        hint={kycRows.length ? `${kycRows.length} fields` : undefined}
+        mobile={isMobile}
+      >
+        {kycRows.length === 0 ? (
+          <Empty>
+            No KYC was recorded for this lead. The deal keeps the customer details captured at the
+            point of sale, shown above.
+          </Empty>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit, minmax(170px, 1fr))",
+              gap: "12px 20px",
+            }}
+          >
+            {kycRows.map((field) => (
+              <div key={field.key} style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 10, letterSpacing: "0.6px", textTransform: "uppercase", color: T.faint }}>
+                  {field.label}
+                </p>
+                <p style={{ fontSize: 13, color: T.ink, marginTop: 2, wordBreak: "break-word" }}>
+                  {kyc?.[field.key]}
                 </p>
               </div>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-              <span
-                style={{
-                  borderRadius: 999,
-                  padding: "4px 11px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  letterSpacing: "0.5px",
-                  background:
-                    deal.distributionStatus === "FINALIZED" ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.14)",
-                  border: "1px solid rgba(255,255,255,0.4)",
-                }}
-              >
-                {deal.distributionStatus === "FINALIZED" ? "SETTLED" : "AWAITING SPLIT"}
-              </span>
-              <button onClick={onClose} aria-label="Close" style={{ color: "#fff", cursor: "pointer" }}>
-                <X size={18} />
-              </button>
-            </div>
+            ))}
           </div>
+        )}
+      </Group>
 
-          <div className="cdr-money" style={{ marginTop: 18 }}>
-            <HeaderFigure label="Received" value={formatMoney(deal.amountReceived)} />
-            <HeaderFigure label="Payable" value={formatMoney(deal.payableAmount)} />
-            <HeaderFigure label="Net Profit" value={formatMoney(deal.profit)} strong />
-          </div>
-        </header>
-
-        <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="cdr-split">
-            <Card title="Client" icon={<User size={13} />}>
-              <Facts
-                rows={[
-                  { icon: <Phone size={12} />, label: "Phone", value: deal.customer?.phone ? formatPhone(deal.customer.phone) : null },
-                  { icon: <Mail size={12} />, label: "Email", value: deal.customer?.email },
-                  { icon: <IdCard size={12} />, label: "CNIC", value: deal.customer?.cnic },
-                  { icon: <MapPin size={12} />, label: "City", value: deal.customer?.city },
-                  { icon: <MapPin size={12} />, label: "Address", value: deal.customer?.address },
-                ]}
-              />
-            </Card>
-
-            <Card title="Ownership" icon={<Users size={13} />}>
-              <Facts
-                rows={[
-                  { icon: <UserCheck size={12} />, label: "Employee", value: employeeName ?? lead?.assigneeName },
-                  { icon: <Users size={12} />, label: "Manager", value: managerName ?? "Admin (directly)" },
-                  {
-                    icon: <User size={12} />,
-                    label: "Assigned by",
-                    value: lead?.assignedByName
-                      ? `${lead.assignedByName}${lead.assignedByRole ? ` (${lead.assignedByRole})` : ""}`
-                      : null,
-                  },
-                  { icon: <Database size={12} />, label: "Source", value: source },
-                  {
-                    icon: <CalendarDays size={12} />,
-                    label: "Lead created",
-                    value: lead?.createdAt ? formatBusinessDate(lead.createdAt) : null,
-                  },
-                ]}
-              />
-            </Card>
-          </div>
-
-          <Card title="Deal" icon={<Wallet size={13} />}>
-            <Facts
-              rows={[
-                { icon: <FileText size={12} />, label: "Sold", value: deal.serviceDescription },
-                { icon: <Wallet size={12} />, label: "Category", value: deal.dealCategory },
-                { icon: <Wallet size={12} />, label: "Payment method", value: deal.paymentMethod },
-                {
-                  icon: <CalendarDays size={12} />,
-                  label: "Entered",
-                  value: deal.enteredAt ? formatBusinessDateTime(deal.enteredAt) : null,
-                },
-                { icon: <FileText size={12} />, label: "Notes", value: deal.notes },
-              ]}
+      {isAdmin && (
+        <Group title="Profit distribution" icon={<Building2 size={13} />} mobile={isMobile} defaultOpen={settled}>
+          {distribution ? (
+            <DistributionSummaryCard
+              lines={distribution.lines}
+              netProfit={distribution.netProfit}
+              companyTotalAmount={distribution.companyTotalAmount}
+              remainingAmount={distribution.remainingAmount}
             />
-          </Card>
-
-          {/* The client record as it stands now — corrections after the sale
-              show here, which is the point of KYC being the client record. */}
-          <Card
-            title="Know Your Client"
-            icon={<IdCard size={13} />}
-            hint={kycRows.length ? `${kycRows.length} fields recorded` : undefined}
-          >
-            {kycRows.length === 0 ? (
-              <Empty>
-                No KYC was recorded for this lead. The deal keeps the customer details captured at the
-                point of sale, shown above.
-              </Empty>
-            ) : (
-              <div className="cdr-kyc">
-                {kycRows.map((field) => (
-                  <div key={field.key}>
-                    <p style={{ fontSize: 10.5, letterSpacing: "0.6px", textTransform: "uppercase", color: T.faint }}>
-                      {field.label}
-                    </p>
-                    <p style={{ fontSize: 13, color: T.ink, marginTop: 2, wordBreak: "break-word" }}>
-                      {kyc?.[field.key]}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-
-          {isAdmin && (
-            <Card title="Profit distribution" icon={<Building2 size={13} />}>
-              {distribution ? (
-                <DistributionSummaryCard
-                  lines={distribution.lines}
-                  netProfit={distribution.netProfit}
-                  companyTotalAmount={distribution.companyTotalAmount}
-                  remainingAmount={distribution.remainingAmount}
-                />
-              ) : (
-                <Empty>
-                  {deal.distributionStatus === "FINALIZED"
-                    ? "Marked settled, but the distribution record could not be read."
-                    : "Not split yet. Finalize it from Profit Distribution."}
-                </Empty>
-              )}
-            </Card>
+          ) : (
+            <Empty>
+              {settled
+                ? "Marked settled, but the distribution record could not be read."
+                : "Not split yet. Finalize it from Profit Distribution."}
+            </Empty>
           )}
+        </Group>
+      )}
 
-          <Card
-            title="History"
-            icon={<History size={13} />}
-            hint={`${followUps.length} entr${followUps.length === 1 ? "y" : "ies"} · ${events.length} events`}
-          >
-            {followUps.length === 0 ? (
-              <Empty>Nothing was logged against this lead.</Empty>
-            ) : (
-              <ol style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {followUps.map((entry, index) => (
-                  <li key={entry.id} style={{ borderLeft: `2px solid ${T.tealSoft}`, paddingLeft: 12 }}>
-                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                      <span
-                        style={{
-                          fontSize: 10.5,
-                          fontWeight: 700,
-                          borderRadius: 999,
-                          padding: "2px 8px",
-                          ...(entryLabelAt(index, followUps.length) === "Remark"
-                            ? { background: "#fdf1e3", color: "#a4682a" }
-                            : { background: T.tealSoft, color: T.teal }),
-                        }}
-                      >
-                        {entryLabelAt(index, followUps.length)}
-                      </span>
-                      <span style={{ fontSize: 11.5, color: T.faint }}>
-                        {formatBusinessDateTime(entry.occurredAt ?? entry.createdAt)}
-                        {entry.authorEmail ? ` · ${entry.authorEmail}` : ""}
-                      </span>
-                    </div>
-                    <p style={{ fontSize: 12.5, color: T.muted, marginTop: 4, whiteSpace: "pre-wrap" }}>
-                      {entry.message}
-                    </p>
-                  </li>
-                ))}
-              </ol>
-            )}
+      <Group
+        title="History"
+        icon={<History size={13} />}
+        hint={`${followUps.length} entr${followUps.length === 1 ? "y" : "ies"} · ${events.length} events`}
+        mobile={isMobile}
+      >
+        {followUps.length === 0 ? (
+          <Empty>Nothing was logged against this lead.</Empty>
+        ) : (
+          <ol style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {followUps.map((entry, index) => (
+              <li key={entry.id} style={{ borderLeft: `2px solid ${T.tealSoft}`, paddingLeft: 12 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 700,
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                      ...(entryLabelAt(index, followUps.length) === "Remark"
+                        ? { background: T.amberSoft, color: T.amber }
+                        : { background: T.tealSoft, color: T.teal }),
+                    }}
+                  >
+                    {entryLabelAt(index, followUps.length)}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: T.faint }}>
+                    {formatBusinessDateTime(entry.occurredAt ?? entry.createdAt)}
+                    {entry.authorEmail ? ` · ${entry.authorEmail}` : ""}
+                  </span>
+                </div>
+                <p style={{ fontSize: 12.5, color: T.muted, marginTop: 4, whiteSpace: "pre-wrap" }}>
+                  {entry.message}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
 
-            {lead && (
-              <p style={{ marginTop: 12, fontSize: 11.5, color: T.faint }}>
-                Final status: {LEAD_STATUS_LABELS[lead.status] ?? lead.status}
-                {lead.closedAt ? ` · ${formatBusinessDateTime(lead.closedAt)}` : ""}
-              </p>
-            )}
-          </Card>
-        </div>
-
-        <style>{`
-          .cdr-money { display: grid; grid-template-columns: 1fr; gap: 10px; }
-          .cdr-split { display: grid; grid-template-columns: 1fr; gap: 14px; }
-          .cdr-kyc { display: grid; grid-template-columns: 1fr; gap: 12px 20px; }
-          @media (min-width: 600px) {
-            .cdr-money { grid-template-columns: repeat(3, 1fr); }
-            .cdr-split { grid-template-columns: 1fr 1fr; }
-            .cdr-kyc { grid-template-columns: 1fr 1fr; }
-          }
-          @media (min-width: 820px) { .cdr-kyc { grid-template-columns: repeat(3, 1fr); } }
-        `}</style>
-      </div>
-    </div>
+        {lead && (
+          <p style={{ marginTop: 12, fontSize: 11.5, color: T.faint }}>
+            Final status: {LEAD_STATUS_LABELS[lead.status] ?? lead.status}
+            {lead.closedAt ? ` · ${formatBusinessDateTime(lead.closedAt)}` : ""}
+          </p>
+        )}
+      </Group>
+    </OverlayPanel>
   );
 }
 
 /* -------------------------------------------------------------------------- */
 
-function HeaderFigure({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div
-      style={{
-        borderRadius: 12,
-        background: strong ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)",
-        border: `1px solid rgba(255,255,255,${strong ? 0.45 : 0.22})`,
-        padding: "10px 13px",
-      }}
-    >
-      <p style={{ fontSize: 10, letterSpacing: "0.7px", textTransform: "uppercase", opacity: 0.8 }}>{label}</p>
-      <p style={{ fontSize: strong ? 17 : 15, fontWeight: strong ? 800 : 600, fontVariantNumeric: "tabular-nums" }}>
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function Card({
+/**
+ * A card on a desktop, a collapsible row on a phone.
+ *
+ * Same content either way — the requirement is parity, so nothing is dropped;
+ * only the amount visible at once changes.
+ */
+function Group({
   title,
   icon,
   hint,
+  mobile,
+  defaultOpen = false,
   children,
 }: {
   title: string;
   icon?: React.ReactNode;
   hint?: string;
+  mobile: boolean;
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  if (!mobile) {
+    return (
+      <OverlayCard title={title} icon={icon} hint={hint}>
+        {children}
+      </OverlayCard>
+    );
+  }
+
   return (
-    <section style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, overflow: "hidden" }}>
-      <div
+    <section
+      style={{
+        background: T.surface,
+        border: `1px solid ${T.line}`,
+        borderRadius: 14,
+        overflow: "hidden",
+        flexShrink: 0,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
         style={{
           display: "flex",
-          flexWrap: "wrap",
-          alignItems: "baseline",
-          justifyContent: "space-between",
+          alignItems: "center",
           gap: 10,
-          padding: "11px 16px",
-          borderBottom: `1px solid ${T.hair}`,
+          width: "100%",
+          padding: "13px 16px",
+          background: "transparent",
+          cursor: "pointer",
+          textAlign: "left",
         }}
       >
-        <h3
+        {icon && (
+          <span style={{ color: T.teal, flexShrink: 0 }} aria-hidden>
+            {icon}
+          </span>
+        )}
+        <span
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 7,
-            fontSize: 11.5,
+            flex: 1,
+            fontSize: 12,
             fontWeight: 700,
-            letterSpacing: "0.6px",
+            letterSpacing: "0.5px",
             textTransform: "uppercase",
             color: T.muted,
           }}
         >
-          {icon && <span style={{ color: T.teal }}>{icon}</span>}
           {title}
-        </h3>
-        {hint && <span style={{ fontSize: 11.5, color: T.faint }}>{hint}</span>}
-      </div>
-      <div style={{ padding: 16 }}>{children}</div>
+        </span>
+        {hint && <span style={{ fontSize: 11, color: T.faint }}>{hint}</span>}
+        <ChevronDown
+          size={16}
+          style={{
+            color: T.faint,
+            flexShrink: 0,
+            transform: open ? "rotate(180deg)" : "none",
+            transition: "transform 160ms ease",
+          }}
+          aria-hidden
+        />
+      </button>
+
+      {open && <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${T.hair}`, paddingTop: 14 }}>{children}</div>}
     </section>
   );
 }
 
-function Facts({
-  rows,
-}: {
-  rows: Array<{ icon: React.ReactNode; label: string; value?: string | null }>;
-}) {
+function Facts({ rows }: { rows: Array<{ icon: React.ReactNode; label: string; value?: string | null }> }) {
   const present = rows.filter((row) => (row.value ?? "").toString().trim());
   if (present.length === 0) return <Empty>Nothing recorded.</Empty>;
 
@@ -444,7 +404,7 @@ function Facts({
             {row.icon}
           </span>
           <div style={{ minWidth: 0 }}>
-            <dt style={{ fontSize: 10.5, letterSpacing: "0.6px", textTransform: "uppercase", color: T.faint }}>
+            <dt style={{ fontSize: 10, letterSpacing: "0.6px", textTransform: "uppercase", color: T.faint }}>
               {row.label}
             </dt>
             <dd style={{ fontSize: 13, color: T.ink, wordBreak: "break-word" }}>{row.value}</dd>

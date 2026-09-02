@@ -77,16 +77,24 @@ const ROW_TONES = {
 
 export function FolderWorkspace({ folderId }: { folderId: string }) {
   const { role, user, loading: authLoading, getIdToken } = useAuth();
-  const isAdmin = role === "admin";
+  // **Both managing roles.** This was `role === "admin"` and gated every read
+  // below, so a sub admin opening a folder assigned to them subscribed to
+  // nothing, `folder` stayed null, and the screen reported "That folder no
+  // longer exists" — which was a permissions gate misreporting itself as a
+  // missing record. Ownership is enforced by the Security Rules and by
+  // `assertFolderAccess` in the actions; this flag only decides whether to ask.
+  const isManager = role === "admin" || role === "subadmin";
   // Phones get their own screen, not this two-pane one squeezed into 390px.
   const isMobile = useIsMobile();
   // Reads are gated on the surface that is actually rendering. This is the one
   // list in the app that costs a page of Firestore reads to open, so letting
   // both components subscribe would double that for nothing.
-  const wantsData = isAdmin && !isMobile;
+  const wantsData = isManager && !isMobile;
 
   const { folder, loading: folderLoading, error: folderError } = useDataBankFolder(folderId, wantsData);
-  const { employees } = useEmployees(wantsData);
+  // A sub admin's roster is their own team, which is also exactly the set of
+  // people they may promote a record to.
+  const { employees } = useEmployees(wantsData, { role, uid: user?.uid });
 
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<DataBankStatus | "ALL">("ALL");
@@ -123,8 +131,22 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   if (!folder) {
     return (
       <div className="-m-6 min-h-full bg-[#e9f1f0] px-6 py-10 md:-m-8">
-        <Banner tone="error" text={folderError ?? "That folder no longer exists."} />
-        <Link href="/admin/data-bank" className="mt-4 inline-block text-[13.5px] text-[#2f7d78]">
+        {/* Two different failures, said apart: a folder that is gone, and one
+            that exists but was never assigned to this sub admin. Reporting the
+            second as the first sent people looking for deleted data. */}
+        <Banner
+          tone="error"
+          text={
+            folderError ??
+            (role === "subadmin"
+              ? "This folder is not assigned to you. Ask an admin to assign it, or pick one of yours."
+              : "That folder no longer exists.")
+          }
+        />
+        <Link
+          href={role === "subadmin" ? "/subadmin/data-bank" : "/admin/data-bank"}
+          className="mt-4 inline-block text-[13.5px] text-[#2f7d78]"
+        >
           ← Back to the Data Bank
         </Link>
       </div>

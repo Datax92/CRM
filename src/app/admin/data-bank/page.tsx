@@ -19,6 +19,7 @@ import { useDataBankFolders, type DataBankFolder } from "@/hooks/useDataBank";
 import { deleteDataBankFolder } from "@/lib/clientActions";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { FolderFormModal } from "@/components/dataBank/FolderFormModal";
+import { createPortal } from "react-dom";
 import { Database, Plus, Pencil, Trash2, ChevronRight } from "lucide-react";
 
 /**
@@ -270,8 +271,12 @@ function ConfirmDelete({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center px-4">
+  // Portalled for the same reason every other overlay in this app is: the page
+  // wrapper carries `will-change: transform`, which makes it the containing
+  // block for `position: fixed` children — an un-portalled dialog is pinned to
+  // the page box, not the viewport, and lands cropped in half a window.
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center px-4">
       <div className="animate-modal-fade fixed inset-0 bg-[#1e3a38]/45" onClick={onCancel} aria-hidden />
       <div
         role="dialog"
@@ -303,6 +308,7 @@ function ConfirmDelete({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

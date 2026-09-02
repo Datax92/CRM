@@ -23,9 +23,8 @@
  * sectioned cards, one column on a phone and two above it.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  X,
   Users,
   Mail,
   Phone,
@@ -45,6 +44,8 @@ import {
   enableEmployee,
 } from "@/lib/clientActions";
 import { MAX_PRIORITY } from "@/lib/constants/distribution";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import type { EmployeeMetrics } from "@/lib/metrics";
 
 const T = {
@@ -124,18 +125,9 @@ export function ManagerFormModal({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    document.body.style.overflow = "hidden";
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = "unset";
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+  const isMobile = useIsMobile();
+  // Scroll lock, Escape and — the part that matters — portalling out of the
+  // page's transformed wrapper all live in `OverlayPanel`.
 
   const sortedTeam = useMemo(
     () => [...employees].sort((a, b) => a.name.localeCompare(b.name)),
@@ -150,8 +142,7 @@ export function ManagerFormModal({
       return next;
     });
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
     setError(null);
 
     if (name.trim().length < 2) return setError("Enter the manager's full name.");
@@ -238,347 +229,32 @@ export function ManagerFormModal({
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={editing ? "Edit manager" : "Add manager"}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 130,
-        background: "rgba(15, 42, 40, 0.45)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        padding: "clamp(12px, 4vw, 32px)",
-        overflowY: "auto",
-      }}
-    >
-      <form
-        onSubmit={submit}
-        style={{
-          width: "100%",
-          maxWidth: 640,
-          background: T.ground,
-          borderRadius: 18,
-          overflow: "hidden",
-          boxShadow: "0 24px 60px rgba(15,42,40,0.28)",
-        }}
-      >
-        <header
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 14,
-            padding: "18px 22px",
-            color: "#fff",
-            background: "linear-gradient(135deg, #2f7d78 0%, #3f8f8a 100%)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <span
-              aria-hidden
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 42,
-                height: 42,
-                borderRadius: 12,
-                background: "rgba(255,255,255,0.18)",
-                border: "1.5px solid rgba(255,255,255,0.5)",
-                flexShrink: 0,
-              }}
-            >
-              <Users size={19} />
-            </span>
-            <div style={{ minWidth: 0 }}>
-              <h2 style={{ fontSize: 18, fontWeight: 700 }}>
-                {editing ? "Edit Manager" : "Add Manager"}
-              </h2>
-              <p style={{ fontSize: 12.5, opacity: 0.88 }}>
-                Manages a team. Takes no leads of their own.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            style={{ color: "#fff", cursor: "pointer", flexShrink: 0 }}
-          >
-            <X size={18} />
-          </button>
-        </header>
-
-        {error && (
-          <p
-            role="alert"
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 8,
-              margin: "16px 22px 0",
-              borderRadius: 10,
-              border: "1px solid #f0c4bd",
-              background: T.redSoft,
-              color: T.red,
-              padding: "10px 12px",
-              fontSize: 12.5,
-              fontWeight: 500,
-            }}
-          >
-            <AlertTriangle size={15} style={{ marginTop: 1, flexShrink: 0 }} />
-            {error}
-          </p>
-        )}
-
-        <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 16 }}>
-          <Section title="Account">
-            <div className="mgr-grid">
-              <label style={LABEL}>
-                <span>Full Name</span>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  disabled={busy}
-                  placeholder="Hina Raza"
-                  style={FIELD}
-                />
-              </label>
-
-              <label style={LABEL}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <Mail size={12} /> Email
-                </span>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={busy}
-                  placeholder="hina@company.com"
-                  style={FIELD}
-                />
-              </label>
-
-              <label style={{ ...LABEL, gridColumn: "1 / -1" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <KeyRound size={12} />
-                  {editing ? "New password (leave blank to keep the current one)" : "Password"}
-                </span>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <div style={{ position: "relative", flex: 1 }}>
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      disabled={busy}
-                      placeholder={editing ? "Unchanged" : "At least 8 characters"}
-                      style={{ ...FIELD, paddingRight: 38 }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword((v) => !v)}
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                      style={{
-                        position: "absolute",
-                        right: 10,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        color: T.faint,
-                        cursor: "pointer",
-                      }}
-                    >
-                      {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPassword(generatePassword());
-                      // Generated to be read aloud to the person, so it is
-                      // revealed — hiding what you just generated is theatre.
-                      setShowPassword(true);
-                    }}
-                    disabled={busy}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      borderRadius: 10,
-                      border: `1px solid ${T.line}`,
-                      background: T.surface,
-                      padding: "0 14px",
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      color: T.teal,
-                      cursor: "pointer",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    <Shuffle size={13} /> Generate
-                  </button>
-                </div>
-              </label>
-            </div>
-          </Section>
-
-          <Section title="Details">
-            <div className="mgr-grid">
-              <label style={LABEL}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <Phone size={12} /> Phone
-                </span>
-                <input
-                  value={phone ?? ""}
-                  onChange={(e) => setPhone(e.target.value)}
-                  disabled={busy}
-                  placeholder="03xx xxxxxxx"
-                  style={FIELD}
-                />
-              </label>
-
-              <label style={LABEL}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <Calendar size={12} /> Joined
-                </span>
-                <input
-                  type="date"
-                  value={joinedAt}
-                  onChange={(e) => setJoinedAt(e.target.value)}
-                  disabled={busy}
-                  style={FIELD}
-                />
-              </label>
-
-              <label style={{ ...LABEL, gridColumn: "1 / -1" }}>
-                <span>Notes</span>
-                <textarea
-                  rows={2}
-                  value={notes ?? ""}
-                  onChange={(e) => setNotes(e.target.value)}
-                  disabled={busy}
-                  placeholder="Territory, reporting line, anything worth recording"
-                  style={{ ...FIELD, resize: "vertical" }}
-                />
-              </label>
-
-              <div style={{ ...LABEL, gridColumn: "1 / -1" }}>
-                <span>Status</span>
-                <div style={{ display: "flex", gap: 8 }} role="radiogroup" aria-label="Status">
-                  {(["ACTIVE", "DISABLED"] as const).map((value) => {
-                    const on = status === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={on}
-                        onClick={() => setStatus(value)}
-                        disabled={busy}
-                        style={{
-                          flex: 1,
-                          borderRadius: 10,
-                          border: `1px solid ${on ? T.teal : T.line}`,
-                          background: on ? T.tealSoft : T.surface,
-                          color: on ? T.teal : T.muted,
-                          padding: "9px 12px",
-                          fontSize: 13,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {value === "ACTIVE" ? "Active" : "Inactive"}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </Section>
-
-          <Section
-            title="Team"
-            hint={`${team.size} of ${sortedTeam.length} selected · unticking returns someone to the admin`}
-          >
-            {sortedTeam.length === 0 ? (
-              <p style={{ fontSize: 12.5, color: T.faint, padding: "4px 2px" }}>
-                No employees on the roster yet. Add them first, then come back and assign a team.
-              </p>
-            ) : (
-              <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-                {sortedTeam.map((person) => {
-                  const checked = team.has(person.uid);
-                  const elsewhere =
-                    person.subAdminUid && person.subAdminUid !== manager?.uid ? person.subAdminUid : null;
-
-                  return (
-                    <label
-                      key={person.uid}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 11,
-                        padding: "9px 11px",
-                        borderRadius: 10,
-                        cursor: "pointer",
-                        background: checked ? T.tealSoft : "transparent",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={busy}
-                        onChange={() => toggle(person.uid)}
-                        style={{ width: 16, height: 16, accentColor: T.teal }}
-                      />
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: "block", fontSize: 13, color: T.ink }}>{person.name}</span>
-                        <span style={{ display: "block", fontSize: 11.5, color: T.faint }}>
-                          {person.jobTitle}
-                          {/* Said before the click, not after: ticking somebody
-                              moves them off another manager's team. */}
-                          {elsewhere ? " · currently on another manager's team" : ""}
-                        </span>
-                      </span>
-                      {checked && <Check size={15} style={{ color: T.teal }} />}
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </Section>
-        </div>
-
-        <footer
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            alignItems: "center",
-            gap: 10,
-            padding: "14px 22px",
-            borderTop: `1px solid ${T.line}`,
-            background: T.surface,
-          }}
-        >
+    <OverlayPanel
+      title={editing ? "Edit Manager" : "Add Manager"}
+      subtitle="Manages a team. Takes no leads of their own."
+      icon={<Users size={19} />}
+      maxWidth={660}
+      onClose={onClose}
+      footer={
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10 }}>
           <button
             type="button"
             onClick={onClose}
             disabled={busy}
-            style={{ fontSize: 13, fontWeight: 500, color: T.muted, cursor: "pointer", padding: "9px 14px" }}
+            style={{ fontSize: 13.5, fontWeight: 500, color: T.muted, cursor: "pointer", padding: "11px 16px" }}
           >
             Cancel
           </button>
           <button
-            type="submit"
+            type="button"
+            onClick={submit}
             disabled={busy}
             style={{
+              flex: isMobile ? 1 : undefined,
               background: T.teal,
               color: "#fff",
               borderRadius: 999,
-              padding: "10px 20px",
+              padding: "12px 20px",
               fontSize: 13.5,
               fontWeight: 600,
               cursor: "pointer",
@@ -587,46 +263,263 @@ export function ManagerFormModal({
           >
             {busy ? "Saving…" : editing ? "Save manager" : "Add manager"}
           </button>
-        </footer>
+        </div>
+      }
+    >
+      {error && (
+        <p
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            borderRadius: 10,
+            border: "1px solid #f0c4bd",
+            background: T.redSoft,
+            color: T.red,
+            padding: "10px 12px",
+            fontSize: 12.5,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          <AlertTriangle size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+          {error}
+        </p>
+      )}
 
-        {/* One column on a phone, two above it. A media query cannot be an
-            inline style, and this is the only rule the form needs. */}
-        <style>{`
-          .mgr-grid { display: grid; grid-template-columns: 1fr; gap: 14px 18px; }
-          @media (min-width: 560px) { .mgr-grid { grid-template-columns: 1fr 1fr; } }
-        `}</style>
-      </form>
-    </div>
+      <OverlayCard title="Account">
+        <div style={grid(isMobile)}>
+          <label style={LABEL}>
+            <span>Full Name</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={busy}
+              placeholder="Hina Raza"
+              style={FIELD}
+            />
+          </label>
+
+          <label style={LABEL}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <Mail size={12} /> Email
+            </span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={busy}
+              placeholder="hina@company.com"
+              style={FIELD}
+            />
+          </label>
+
+          <label style={{ ...LABEL, gridColumn: "1 / -1" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <KeyRound size={12} />
+              {editing ? "New password (blank keeps the current one)" : "Password"}
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={busy}
+                  placeholder={editing ? "Unchanged" : "At least 8 characters"}
+                  style={{ ...FIELD, paddingRight: 38 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: T.faint,
+                    cursor: "pointer",
+                  }}
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPassword(generatePassword());
+                  // Generated to be read aloud to the person, so it is
+                  // revealed — hiding what you just generated is theatre.
+                  setShowPassword(true);
+                }}
+                disabled={busy}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderRadius: 10,
+                  border: `1px solid ${T.line}`,
+                  background: T.surface,
+                  padding: "0 14px",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: T.teal,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                }}
+              >
+                <Shuffle size={13} /> Generate
+              </button>
+            </div>
+          </label>
+        </div>
+      </OverlayCard>
+
+      <OverlayCard title="Details">
+        <div style={grid(isMobile)}>
+          <label style={LABEL}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <Phone size={12} /> Phone
+            </span>
+            <input
+              value={phone ?? ""}
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={busy}
+              placeholder="03xx xxxxxxx"
+              style={FIELD}
+            />
+          </label>
+
+          <label style={LABEL}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <Calendar size={12} /> Joined
+            </span>
+            <input
+              type="date"
+              value={joinedAt}
+              onChange={(e) => setJoinedAt(e.target.value)}
+              disabled={busy}
+              style={FIELD}
+            />
+          </label>
+
+          <label style={{ ...LABEL, gridColumn: "1 / -1" }}>
+            <span>Notes</span>
+            <textarea
+              rows={2}
+              value={notes ?? ""}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={busy}
+              placeholder="Territory, reporting line, anything worth recording"
+              style={{ ...FIELD, resize: "vertical" }}
+            />
+          </label>
+
+          <div style={{ ...LABEL, gridColumn: "1 / -1" }}>
+            <span>Status</span>
+            <div style={{ display: "flex", gap: 8 }} role="radiogroup" aria-label="Status">
+              {(["ACTIVE", "DISABLED"] as const).map((value) => {
+                const on = status === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => setStatus(value)}
+                    disabled={busy}
+                    style={{
+                      flex: 1,
+                      borderRadius: 10,
+                      border: `1px solid ${on ? T.teal : T.line}`,
+                      background: on ? T.tealSoft : T.surface,
+                      color: on ? T.teal : T.muted,
+                      padding: "11px 12px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {value === "ACTIVE" ? "Active" : "Inactive"}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </OverlayCard>
+
+      <OverlayCard
+        title="Team"
+        hint={`${team.size} of ${sortedTeam.length} · unticking returns someone to the admin`}
+      >
+        {sortedTeam.length === 0 ? (
+          <p style={{ fontSize: 12.5, color: T.faint }}>
+            No employees on the roster yet. Add them first, then come back and assign a team.
+          </p>
+        ) : (
+          <div
+            style={{
+              maxHeight: isMobile ? 300 : 240,
+              overflowY: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            {sortedTeam.map((person) => {
+              const checked = team.has(person.uid);
+              const elsewhere =
+                person.subAdminUid && person.subAdminUid !== manager?.uid ? person.subAdminUid : null;
+
+              return (
+                <label
+                  key={person.uid}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 11,
+                    padding: "11px",
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    background: checked ? T.tealSoft : "transparent",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={busy}
+                    onChange={() => toggle(person.uid)}
+                    style={{ width: 18, height: 18, accentColor: T.teal, flexShrink: 0 }}
+                  />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: "block", fontSize: 13, color: T.ink }}>{person.name}</span>
+                    <span style={{ display: "block", fontSize: 11.5, color: T.faint }}>
+                      {person.jobTitle}
+                      {/* Said before the click, not after: ticking somebody
+                          moves them off another manager's team. */}
+                      {elsewhere ? " · currently on another manager's team" : ""}
+                    </span>
+                  </span>
+                  {checked && <Check size={15} style={{ color: T.teal, flexShrink: 0 }} />}
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </OverlayCard>
+    </OverlayPanel>
   );
 }
 
-function Section({
-  title,
-  hint,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, overflow: "hidden" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "11px 16px",
-          borderBottom: `1px solid ${T.soft}`,
-        }}
-      >
-        <h3 style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: T.muted }}>
-          {title}
-        </h3>
-        {hint && <span style={{ fontSize: 11.5, color: T.faint }}>{hint}</span>}
-      </div>
-      <div style={{ padding: 16 }}>{children}</div>
-    </section>
-  );
+/** One column on a phone, two above it. */
+function grid(isMobile: boolean): React.CSSProperties {
+  return {
+    display: "grid",
+    gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+    gap: "14px 18px",
+  };
 }

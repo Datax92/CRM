@@ -81,6 +81,11 @@ function hasOwnChrome(pathname: string): boolean {
     pathname === "/subadmin/leads" ||
     pathname === "/employee/leads" ||
     pathname === "/admin/employees/directory" ||
+    // The Money hubs draw their own teal header, so the shell must not add its
+    // padded scroll wrapper on top of one.
+    pathname === "/admin/money" ||
+    pathname === "/subadmin/money" ||
+    pathname === "/employee/money" ||
     // The Data Bank and any one folder inside it. `startsWith` rather than an
     // equality per route, because the folder id is in the path.
     pathname === "/admin/data-bank" ||

@@ -3,31 +3,36 @@
 /**
  * Finalize Profit Distribution — the admin's split screen (§14–§21).
  *
- * Rebuilt to the newer form language used by the Data Bank folder form, the
- * KYC panel and Add Manager: gradient header, sectioned cards on a soft ground,
- * one column on a phone and two above it, and a summary that stays in view
- * while the percentages are being typed.
+ * **The "stuck form" is fixed by `OverlayPanel`, not by this file's styling.**
+ * Every page sits inside `.animate-page-transition`, which carries
+ * `will-change: transform` and therefore becomes the containing block for
+ * `position: fixed` children — so this panel used to be pinned to the page box
+ * rather than the viewport: cropped, unable to scroll properly, trapped.
+ * `OverlayPanel` portals to `document.body`, which is the actual cure.
  *
- * The arithmetic is untouched — `lib/profitDistribution` is still the only
- * thing that turns a percentage into rupees, and the Server Action runs the
- * same function, so this screen cannot show a figure the write would disagree
- * with.
+ * Everything else here is the split itself, and the arithmetic is untouched:
+ * `lib/profitDistribution` is still the only thing that turns a percentage into
+ * rupees, and the Server Action runs the same function, so this screen cannot
+ * show a figure the write would disagree with.
  *
- * Three things drive the layout:
+ * Three rules drive the layout:
  *
  * 1. **Everything recalculates on the keystroke.** `calculateDistribution` is
  *    called straight from the render body: it is four multiplications, and
  *    memoising it could show a stale rupee figure beside a fresh percentage.
- * 2. **The remainder is shown twice on purpose** — once as what is left, once
+ * 2. **The remainder appears twice on purpose** — once as what is left, once
  *    inside the company total. "The company got 4%" and "the company also kept
  *    the 91% nobody allocated" are different facts (§20).
  * 3. **Over-allocation is refused, not clamped.** The entered figures survive
  *    so the admin can see which one to change, and Finalize stays disabled.
+ *
+ * On a phone each share becomes a stacked block — name above, percentage and
+ * amount below — because a row that keeps a 58px input and a rupee figure on
+ * the same line as a name has nowhere to put any of them at 390px.
  */
 
 import { useState } from "react";
 import {
-  X,
   CheckCircle2,
   AlertTriangle,
   Building2,
@@ -35,7 +40,6 @@ import {
   Users,
   RotateCcw,
   PieChart,
-  Wallet,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import {
@@ -47,6 +51,8 @@ import {
   type DistributionShare,
 } from "@/lib/profitDistribution";
 import { finalizeProfitDistribution } from "@/lib/clientActions";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { OverlayPanel, OverlayCard, OverlayFigures } from "@/components/ui/OverlayPanel";
 import type { DealRecord } from "@/hooks/useFinancials";
 import type { EmployeeData } from "@/hooks/useEmployees";
 
@@ -55,14 +61,11 @@ const T = {
   muted: "#5b6d6b",
   faint: "#9aacaa",
   line: "#dceae8",
-  hair: "#f0f6f5",
   surface: "#ffffff",
   ground: "#f3faf9",
   teal: "#2f7d78",
-  tealMid: "#3f8f8a",
   tealSoft: "#e2f0ee",
   amber: "#a4682a",
-  amberSoft: "#fdf1e3",
   red: "#a33a29",
   redSoft: "#fdeeeb",
   redLine: "#f0c4bd",
@@ -85,6 +88,8 @@ export function ProfitDistributionModal({
   onClose,
   onDone,
 }: ProfitDistributionModalProps) {
+  const isMobile = useIsMobile();
+
   const employee = employees.find((person) => person.uid === deal.userId) ?? null;
   // The employee's own manager, read off the employee rather than off the deal,
   // so a team change since the sale is reflected. The deal's own stamp is the
@@ -176,424 +181,307 @@ export function ProfitDistributionModal({
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Finalize profit distribution"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 130,
-        background: "rgba(15, 42, 40, 0.45)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        padding: "clamp(10px, 3vw, 32px)",
-        overflowY: "auto",
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 780,
-          background: T.ground,
-          borderRadius: 18,
-          overflow: "hidden",
-          boxShadow: "0 26px 64px rgba(15,42,40,0.3)",
-        }}
-      >
-        {/* ---------------------------------------------------------------- */}
-        {/* Header + deal summary                                            */}
-        {/* ---------------------------------------------------------------- */}
-        <header
-          style={{
-            padding: "18px 22px 20px",
-            color: "#fff",
-            background: `linear-gradient(135deg, ${T.teal} 0%, ${T.tealMid} 100%)`,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-              <span
-                aria-hidden
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 42,
-                  height: 42,
-                  borderRadius: 12,
-                  background: "rgba(255,255,255,0.18)",
-                  border: "1.5px solid rgba(255,255,255,0.5)",
-                  flexShrink: 0,
-                }}
-              >
-                <PieChart size={19} />
-              </span>
-              <div style={{ minWidth: 0 }}>
-                <h2 style={{ fontSize: 18, fontWeight: 700 }}>Finalize Profit Distribution</h2>
-                <p
-                  style={{
-                    fontSize: 12.5,
-                    opacity: 0.88,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {deal.customer?.name ?? "Client"} · closed by {employee?.name ?? "an employee"}
-                </p>
-              </div>
-            </div>
-
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              style={{ color: "#fff", cursor: "pointer", flexShrink: 0 }}
-            >
-              <X size={18} />
-            </button>
-          </div>
-
-          <div className="pd-summary" style={{ marginTop: 18 }}>
-            <HeaderFigure label="Payment Received" value={formatMoney(deal.amountReceived)} />
-            <HeaderFigure label="Payable Amount" value={formatMoney(deal.payableAmount)} />
-            <HeaderFigure label="Net Profit" value={formatMoney(deal.profit)} strong />
-          </div>
-        </header>
-
-        <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* -------------------------------------------------------------- */}
-          {/* The named shares                                               */}
-          {/* -------------------------------------------------------------- */}
-          <Card
-            title="Who gets a share"
-            hint="Type a percentage — the amount follows as you type"
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <ShareRow
-                icon={<UserCheck size={15} />}
-                person={employee?.name ?? "Unknown employee"}
-                role="Employee — closed this deal"
-                value={employeePct}
-                onChange={setEmployeePct}
-                amount={amountFor("EMPLOYEE")}
-                disabled={busy}
-              />
-
-              {ownSubAdmin ? (
-                <ShareRow
-                  icon={<Users size={15} />}
-                  person={ownSubAdmin.name}
-                  role="Manager — runs this employee's team"
-                  value={ownSubPct}
-                  onChange={setOwnSubPct}
-                  amount={amountFor("OWN_SUBADMIN")}
-                  disabled={busy}
-                />
-              ) : (
-                <p
-                  style={{
-                    borderRadius: 12,
-                    border: `1px dashed ${T.line}`,
-                    background: T.surface,
-                    padding: "12px 14px",
-                    fontSize: 12.5,
-                    color: T.faint,
-                  }}
-                >
-                  This employee reports to the admin directly, so there is no manager share.
-                </p>
-              )}
-
-              {/* Optional and the admin's call (§17). It starts as a picker
-                  rather than a percentage box for a person nobody has named. */}
-              <div
-                style={{
-                  borderRadius: 12,
-                  border: `1px solid ${T.line}`,
-                  background: T.surface,
-                  padding: "13px 15px",
-                }}
-              >
-                <div className="pd-row">
-                  <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
-                    <Avatar>
-                      <Users size={15} />
-                    </Avatar>
-                    <div style={{ minWidth: 0 }}>
-                      <p style={{ fontSize: 13.5, fontWeight: 600, color: T.ink }}>Another manager</p>
-                      <p style={{ fontSize: 11.5, color: T.faint }}>
-                        Optional — someone who helped but does not run this team
-                      </p>
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                    <select
-                      value={otherSubUid}
-                      disabled={busy}
-                      onChange={(event) => {
-                        setOtherSubUid(event.target.value);
-                        // A named person on 0% would read as a bug, so choosing
-                        // one seeds a figure the admin can then edit.
-                        if (event.target.value && parsePercentage(otherSubPct) === 0) setOtherSubPct("1");
-                      }}
-                      aria-label="Additional manager"
-                      style={{
-                        borderRadius: 10,
-                        border: `1px solid ${T.line}`,
-                        background: T.surface,
-                        padding: "9px 11px",
-                        fontSize: 13,
-                        color: T.ink,
-                        cursor: "pointer",
-                        maxWidth: 190,
-                      }}
-                    >
-                      <option value="">No-one</option>
-                      {subAdmins
-                        .filter((person) => person.uid !== ownSubAdminUid)
-                        .map((person) => (
-                          <option key={person.uid} value={person.uid}>
-                            {person.name}
-                          </option>
-                        ))}
-                    </select>
-
-                    {otherSubAdmin && (
-                      <>
-                        <PercentInput
-                          value={otherSubPct}
-                          onChange={setOtherSubPct}
-                          disabled={busy}
-                          label="Additional manager percentage"
-                        />
-                        <Amount value={amountFor("OTHER_SUBADMIN")} />
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <ShareRow
-                icon={<Building2 size={15} />}
-                person="Company"
-                role="Base share — set per deal"
-                value={companyPct}
-                onChange={setCompanyPct}
-                amount={result.companyBaseAmount}
-                disabled={busy}
-              />
-            </div>
-          </Card>
-
-          {/* -------------------------------------------------------------- */}
-          {/* Live summary                                                   */}
-          {/* -------------------------------------------------------------- */}
-          <Card title="Distribution summary">
-            <dl style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              <TotalRow label="Net profit" value={formatMoney(result.netProfit)} />
-              <TotalRow
-                label="Total distributed"
-                sub={`${result.distributedPercentage}%`}
-                value={formatMoney(result.distributedAmount)}
-              />
-              <TotalRow
-                label="Remaining"
-                sub={`${result.remainingPercentage}%`}
-                value={formatMoney(Math.max(0, result.remainingAmount))}
-                muted
-              />
-
-              {/* A percentage bar, so "how much is still unallocated" is
-                  answerable at a glance and not only by reading four numbers. */}
-              <div
-                aria-hidden
-                style={{
-                  height: 8,
-                  borderRadius: 999,
-                  background: T.tealSoft,
-                  overflow: "hidden",
-                  margin: "2px 0 4px",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${Math.min(100, Math.max(0, result.distributedPercentage))}%`,
-                    background: result.distributedPercentage > 100 ? "#c0563c" : T.teal,
-                    transition: "width 120ms linear",
-                  }}
-                />
-              </div>
-
-              <div style={{ height: 1, background: T.line }} />
-
-              <TotalRow
-                label="Company total"
-                sub="base + remainder"
-                value={formatMoney(result.companyTotalAmount)}
-                strong
-              />
-            </dl>
-
-            {result.errors.length > 0 && (
-              <p
-                role="alert"
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                  marginTop: 14,
-                  borderRadius: 10,
-                  border: `1px solid ${T.redLine}`,
-                  background: T.redSoft,
-                  color: T.red,
-                  padding: "10px 12px",
-                  fontSize: 12.5,
-                  fontWeight: 500,
-                }}
-              >
-                <AlertTriangle size={15} style={{ marginTop: 1, flexShrink: 0 }} />
-                {result.errors[0]}
-              </p>
-            )}
-
-            {error && (
-              <p
-                role="alert"
-                style={{
-                  marginTop: 10,
-                  borderRadius: 10,
-                  border: `1px solid ${T.redLine}`,
-                  background: T.redSoft,
-                  color: T.red,
-                  padding: "10px 12px",
-                  fontSize: 12.5,
-                }}
-              >
-                {error}
-              </p>
-            )}
-          </Card>
-        </div>
-
-        <footer
+    <OverlayPanel
+      title="Finalize Profit Distribution"
+      subtitle={`${deal.customer?.name ?? "Client"} · closed by ${employee?.name ?? "an employee"}`}
+      icon={<PieChart size={19} />}
+      maxWidth={760}
+      onClose={onClose}
+      headerExtra={
+        <OverlayFigures
+          items={[
+            { label: "Received", value: formatMoney(deal.amountReceived) },
+            { label: "Payable", value: formatMoney(deal.payableAmount) },
+            { label: "Net Profit", value: formatMoney(deal.profit), strong: true },
+          ]}
+        />
+      }
+      footer={
+        <div
           style={{
             display: "flex",
             flexWrap: "wrap",
             alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "14px 22px",
-            borderTop: `1px solid ${T.line}`,
-            background: T.surface,
+            justifyContent: "flex-end",
+            gap: 10,
           }}
         >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: T.faint }}>
-            <Wallet size={13} style={{ color: T.teal }} />
-            Finalising moves this deal into Closed Deals.
-          </span>
+          {!isMobile && (
+            <span style={{ fontSize: 12, color: T.faint, marginRight: "auto" }}>
+              Finalising moves this deal into Closed Deals.
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            style={{
+              fontSize: 13.5,
+              fontWeight: 500,
+              color: T.muted,
+              cursor: "pointer",
+              padding: "11px 16px",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy || !result.valid}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              // Full width on a phone: the primary action of a sheet should be
+              // a thumb-sized target, not a pill in a corner.
+              flex: isMobile ? 1 : undefined,
+              background: T.teal,
+              color: "#fff",
+              borderRadius: 999,
+              padding: "12px 20px",
+              fontSize: 13.5,
+              fontWeight: 600,
+              cursor: busy || !result.valid ? "not-allowed" : "pointer",
+              opacity: busy || !result.valid ? 0.5 : 1,
+            }}
+          >
+            <CheckCircle2 size={15} />
+            {busy ? "Finalizing…" : "Finalize distribution"}
+          </button>
+        </div>
+      }
+    >
+      <OverlayCard title="Who gets a share" hint="Amounts follow as you type">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <ShareRow
+            icon={<UserCheck size={15} />}
+            person={employee?.name ?? "Unknown employee"}
+            role="Employee — closed this deal"
+            value={employeePct}
+            onChange={setEmployeePct}
+            amount={amountFor("EMPLOYEE")}
+            disabled={busy}
+            stacked={isMobile}
+          />
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-            <button
-              type="button"
-              onClick={onClose}
+          {ownSubAdmin ? (
+            <ShareRow
+              icon={<Users size={15} />}
+              person={ownSubAdmin.name}
+              role="Manager — runs this employee's team"
+              value={ownSubPct}
+              onChange={setOwnSubPct}
+              amount={amountFor("OWN_SUBADMIN")}
               disabled={busy}
-              style={{ fontSize: 13, fontWeight: 500, color: T.muted, cursor: "pointer", padding: "9px 14px" }}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={busy || !result.valid}
+              stacked={isMobile}
+            />
+          ) : (
+            <p
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                background: T.teal,
-                color: "#fff",
-                borderRadius: 999,
-                padding: "10px 20px",
-                fontSize: 13.5,
-                fontWeight: 600,
-                cursor: busy || !result.valid ? "not-allowed" : "pointer",
-                opacity: busy || !result.valid ? 0.5 : 1,
+                borderRadius: 12,
+                border: `1px dashed ${T.line}`,
+                background: T.surface,
+                padding: "12px 14px",
+                fontSize: 12.5,
+                color: T.faint,
               }}
             >
-              <CheckCircle2 size={15} />
-              {busy ? "Finalizing…" : "Finalize distribution"}
-            </button>
-          </div>
-        </footer>
+              This employee reports to the admin directly, so there is no manager share.
+            </p>
+          )}
 
-        {/* Two rules a media query is genuinely needed for. */}
-        <style>{`
-          .pd-summary { display: grid; grid-template-columns: 1fr; gap: 10px; }
-          .pd-row { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
-          @media (min-width: 560px) {
-            .pd-summary { grid-template-columns: repeat(3, 1fr); }
-            .pd-row { flex-direction: row; align-items: center; justify-content: space-between; }
-          }
-        `}</style>
-      </div>
-    </div>
+          {/* Optional and the admin's call (§17). It starts as a picker rather
+              than a percentage box for a person nobody has named yet. */}
+          <div
+            style={{
+              borderRadius: 12,
+              border: `1px solid ${T.line}`,
+              background: T.surface,
+              padding: "13px 15px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
+              <Avatar>
+                <Users size={15} />
+              </Avatar>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 13.5, fontWeight: 600, color: T.ink }}>Another manager</p>
+                <p style={{ fontSize: 11.5, color: T.faint }}>
+                  Optional — someone who helped but does not run this team
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 10,
+                justifyContent: "space-between",
+              }}
+            >
+              <select
+                value={otherSubUid}
+                disabled={busy}
+                onChange={(event) => {
+                  setOtherSubUid(event.target.value);
+                  // A named person on 0% would read as a bug, so choosing one
+                  // seeds a figure the admin can then edit.
+                  if (event.target.value && parsePercentage(otherSubPct) === 0) setOtherSubPct("1");
+                }}
+                aria-label="Additional manager"
+                style={{
+                  flex: "1 1 160px",
+                  minWidth: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${T.line}`,
+                  background: T.ground,
+                  padding: "10px 11px",
+                  fontSize: 13,
+                  color: T.ink,
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">No-one</option>
+                {subAdmins
+                  .filter((person) => person.uid !== ownSubAdminUid)
+                  .map((person) => (
+                    <option key={person.uid} value={person.uid}>
+                      {person.name}
+                    </option>
+                  ))}
+              </select>
+
+              {otherSubAdmin && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <PercentInput
+                    value={otherSubPct}
+                    onChange={setOtherSubPct}
+                    disabled={busy}
+                    label="Additional manager percentage"
+                  />
+                  <Amount value={amountFor("OTHER_SUBADMIN")} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <ShareRow
+            icon={<Building2 size={15} />}
+            person="Company"
+            role="Base share — set per deal"
+            value={companyPct}
+            onChange={setCompanyPct}
+            amount={result.companyBaseAmount}
+            disabled={busy}
+            stacked={isMobile}
+          />
+        </div>
+      </OverlayCard>
+
+      <OverlayCard title="Distribution summary">
+        <dl style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+          <TotalRow label="Net profit" value={formatMoney(result.netProfit)} />
+          <TotalRow
+            label="Total distributed"
+            sub={`${result.distributedPercentage}%`}
+            value={formatMoney(result.distributedAmount)}
+          />
+          <TotalRow
+            label="Remaining"
+            sub={`${result.remainingPercentage}%`}
+            value={formatMoney(Math.max(0, result.remainingAmount))}
+            muted
+          />
+
+          {/* A bar, so "how much is still unallocated" is answerable at a
+              glance and not only by reading four numbers. */}
+          <div
+            aria-hidden
+            style={{
+              height: 8,
+              borderRadius: 999,
+              background: T.tealSoft,
+              overflow: "hidden",
+              margin: "2px 0 4px",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.min(100, Math.max(0, result.distributedPercentage))}%`,
+                background: result.distributedPercentage > 100 ? "#c0563c" : T.teal,
+                transition: "width 120ms linear",
+              }}
+            />
+          </div>
+
+          <div style={{ height: 1, background: T.line }} />
+
+          <TotalRow
+            label="Company total"
+            sub="base + remainder"
+            value={formatMoney(result.companyTotalAmount)}
+            strong
+          />
+        </dl>
+
+        {result.errors.length > 0 && (
+          <p
+            role="alert"
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              marginTop: 14,
+              borderRadius: 10,
+              border: `1px solid ${T.redLine}`,
+              background: T.redSoft,
+              color: T.red,
+              padding: "10px 12px",
+              fontSize: 12.5,
+              fontWeight: 500,
+            }}
+          >
+            <AlertTriangle size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+            {result.errors[0]}
+          </p>
+        )}
+
+        {error && (
+          <p
+            role="alert"
+            style={{
+              marginTop: 10,
+              borderRadius: 10,
+              border: `1px solid ${T.redLine}`,
+              background: T.redSoft,
+              color: T.red,
+              padding: "10px 12px",
+              fontSize: 12.5,
+            }}
+          >
+            {error}
+          </p>
+        )}
+
+        {isMobile && (
+          <p style={{ marginTop: 12, fontSize: 11.5, color: T.faint }}>
+            Finalising moves this deal into Closed Deals.
+          </p>
+        )}
+      </OverlayCard>
+    </OverlayPanel>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-
-function HeaderFigure({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div
-      style={{
-        borderRadius: 12,
-        background: strong ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)",
-        border: `1px solid rgba(255,255,255,${strong ? 0.45 : 0.22})`,
-        padding: "10px 13px",
-      }}
-    >
-      <p style={{ fontSize: 10, letterSpacing: "0.7px", textTransform: "uppercase", opacity: 0.8 }}>{label}</p>
-      <p style={{ fontSize: strong ? 17 : 15, fontWeight: strong ? 800 : 600, fontVariantNumeric: "tabular-nums" }}>
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <section style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, overflow: "hidden" }}>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: 10,
-          padding: "11px 16px",
-          borderBottom: `1px solid ${T.hair}`,
-        }}
-      >
-        <h3
-          style={{
-            fontSize: 11.5,
-            fontWeight: 700,
-            letterSpacing: "0.6px",
-            textTransform: "uppercase",
-            color: T.muted,
-          }}
-        >
-          {title}
-        </h3>
-        {hint && <span style={{ fontSize: 11.5, color: T.faint }}>{hint}</span>}
-      </div>
-      <div style={{ padding: 16 }}>{children}</div>
-    </section>
-  );
-}
 
 function Avatar({ children }: { children: React.ReactNode }) {
   return (
@@ -624,6 +512,7 @@ function ShareRow({
   onChange,
   amount,
   disabled,
+  stacked,
 }: {
   icon: React.ReactNode;
   person: string;
@@ -632,6 +521,8 @@ function ShareRow({
   onChange: (next: string) => void;
   amount: number;
   disabled: boolean;
+  /** Phone: identity on one line, the money controls on the next. */
+  stacked: boolean;
 }) {
   return (
     <div
@@ -640,32 +531,43 @@ function ShareRow({
         border: `1px solid ${T.line}`,
         background: T.surface,
         padding: "13px 15px",
+        display: "flex",
+        flexDirection: stacked ? "column" : "row",
+        alignItems: stacked ? "stretch" : "center",
+        justifyContent: "space-between",
+        gap: 12,
       }}
     >
-      <div className="pd-row">
-        <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
-          <Avatar>{icon}</Avatar>
-          <div style={{ minWidth: 0 }}>
-            <p
-              style={{
-                fontSize: 13.5,
-                fontWeight: 600,
-                color: T.ink,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {person}
-            </p>
-            <p style={{ fontSize: 11.5, color: T.faint }}>{role}</p>
-          </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
+        <Avatar>{icon}</Avatar>
+        <div style={{ minWidth: 0 }}>
+          <p
+            style={{
+              fontSize: 13.5,
+              fontWeight: 600,
+              color: T.ink,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {person}
+          </p>
+          <p style={{ fontSize: 11.5, color: T.faint }}>{role}</p>
         </div>
+      </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <PercentInput value={value} onChange={onChange} disabled={disabled} label={`${person} percentage`} />
-          <Amount value={amount} />
-        </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: stacked ? "space-between" : "flex-end",
+          gap: 10,
+          flexShrink: 0,
+        }}
+      >
+        <PercentInput value={value} onChange={onChange} disabled={disabled} label={`${person} percentage`} />
+        <Amount value={amount} />
       </div>
     </div>
   );
@@ -675,7 +577,7 @@ function Amount({ value }: { value: number }) {
   return (
     <span
       style={{
-        minWidth: 118,
+        minWidth: 110,
         textAlign: "right",
         fontSize: 14,
         fontWeight: 700,
@@ -693,7 +595,8 @@ function Amount({ value }: { value: number }) {
  *
  * `type="text"` with a numeric input mode rather than `type="number"`: a number
  * input silently accepts the mouse wheel, which over a field that decides
- * somebody's commission is a way to change a payout by scrolling past it.
+ * somebody's commission is a way to change a payout by scrolling past it. The
+ * numeric keypad still comes up on a phone.
  */
 function PercentInput({
   value,
@@ -714,6 +617,7 @@ function PercentInput({
         borderRadius: 10,
         border: `1px solid ${T.line}`,
         background: T.ground,
+        flexShrink: 0,
       }}
     >
       <input
@@ -724,13 +628,16 @@ function PercentInput({
         aria-label={label ?? "Percentage"}
         onChange={(event) => onChange(event.target.value.replace(/[^\d.]/g, ""))}
         style={{
-          width: 58,
+          width: 62,
           background: "transparent",
           border: "none",
           outline: "none",
-          padding: "9px 4px 9px 10px",
+          // 16px on the input itself: anything smaller makes iOS Safari zoom
+          // the page when the field is focused, which on a sheet leaves the
+          // user scrolled somewhere they did not ask to be.
+          padding: "10px 4px 10px 10px",
           textAlign: "right",
-          fontSize: 14,
+          fontSize: 16,
           fontWeight: 600,
           color: T.ink,
           fontVariantNumeric: "tabular-nums",
@@ -817,11 +724,13 @@ export function DistributionSummaryCard({
             key={`${line.kind}-${line.recipientName}`}
             style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 12.5 }}
           >
-            <span style={{ color: T.muted }}>
+            <span style={{ color: T.muted, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
               {line.recipientName}
               <span style={{ color: T.faint }}> · {line.percentage}%</span>
             </span>
-            <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums" }}>{formatMoney(line.amount)}</span>
+            <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+              {formatMoney(line.amount)}
+            </span>
           </li>
         ))}
       </ul>

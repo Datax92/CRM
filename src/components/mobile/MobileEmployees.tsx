@@ -58,11 +58,22 @@ import { MobileHeader, HeaderCircle } from "./mobileChrome";
 import { AccountButton } from "./MobileAccount";
 import { MobileBody, useMobileCentre } from "./MobileShell";
 import { Sheet, SheetAction } from "./MobileLeadDetail";
+import { ManagerFormModal } from "@/components/employees/ManagerFormModal";
+import { buildAllManagerMetrics } from "@/lib/managerMetrics";
+import type { DataBankFolder } from "@/hooks/useDataBank";
 import type { CentreAction } from "./MobileTabBar";
 
 export type DirectoryFilter = "All" | "Active" | "Inactive";
 
 const FILTERS: DirectoryFilter[] = ["All", "Active", "Inactive"];
+
+/**
+ * The phone's Team screen carries both halves of the hierarchy, because the
+ * desktop directory does and the requirement is parity, not a lighter phone
+ * edition. People is the employee roster; Managers is the management layer with
+ * its own add/edit form, its team tick-list and its aggregated figures.
+ */
+type TeamView = "people" | "managers";
 const PROFILE_TABS = [
   { key: "leads", label: "Leads" },
   { key: "deals", label: "Deals" },
@@ -75,6 +86,8 @@ type ProfileTab = (typeof PROFILE_TABS)[number]["key"];
 export function MobileEmployees({
   metrics,
   rows,
+  subAdmins,
+  folders,
   leads,
   deals,
   query,
@@ -94,6 +107,10 @@ export function MobileEmployees({
 }: {
   metrics: EmployeeMetrics[];
   rows: EmployeeMetrics[];
+  /** The management layer. Empty for anyone who cannot see it. */
+  subAdmins: EmployeeMetrics[];
+  /** Only to say how many folders each manager holds — assigned in Data Bank. */
+  folders: DataBankFolder[];
   leads: Lead[];
   deals: DealRecord[];
   query: string;
@@ -113,12 +130,36 @@ export function MobileEmployees({
 }) {
   /** `undefined` closed, `null` creating, an employee editing. */
   const [formFor, setFormFor] = useState<EmployeeMetrics | null | undefined>(undefined);
+  const [managerFormFor, setManagerFormFor] = useState<EmployeeMetrics | null | undefined>(undefined);
+  const [view, setView] = useState<TeamView>("people");
 
+  // **The add control lives in this header, not in the tab bar.** It used to
+  // be published through `useMobileCentre`, but an admin's centre slot is
+  // pinned to the Data Bank on every screen — so the request was simply
+  // discarded and the Team screen had no way to add anybody. A header button
+  // is also the better place: it is visible while the list is, and it says
+  // what it adds instead of changing meaning with the screen.
+  //
+  // It is still published for any role whose centre is contextual, so nothing
+  // regresses for them.
   const centre: CentreAction = useMemo(
-    () => ({ kind: "add", onPress: () => setFormFor(null), label: "Add an employee" }),
-    []
+    () =>
+      view === "managers"
+        ? { kind: "add", onPress: () => setManagerFormFor(null), label: "Add a manager" }
+        : { kind: "add", onPress: () => setFormFor(null), label: "Add an employee" },
+    [view]
   );
   useMobileCentre(centre);
+
+  const addLabel = view === "managers" ? "Add a manager" : "Add an employee";
+  const openAddForm = () => (view === "managers" ? setManagerFormFor(null) : setFormFor(null));
+
+  // Same aggregation the desktop panel uses: a manager's figures are the sum of
+  // their team's, derived on read. See `lib/managerMetrics`.
+  const managerTotals = useMemo(
+    () => buildAllManagerMetrics(subAdmins, metrics),
+    [subAdmins, metrics]
+  );
 
   const totals = useMemo(() => {
     const handled = metrics.reduce((sum, e) => sum + e.assigned, 0);
@@ -189,6 +230,11 @@ export function MobileEmployees({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <HeaderCircle onClick={openAddForm} label={addLabel}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </HeaderCircle>
             <HeaderCircle onClick={onRecalculate} label="Recalculate lane priority">
               <svg
                 width="18"
@@ -288,10 +334,69 @@ export function MobileEmployees({
         </div>
       </MobileHeader>
 
+      {/* Both halves of the hierarchy, one tap apart. */}
+      {subAdmins.length > 0 || view === "managers" ? (
+        <div
+          role="tablist"
+          aria-label="Team view"
+          style={{
+            display: "flex",
+            gap: 4,
+            margin: "14px 18px 0",
+            padding: 3,
+            borderRadius: 999,
+            background: "#dceae8",
+            flexShrink: 0,
+          }}
+        >
+          {(
+            [
+              { key: "people" as const, label: `People (${metrics.length})` },
+              { key: "managers" as const, label: `Managers (${subAdmins.length})` },
+            ]
+          ).map((option) => {
+            const on = view === option.key;
+            return (
+              <button
+                key={option.key}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                onClick={() => setView(option.key)}
+                className="mob-press"
+                style={{
+                  flex: 1,
+                  padding: "9px 12px",
+                  borderRadius: 999,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  border: "none",
+                  background: on ? "#fff" : "transparent",
+                  color: on ? E.tealInk : E.muted,
+                  boxShadow: on ? "0 1px 3px rgba(18,54,52,0.14)" : "none",
+                  WebkitTapHighlightColor: "transparent",
+                }}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div
         role="tablist"
         aria-label="Filter by status"
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 18px 10px", overflowX: "auto", flexShrink: 0 }}
+        style={{
+          display: view === "people" ? "flex" : "none",
+          alignItems: "center",
+          gap: 8,
+          padding: "14px 18px 10px",
+          overflowX: "auto",
+          flexShrink: 0,
+        }}
       >
         {FILTERS.map((option) => {
           const active = filter === option;
@@ -328,24 +433,98 @@ export function MobileEmployees({
         {error && <MobileNotice tone="error" text={error} />}
         {notice && <MobileNotice tone="success" text={notice} onDismiss={onDismissNotice} />}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-          {rosterPages.items.map((employee, index) => (
-            <RosterCard
-              key={employee.uid}
-              employee={employee}
-              index={index}
-              onOpen={() => onSelect(employee)}
-            />
-          ))}
+        {/* Named, not just a plus. On the Managers view especially, an icon
+            alone does not say what it would create. */}
+        <button
+          type="button"
+          onClick={openAddForm}
+          className="mob-press"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            width: "100%",
+            margin: "4px 0 12px",
+            padding: "13px 16px",
+            borderRadius: 16,
+            border: `1px dashed ${E.teal}`,
+            background: "#e8f5f3",
+            color: E.tealInk,
+            fontSize: 13.5,
+            fontWeight: 700,
+            fontFamily: "inherit",
+            cursor: "pointer",
+            WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          {view === "managers" ? "Add Manager" : "Add Employee"}
+        </button>
 
-          {rows.length === 0 && (
-            <div style={{ padding: "46px 12px", textAlign: "center", fontSize: 13.5, fontWeight: 500, color: E.label }}>
-              No employees match this search.
+        {view === "people" ? (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+              {rosterPages.items.map((employee, index) => (
+                <RosterCard
+                  key={employee.uid}
+                  employee={employee}
+                  index={index}
+                  onOpen={() => onSelect(employee)}
+                />
+              ))}
+
+              {rows.length === 0 && (
+                <div
+                  style={{
+                    padding: "46px 12px",
+                    textAlign: "center",
+                    fontSize: 13.5,
+                    fontWeight: 500,
+                    color: E.label,
+                  }}
+                >
+                  No employees match this search.
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <Pager pagination={rosterPages} variant="mobile" noun="team members" />
+            <Pager pagination={rosterPages} variant="mobile" noun="team members" />
+          </>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {managerTotals.map((manager, index) => (
+              <ManagerCard
+                key={manager.uid}
+                manager={manager}
+                folders={folders.filter((folder) => folder.subAdminUid === manager.uid).length}
+                index={index}
+                onEdit={() => {
+                  const record = subAdmins.find((person) => person.uid === manager.uid) ?? null;
+                  setManagerFormFor(record);
+                }}
+              />
+            ))}
+
+            {managerTotals.length === 0 && (
+              <div
+                style={{
+                  padding: "40px 16px",
+                  textAlign: "center",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: E.label,
+                  lineHeight: 1.55,
+                }}
+              >
+                No managers yet. Tap the centre button to add one — a manager runs a team of
+                employees and a set of Data Bank folders, and takes no leads themselves.
+              </div>
+            )}
+          </div>
+        )}
       </MobileBody>
 
       {selected && (
@@ -365,10 +544,28 @@ export function MobileEmployees({
       {formFor !== undefined && (
         <MobileEmployeeForm
           employee={formFor}
+          managers={subAdmins}
           getIdToken={getIdToken}
           onClose={() => setFormFor(undefined)}
           onSaved={(message) => {
             setFormFor(undefined);
+            onSaved(message);
+          }}
+        />
+      )}
+
+      {/* The desktop manager form, not a phone-only copy of it. `OverlayPanel`
+          already renders as a full-height sheet below 820px, so the phone gets
+          every field — account, details, status and the team tick-list —
+          rather than a reduced version that would drift from the real one. */}
+      {managerFormFor !== undefined && (
+        <ManagerFormModal
+          manager={managerFormFor}
+          employees={metrics}
+          getIdToken={getIdToken}
+          onClose={() => setManagerFormFor(undefined)}
+          onSaved={(message) => {
+            setManagerFormFor(undefined);
             onSaved(message);
           }}
         />
@@ -378,6 +575,172 @@ export function MobileEmployees({
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A manager on the phone.
+ *
+ * Shows what the desktop panel shows — team size, leads, deals won, revenue,
+ * conversion, folders held — because those figures are the reason to open the
+ * screen at all, and dropping them would make the phone view decorative.
+ */
+function ManagerCard({
+  manager,
+  folders,
+  index,
+  onEdit,
+}: {
+  manager: ReturnType<typeof buildAllManagerMetrics>[number];
+  folders: number;
+  index: number;
+  onEdit: () => void;
+}) {
+  return (
+    <div
+      className="mob-rise"
+      style={{
+        animationDelay: `${Math.min(index, 8) * 42}ms`,
+        background: "#fbfdfd",
+        border: "1px solid #dceae8",
+        borderRadius: 18,
+        padding: "14px 15px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <span
+          aria-hidden
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 42,
+            height: 42,
+            borderRadius: 13,
+            background: "#e8f5f3",
+            color: E.tealInk,
+            fontSize: 14,
+            fontWeight: 800,
+            flexShrink: 0,
+          }}
+        >
+          {initialsOf(manager.name)}
+        </span>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 14.5,
+              fontWeight: 800,
+              color: E.inkMobile,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {manager.name}
+            {manager.status === "DISABLED" && (
+              <span style={{ marginLeft: 7, fontSize: 10, fontWeight: 800, color: "#a5762a" }}>INACTIVE</span>
+            )}
+          </div>
+          <div
+            style={{
+              fontSize: 11.5,
+              fontWeight: 500,
+              color: E.label,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {manager.email}
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onEdit}
+          className="mob-press"
+          style={{
+            flexShrink: 0,
+            borderRadius: 999,
+            border: "1px solid #dceae8",
+            background: "#fff",
+            color: E.tealInk,
+            padding: "7px 13px",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          Edit
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 8,
+          marginTop: 13,
+          paddingTop: 12,
+          borderTop: "1px solid #eef4f3",
+        }}
+      >
+        <ManagerFigure label="Team" value={String(manager.headcount)} />
+        <ManagerFigure label="Leads" value={String(manager.assigned)} />
+        <ManagerFigure label="Won" value={String(manager.closedWon)} />
+        <ManagerFigure label="Revenue" value={compactRupees(manager.revenue)} accent />
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 10,
+          marginTop: 10,
+          fontSize: 11.5,
+          fontWeight: 600,
+          color: E.muted,
+        }}
+      >
+        <span>{manager.conversionRate}% conversion</span>
+        <span>
+          {folders} folder{folders === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {manager.team.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11.5, fontWeight: 500, color: E.label, lineHeight: 1.5 }}>
+          {manager.team.map((person) => person.name).join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ManagerFigure({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div
+        style={{
+          fontSize: 16,
+          fontWeight: 800,
+          color: accent ? E.tealInk : E.inkMobile,
+          fontVariantNumeric: "tabular-nums",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {value}
+      </div>
+      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: E.label }}>
+        {label}
+      </div>
+    </div>
+  );
+}
 
 function RosterCard({
   employee,
@@ -1114,6 +1477,7 @@ function dateInputValue(value: { toDate?: () => Date } | null | undefined): stri
  */
 function MobileEmployeeForm({
   employee,
+  managers,
   getIdToken,
   onClose,
   onSaved,
@@ -1122,6 +1486,8 @@ function MobileEmployeeForm({
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
+  /** The managers an employee can be assigned to. */
+  managers: EmployeeMetrics[];
 }) {
   const editing = Boolean(employee);
 
@@ -1135,6 +1501,10 @@ function MobileEmployeeForm({
   const [priority, setPriority] = useState(employee?.priority ?? MAX_PRIORITY);
   const [autoAssign, setAutoAssign] = useState(employee?.autoAssign !== false);
   const [notes, setNotes] = useState(employee?.notes ?? "");
+  // Which manager they report to. On the desktop form this is "Reports To";
+  // leaving it off the phone would make the hierarchy editable on one surface
+  // only, which is the parity gap this round exists to close.
+  const [subAdminUid, setSubAdminUid] = useState<string>(employee?.subAdminUid ?? "");
   const [targets, setTargets] = useState<KpiTargets>({ ...DEFAULT_KPI_TARGETS, ...employee?.targets });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1160,6 +1530,7 @@ function MobileEmployeeForm({
           jobTitle,
           status,
           targets,
+          subAdminUid: subAdminUid || null,
           phone: phone.trim() || null,
           notes: notes.trim() || null,
           joinedAt: joinedAt || null,
@@ -1178,6 +1549,10 @@ function MobileEmployeeForm({
         priority: priority !== current.priority ? priority : undefined,
         jobTitle: jobTitle !== current.jobTitle ? jobTitle : undefined,
         targets,
+        // Sent only when it changed, so an unrelated edit cannot silently
+        // detach somebody from their team.
+        subAdminUid:
+          (subAdminUid || null) !== (current.subAdminUid ?? null) ? subAdminUid || null : undefined,
         phone: phone.trim() || null,
         notes: notes.trim() || null,
         joinedAt: joinedAt || null,
@@ -1313,6 +1688,27 @@ function MobileEmployeeForm({
             </option>
           ))}
         </select>
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Reports To</span>
+        <select
+          value={subAdminUid}
+          onChange={(e) => setSubAdminUid(e.target.value)}
+          disabled={busy}
+          style={SHEET_FIELD}
+        >
+          <option value="">Admin (directly)</option>
+          {managers.map((manager) => (
+            <option key={manager.uid} value={manager.uid}>
+              {manager.name}
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 11, fontWeight: 500, color: E.label, marginTop: 2 }}>
+          Their manager sees their leads and deals, and their numbers count toward that
+          manager&rsquo;s totals.
+        </span>
       </label>
 
       <label style={SHEET_LABEL}>

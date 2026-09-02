@@ -23,11 +23,13 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { M, MobileHeader } from "@/components/mobile/mobileChrome";
 import { useFinancials, type DealRecord } from "@/hooks/useFinancials";
 import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { useAllDistributions } from "@/hooks/useDistributions";
 import { resolveRange, formatBusinessDate } from "@/lib/dates";
-import { formatMoney } from "@/lib/money";
+import { formatMoney, formatCompactMoney } from "@/lib/money";
 import { describeLeadSource } from "@/lib/leadSource";
 import { reopenProfitDistribution } from "@/lib/clientActions";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
@@ -59,6 +61,10 @@ export default function ProfitDistributionPage() {
   const { role, loading: authLoading, getIdToken } = useAuth();
   useProtectedRoute(["admin"]);
   const isAdmin = role === "admin";
+  // The phone gets the app's own screen shape — teal header, figure well,
+  // full-width cards — rather than the desktop page at 390px. Reached from
+  // Money, so it has to look like it belongs to the phone app.
+  const isMobile = useIsMobile();
 
   const { deals, loading } = useFinancials(ALL_TIME, isAdmin);
   const { employees } = useEmployees(isAdmin);
@@ -106,6 +112,142 @@ export default function ProfitDistributionPage() {
   // Only the handful the admin might still want to undo. The rest live in
   // Closed Deals, which is the record rather than the workspace.
   const recentlySettled = settled.slice(0, 5);
+
+  if (isMobile) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", minHeight: "100%" }}>
+        <MobileHeader>
+          <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.1px", opacity: 0.78 }}>
+            MONEY
+          </div>
+          <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: "-0.3px", marginTop: 2 }}>
+            Profit Distribution
+          </h1>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginTop: 15,
+              padding: "13px 15px",
+              borderRadius: 18,
+              background: M.wellBg,
+              border: `1px solid ${M.wellBorder}`,
+            }}
+          >
+            <PhoneWell label="AWAITING" value={String(pending.length)} />
+            <PhoneWell label="UNALLOCATED" value={formatCompactMoney(pendingProfit)} />
+            <PhoneWell label="SETTLED" value={String(settled.length)} />
+          </div>
+        </MobileHeader>
+
+        <div style={{ padding: "16px 16px 26px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {banner && <Banner tone={banner.tone} text={banner.text} onDismiss={() => setBanner(null)} />}
+
+          <PhoneSectionTitle>
+            Awaiting distribution
+            <span style={{ color: M.tealDeep }}> · {pending.length}</span>
+          </PhoneSectionTitle>
+
+          {pending.length === 0 ? (
+            <PhoneEmpty>
+              Every closed deal has been split. New ones appear here as soon as they are entered.
+            </PhoneEmpty>
+          ) : (
+            pending.map((deal, index) => (
+              <PhoneDealCard
+                key={deal.id}
+                deal={deal}
+                index={index}
+                who={nameOf.get(deal.userId ?? "") ?? "Unknown employee"}
+                onPress={() => setActive(deal)}
+              />
+            ))
+          )}
+
+          <PhoneSectionTitle>
+            Recently settled
+            <span style={{ color: M.tealDeep }}> · {settled.length}</span>
+          </PhoneSectionTitle>
+
+          {recentlySettled.length === 0 ? (
+            <PhoneEmpty>Nothing has been split yet.</PhoneEmpty>
+          ) : (
+            recentlySettled.map((deal) => {
+              const distribution = currentFor(deal.id);
+              return (
+                <div
+                  key={deal.id}
+                  style={{
+                    background: M.cardBg,
+                    border: `1px solid ${M.cardBorder}`,
+                    borderRadius: M.rowRadius,
+                    padding: "14px 15px",
+                  }}
+                >
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 14.5, fontWeight: 800, color: M.ink }}>
+                      {deal.customer?.name ?? "Client"}
+                    </div>
+                    <div style={{ fontSize: 11.5, fontWeight: 500, color: M.fainter }}>
+                      {nameOf.get(deal.userId ?? "") ?? "Unknown employee"} · net{" "}
+                      {formatMoney(deal.profit)}
+                    </div>
+                  </div>
+
+                  {distribution ? (
+                    <DistributionSummaryCard
+                      lines={distribution.lines}
+                      netProfit={distribution.netProfit}
+                      companyTotalAmount={distribution.companyTotalAmount}
+                      remainingAmount={distribution.remainingAmount}
+                      onReopen={busy ? undefined : () => reopen(deal)}
+                    />
+                  ) : (
+                    <PhoneEmpty>Marked settled, but the distribution record could not be read.</PhoneEmpty>
+                  )}
+                </div>
+              );
+            })
+          )}
+
+          {settled.length > recentlySettled.length && (
+            <Link
+              href="/admin/financials/deals"
+              style={{
+                display: "block",
+                textAlign: "center",
+                padding: "13px 16px",
+                borderRadius: M.rowRadius,
+                border: `1px solid ${M.cardBorder}`,
+                background: M.cardBg,
+                fontSize: 13,
+                fontWeight: 700,
+                color: M.tealDeep,
+              }}
+            >
+              See all {settled.length} in Closed Deals →
+            </Link>
+          )}
+        </div>
+
+        {active && (
+          <ProfitDistributionModal
+            deal={active}
+            employees={employees}
+            subAdmins={subAdmins}
+            getIdToken={getIdToken}
+            onClose={() => setActive(null)}
+            onDone={(message) => {
+              setActive(null);
+              setBanner({ tone: "success", text: message });
+            }}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 1080, margin: "0 auto", padding: "26px clamp(16px, 3vw, 28px) 40px" }}>
@@ -433,5 +575,196 @@ function Empty({ children }: { children: React.ReactNode }) {
     >
       {children}
     </p>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phone pieces                                                                */
+/* -------------------------------------------------------------------------- */
+
+function PhoneWell({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
+      <div
+        style={{
+          fontSize: 9.5,
+          fontWeight: 700,
+          letterSpacing: "0.9px",
+          opacity: 0.78,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 17,
+          fontWeight: 800,
+          letterSpacing: "-0.4px",
+          marginTop: 3,
+          fontVariantNumeric: "tabular-nums",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function PhoneSectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h2
+      style={{
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: "1px",
+        textTransform: "uppercase",
+        color: M.muted,
+        margin: "6px 2px 0",
+      }}
+    >
+      {children}
+    </h2>
+  );
+}
+
+function PhoneEmpty({ children }: { children: React.ReactNode }) {
+  return (
+    <p
+      style={{
+        borderRadius: M.rowRadius,
+        border: `1px dashed ${M.cardBorder}`,
+        background: "rgba(255,255,255,0.7)",
+        padding: "26px 18px",
+        textAlign: "center",
+        fontSize: 12.5,
+        fontWeight: 500,
+        color: M.fainter,
+        lineHeight: 1.55,
+      }}
+    >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * A deal waiting to be split.
+ *
+ * The whole card is the button — a phone target should be the card, not a pill
+ * inside it — and the amber ground is the same "needs you" tone the Money hub
+ * uses for this queue, so the two screens agree about what is urgent.
+ */
+function PhoneDealCard({
+  deal,
+  index,
+  who,
+  onPress,
+}: {
+  deal: DealRecord;
+  index: number;
+  who: string;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPress}
+      className="mob-rise mob-press"
+      style={{
+        animationDelay: `${Math.min(index, 8) * 42}ms`,
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        width: "100%",
+        textAlign: "left",
+        background: M.amberBg,
+        border: `1px solid ${M.amberBorder}`,
+        borderRadius: M.rowRadius,
+        padding: "14px 15px",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        WebkitTapHighlightColor: "transparent",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 42,
+          height: 42,
+          borderRadius: 13,
+          background: "#f7ead0",
+          color: M.amberInk,
+          fontSize: 14,
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {(deal.customer?.name ?? "?").slice(0, 2).toUpperCase()}
+      </span>
+
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span
+          style={{
+            display: "block",
+            fontSize: 14.5,
+            fontWeight: 800,
+            color: M.ink,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {deal.customer?.name ?? "Client"}
+        </span>
+        <span
+          style={{
+            display: "block",
+            fontSize: 11.5,
+            fontWeight: 500,
+            color: M.fainter,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {who} · {describeLeadSource(deal)}
+          {deal.dealDate ? ` · ${formatBusinessDate(deal.dealDate)}` : ""}
+        </span>
+        <span
+          style={{
+            display: "inline-block",
+            marginTop: 7,
+            fontSize: 13.5,
+            fontWeight: 800,
+            color: M.amberInk,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {formatMoney(deal.profit)} to split
+        </span>
+      </span>
+
+      <svg
+        width="17"
+        height="17"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={M.amberInk}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{ flexShrink: 0 }}
+        aria-hidden
+      >
+        <path d="m9 6 6 6-6 6" />
+      </svg>
+    </button>
   );
 }

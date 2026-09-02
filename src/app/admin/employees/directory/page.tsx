@@ -200,6 +200,8 @@ export default function EmployeeDirectoryPage() {
       <MobileEmployees
         metrics={metrics}
         rows={rows}
+        subAdmins={subAdminMetrics}
+        folders={folders}
         leads={leads}
         deals={allDeals}
         query={query}
