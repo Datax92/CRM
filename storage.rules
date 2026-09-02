@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Storage holds expense receipts and supporting documents (FR-26).
+//
+// As with Firestore, uploads never come from the browser — they go through a
+// Server Action using the Admin SDK, which bypasses these rules. What is
+// defined here is read access, plus a hard deny on everything else.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+
+    // Expense receipts: admin-only, matching the expenses collection (BR-20).
+    match /expenses/{expenseId}/{fileName} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

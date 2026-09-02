@@ -1,0 +1,1489 @@
+"use client";
+
+/**
+ * The phone Employee Directory, built to `Employee Directory Mobile.dc.html`.
+ *
+ * It is a different screen from the desktop one, not a narrowed copy: a teal
+ * header carrying the search and the three roster figures, stacked roster
+ * cards, and a full-screen profile overlay with pill tabs.
+ *
+ * Every figure comes from the same `EmployeeMetrics` rollup the desktop table
+ * reads, and every write calls the same client action, so the two surfaces
+ * cannot drift.
+ *
+ * **The mockup's phone frame is deliberately not reproduced** — the 9:41 clock,
+ * the signal bars and the home indicator are how a design file depicts a phone.
+ * Drawing them in a real app puts a second, permanently-wrong status bar under
+ * the device's own. `env(safe-area-inset-*)` does the real job instead.
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import type { Lead } from "@/hooks/useLeads";
+import type { DealRecord } from "@/hooks/useFinancials";
+import type { EmployeeMetrics } from "@/lib/metrics";
+import { LEAD_STATUS_LABELS, type LeadStatus } from "@/lib/leadStatus";
+import { formatMoney } from "@/lib/money";
+import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
+import { initialsOf } from "@/lib/leadDisplay";
+import {
+  createEmployee,
+  updateEmployee,
+  disableEmployee,
+  enableEmployee,
+} from "@/lib/clientActions";
+import { JOB_TITLES, DEFAULT_JOB_TITLE } from "@/lib/constants/roles";
+import { MAX_PRIORITY } from "@/lib/constants/distribution";
+import { DEFAULT_KPI_TARGETS, KPI_METRICS, KPI_METRIC_LABELS, type KpiTargets } from "@/lib/kpi";
+import { usePagination } from "@/hooks/usePagination";
+import {
+  E,
+  HeroRings,
+  leadAccent,
+  buildDirectoryAnalytics,
+  buildActivity,
+  compactRupees,
+  applyLeadFilters,
+  applyDealPeriod,
+  applyActivityPeriod,
+  DEFAULT_DOSSIER_FILTERS,
+  type DossierFilters,
+} from "@/components/employees/directoryChrome";
+import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "@/components/employees/AnalyticsPanels";
+import { DossierFilterBar, Pager } from "@/components/employees/DossierControls";
+
+/** Roster cards, and rows inside a profile tab, per page. */
+const ROSTER_PAGE_SIZE = 8;
+const PROFILE_PAGE_SIZE = 6;
+import { MobileHeader, HeaderCircle } from "./mobileChrome";
+import { AccountButton } from "./MobileAccount";
+import { MobileBody, useMobileCentre } from "./MobileShell";
+import { Sheet, SheetAction } from "./MobileLeadDetail";
+import type { CentreAction } from "./MobileTabBar";
+
+export type DirectoryFilter = "All" | "Active" | "Inactive";
+
+const FILTERS: DirectoryFilter[] = ["All", "Active", "Inactive"];
+const PROFILE_TABS = [
+  { key: "leads", label: "Leads" },
+  { key: "deals", label: "Deals" },
+  { key: "analytics", label: "Analytics" },
+  { key: "activity", label: "Activity" },
+] as const;
+
+type ProfileTab = (typeof PROFILE_TABS)[number]["key"];
+
+export function MobileEmployees({
+  metrics,
+  rows,
+  leads,
+  deals,
+  query,
+  onQuery,
+  filter,
+  onFilter,
+  accountInitial,
+  error,
+  notice,
+  onDismissNotice,
+  selected,
+  onSelect,
+  getIdToken,
+  onSaved,
+  onRecalculate,
+  recalculating,
+}: {
+  metrics: EmployeeMetrics[];
+  rows: EmployeeMetrics[];
+  leads: Lead[];
+  deals: DealRecord[];
+  query: string;
+  onQuery: (next: string) => void;
+  filter: DirectoryFilter;
+  onFilter: (next: DirectoryFilter) => void;
+  accountInitial: string;
+  error: string | null;
+  notice: string | null;
+  onDismissNotice: () => void;
+  selected: EmployeeMetrics | null;
+  onSelect: (employee: EmployeeMetrics | null) => void;
+  getIdToken: () => Promise<string>;
+  onSaved: (message: string) => void;
+  onRecalculate: () => void;
+  recalculating: boolean;
+}) {
+  /** `undefined` closed, `null` creating, an employee editing. */
+  const [formFor, setFormFor] = useState<EmployeeMetrics | null | undefined>(undefined);
+
+  const centre: CentreAction = useMemo(
+    () => ({ kind: "add", onPress: () => setFormFor(null), label: "Add an employee" }),
+    []
+  );
+  useMobileCentre(centre);
+
+  const totals = useMemo(() => {
+    const handled = metrics.reduce((sum, e) => sum + e.assigned, 0);
+    const profit = metrics.reduce((sum, e) => sum + e.profit, 0);
+    return { handled, profit };
+  }, [metrics]);
+
+  const rosterPages = usePagination(rows, ROSTER_PAGE_SIZE);
+
+  const heroStats = [
+    { label: "TEAM", value: String(metrics.length) },
+    { label: "HANDLED", value: String(totals.handled) },
+    { label: "PROFIT", value: compactRupees(totals.profit) },
+  ];
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        flex: 1,
+        minHeight: 0,
+        position: "relative",
+        background: E.page,
+        fontFamily: E.font,
+        letterSpacing: E.tracking,
+        color: E.inkMobile,
+      }}
+    >
+      <MobileHeader style={{ background: E.gradientMobile, position: "relative", overflow: "hidden" }}>
+        <HeroRings set="phone" />
+
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 14,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "1.5px",
+                textTransform: "uppercase",
+                opacity: 0.76,
+              }}
+            >
+              Directory
+            </div>
+            <h1
+              style={{
+                fontSize: 24,
+                fontWeight: 800,
+                letterSpacing: "-0.7px",
+                margin: "2px 0 0",
+                color: "#fff",
+                // Explicit: `@layer base` sets font-family on h1-h6, which
+                // beats an inherited family from the container.
+                fontFamily: E.font,
+              }}
+            >
+              Employees
+            </h1>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <HeaderCircle onClick={onRecalculate} label="Recalculate lane priority">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#fff"
+                strokeWidth="2"
+                strokeLinecap="round"
+                className={recalculating ? "animate-spin" : undefined}
+                aria-hidden
+              >
+                <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" />
+              </svg>
+            </HeaderCircle>
+            <AccountButton initial={accountInitial} />
+          </div>
+        </div>
+
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginTop: 16,
+            padding: "13px 15px",
+            borderRadius: 18,
+            background: "rgba(255,255,255,0.15)",
+            border: "1px solid rgba(255,255,255,0.22)",
+          }}
+        >
+          {heroStats.map((stat, index) => (
+            <div
+              key={stat.label}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                textAlign: "center",
+                borderLeft: index > 0 ? "1px solid rgba(255,255,255,0.22)" : undefined,
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.6px", opacity: 0.8, whiteSpace: "nowrap" }}>
+                {stat.label}
+              </div>
+              <div
+                style={{
+                  fontSize: 17,
+                  fontWeight: 800,
+                  letterSpacing: "-0.5px",
+                  marginTop: 3,
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {stat.value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            marginTop: 12,
+            padding: "11px 15px",
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.16)",
+            border: "1px solid rgba(255,255,255,0.22)",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth="2" aria-hidden>
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m16 16 4.5 4.5" />
+          </svg>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => onQuery(e.target.value)}
+            placeholder="Search employees"
+            aria-label="Search employees by name, email or role"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              border: "none",
+              outline: "none",
+              background: "transparent",
+              fontSize: 13.5,
+              fontWeight: 500,
+              color: "#fff",
+              fontFamily: "inherit",
+            }}
+          />
+        </div>
+      </MobileHeader>
+
+      <div
+        role="tablist"
+        aria-label="Filter by status"
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 18px 10px", overflowX: "auto", flexShrink: 0 }}
+      >
+        {FILTERS.map((option) => {
+          const active = filter === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onFilter(option)}
+              className="mob-press"
+              style={{
+                flexShrink: 0,
+                padding: "9px 20px",
+                borderRadius: 999,
+                fontSize: 12.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                border: `1px solid ${active ? E.teal : "#dceae8"}`,
+                background: active ? E.teal : "#fff",
+                color: active ? "#fff" : E.muted,
+                WebkitTapHighlightColor: "transparent",
+                transition: "background-color 160ms ease, color 160ms ease",
+              }}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+
+      <MobileBody padding="2px 18px 24px">
+        {error && <MobileNotice tone="error" text={error} />}
+        {notice && <MobileNotice tone="success" text={notice} onDismiss={onDismissNotice} />}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+          {rosterPages.items.map((employee, index) => (
+            <RosterCard
+              key={employee.uid}
+              employee={employee}
+              index={index}
+              onOpen={() => onSelect(employee)}
+            />
+          ))}
+
+          {rows.length === 0 && (
+            <div style={{ padding: "46px 12px", textAlign: "center", fontSize: 13.5, fontWeight: 500, color: E.label }}>
+              No employees match this search.
+            </div>
+          )}
+        </div>
+
+        <Pager pagination={rosterPages} variant="mobile" noun="team members" />
+      </MobileBody>
+
+      {selected && (
+        <ProfileOverlay
+          key={selected.uid}
+          employee={selected}
+          leads={leads}
+          deals={deals}
+          onClose={() => onSelect(null)}
+          onEdit={() => {
+            onSelect(null);
+            setFormFor(selected);
+          }}
+        />
+      )}
+
+      {formFor !== undefined && (
+        <MobileEmployeeForm
+          employee={formFor}
+          getIdToken={getIdToken}
+          onClose={() => setFormFor(undefined)}
+          onSaved={(message) => {
+            setFormFor(undefined);
+            onSaved(message);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function RosterCard({
+  employee,
+  index,
+  onOpen,
+}: {
+  employee: EmployeeMetrics;
+  index: number;
+  onOpen: () => void;
+}) {
+  const active = employee.status === "ACTIVE";
+  const winRate = employee.assigned > 0 ? Math.round((employee.closedWon / employee.assigned) * 100) : 0;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="mob-rise mob-press"
+      // Staggered for the first eight only — beyond that the delay outlasts
+      // the scroll and the list reads as laggy.
+      style={{
+        animationDelay: index < 8 ? `${index * 34}ms` : "0ms",
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        background: "#fff",
+        border: `1px solid ${E.border}`,
+        borderRadius: 20,
+        padding: "15px 16px",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        WebkitTapHighlightColor: "transparent",
+      }}
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "48px minmax(0,1fr) auto", alignItems: "center", gap: 13 }}>
+        <div
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: "50%",
+            background: E.field,
+            border: `2px solid ${active ? E.teal : E.hair}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 14,
+            fontWeight: 800,
+            color: E.tealInk,
+            flexShrink: 0,
+          }}
+          aria-hidden
+        >
+          {initialsOf(employee.name)}
+        </div>
+
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 15.5,
+              fontWeight: 700,
+              letterSpacing: "-0.35px",
+              color: E.inkMobile,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {employee.name}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, minWidth: 0 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, color: active ? E.teal : "#93a5a3" }}>
+              {active ? "Active" : "Inactive"}
+            </span>
+            <span style={{ fontSize: 12, color: E.hair, flexShrink: 0 }}>·</span>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: E.label,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {employee.jobTitle}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7, flexShrink: 0 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: E.faint, whiteSpace: "nowrap" }}>
+            Priority {employee.priority}
+          </span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={E.teal} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="m6 6 6 6-6 6M14 6l6 6-6 6" />
+          </svg>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: 10,
+          marginTop: 14,
+          paddingTop: 13,
+          borderTop: "1px solid #f0f6f5",
+        }}
+      >
+        {[
+          { label: "Handled", value: String(employee.assigned), color: E.inkMobile },
+          { label: "Win rate", value: `${winRate}%`, color: E.inkMobile },
+          { label: "Profit", value: compactRupees(employee.profit), color: employee.profit >= 0 ? E.tealInk : E.red },
+        ].map((metric) => (
+          <div key={metric.label}>
+            <div
+              style={{
+                fontSize: 9.5,
+                fontWeight: 700,
+                letterSpacing: "0.9px",
+                textTransform: "uppercase",
+                color: E.faint,
+              }}
+            >
+              {metric.label}
+            </div>
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 800,
+                letterSpacing: "-0.4px",
+                marginTop: 3,
+                color: metric.color,
+                fontVariantNumeric: "tabular-nums",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {metric.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function lastTouchAt(lead: Lead) {
+  return lead.lastFollowUpAt ?? lead.lastActivityAt ?? lead.acceptedAt ?? lead.assignedAt ?? lead.createdAt;
+}
+
+function toMillis(value: { toMillis?: () => number; toDate?: () => Date } | undefined): number {
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  const date = value.toDate?.();
+  return date ? date.getTime() : 0;
+}
+
+function ProfileOverlay({
+  employee,
+  leads,
+  deals,
+  onClose,
+  onEdit,
+}: {
+  employee: EmployeeMetrics;
+  leads: Lead[];
+  deals: DealRecord[];
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  const [tab, setTab] = useState<ProfileTab>("leads");
+  const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
+
+  const ownLeads = useMemo(
+    () =>
+      leads
+        .filter((l) => l.assignedUserId === employee.uid)
+        .sort((a, b) => toMillis(lastTouchAt(b)) - toMillis(lastTouchAt(a))),
+    [leads, employee.uid]
+  );
+  const ownDeals = useMemo(
+    () =>
+      deals
+        .filter((d) => d.userId === employee.uid)
+        .sort((a, b) => toMillis(b.dealDate ?? b.enteredAt) - toMillis(a.dealDate ?? a.enteredAt)),
+    [deals, employee.uid]
+  );
+  const analytics = useMemo(() => buildDirectoryAnalytics(employee, leads, deals), [employee, leads, deals]);
+  const activity = useMemo(() => buildActivity(employee, leads, deals), [employee, leads, deals]);
+
+  // The filters cut the tab bodies only — the hero figures keep describing the
+  // employee's whole record, exactly as on the desktop dossier.
+  const shownLeads = useMemo(() => applyLeadFilters(ownLeads, filters), [ownLeads, filters]);
+  const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters.period), [ownDeals, filters.period]);
+  const shownActivity = useMemo(
+    () => applyActivityPeriod(activity, filters.period),
+    [activity, filters.period]
+  );
+
+  const leadPages = usePagination(shownLeads, PROFILE_PAGE_SIZE);
+  const dealPages = usePagination(shownDeals, PROFILE_PAGE_SIZE);
+  const activityPages = usePagination(shownActivity, PROFILE_PAGE_SIZE);
+
+  // The hardware back gesture should leave the profile, not the directory.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="mob-slide-in"
+      role="dialog"
+      aria-label={`Employee: ${employee.name}`}
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 30,
+        background: E.page,
+        display: "grid",
+        gridTemplateRows: "auto auto 1fr",
+        minHeight: 0,
+      }}
+    >
+      <MobileHeader style={{ background: E.gradientMobile, position: "relative", overflow: "hidden" }}>
+        <HeroRings set="phone" />
+
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <HeaderCircle onClick={onClose} label="Back to the directory" size={36}>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.1" strokeLinecap="round" aria-hidden>
+              <path d="m14 6-6 6 6 6" />
+            </svg>
+          </HeaderCircle>
+          <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", opacity: 0.82 }}>
+            Employee
+          </span>
+          <HeaderCircle onClick={onEdit} label="Edit this employee" size={36}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
+              <path d="M4 20h4l11-11-4-4L4 16v4Z" />
+            </svg>
+          </HeaderCircle>
+        </div>
+
+        <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 14, marginTop: 16 }}>
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 18,
+              background: "rgba(255,255,255,0.2)",
+              border: "1.5px solid rgba(255,255,255,0.5)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 17,
+              fontWeight: 800,
+              flexShrink: 0,
+            }}
+            aria-hidden
+          >
+            {initialsOf(employee.name)}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 21,
+                fontWeight: 800,
+                letterSpacing: "-0.6px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {employee.name}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
+              <span
+                style={{
+                  padding: "3px 11px",
+                  borderRadius: 999,
+                  background: "rgba(255,255,255,0.24)",
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  letterSpacing: "0.7px",
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {employee.status === "ACTIVE" ? "Active" : "Inactive"}
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, whiteSpace: "nowrap" }}>
+                Priority {employee.priority}
+              </span>
+              {employee.autoAssign === false && (
+                <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, whiteSpace: "nowrap" }}>
+                  · Manual only
+                </span>
+              )}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                opacity: 0.8,
+                marginTop: 4,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {employee.email}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ position: "relative", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 9, marginTop: 16 }}>
+          {[
+            { label: "HANDLED", value: String(employee.assigned) },
+            { label: "WON / LOST", value: `${employee.closedWon} / ${employee.lost}` },
+            { label: "PROFIT", value: compactRupees(employee.profit) },
+          ].map((stat) => (
+            <div
+              key={stat.label}
+              style={{
+                padding: "11px 12px",
+                borderRadius: 16,
+                background: "rgba(255,255,255,0.15)",
+                border: "1px solid rgba(255,255,255,0.22)",
+                minWidth: 0,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 9.5,
+                  fontWeight: 700,
+                  letterSpacing: "0.7px",
+                  opacity: 0.8,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {stat.label}
+              </div>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 800,
+                  letterSpacing: "-0.5px",
+                  marginTop: 3,
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {stat.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </MobileHeader>
+
+      <div
+        role="tablist"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          margin: "14px 18px 0",
+          padding: 4,
+          borderRadius: 999,
+          background: "#dceae8",
+        }}
+      >
+        {PROFILE_TABS.map((option) => {
+          const active = option.key === tab;
+          return (
+            <button
+              key={option.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(option.key)}
+              style={{
+                flex: 1,
+                textAlign: "center",
+                padding: "9px 4px",
+                borderRadius: 999,
+                border: "none",
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: "-0.1px",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                fontFamily: "inherit",
+                color: active ? E.tealInk : "#6c7d7b",
+                background: active ? "#fff" : "transparent",
+                WebkitTapHighlightColor: "transparent",
+                transition: "background-color 160ms ease, color 160ms ease",
+              }}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <MobileBody padding="14px 18px 24px">
+        <div key={tab} className="mob-fade">
+          {tab === "leads" && (
+            <>
+              <DossierFilterBar
+                filters={filters}
+                onChange={setFilters}
+                variant="mobile"
+                countLine={`${shownLeads.length} / ${ownLeads.length}`}
+              />
+              <MobileAssignedLeads leads={leadPages.items} empty={ownLeads.length === 0} />
+              <Pager pagination={leadPages} variant="mobile" noun="leads" />
+            </>
+          )}
+          {tab === "deals" && (
+            <>
+              <DossierFilterBar
+                filters={filters}
+                onChange={setFilters}
+                variant="mobile"
+                showCut={false}
+                countLine={`${shownDeals.length} / ${ownDeals.length}`}
+              />
+              <MobileDeals deals={dealPages.items} empty={ownDeals.length === 0} />
+              <Pager pagination={dealPages} variant="mobile" noun="deals" />
+            </>
+          )}
+          {tab === "analytics" && (
+            <AnalyticsPanels analytics={analytics} handled={employee.assigned} variant="mobile" />
+          )}
+          {tab === "activity" && (
+            <>
+              <DossierFilterBar
+                filters={filters}
+                onChange={setFilters}
+                variant="mobile"
+                showCut={false}
+                countLine={`${shownActivity.length} / ${activity.length}`}
+              />
+              <ActivityFeed
+                entries={activityPages.items}
+                variant="mobile"
+                formatWhen={(at) => (at ? formatBusinessDateTime(at) : "—")}
+              />
+              <Pager pagination={activityPages} variant="mobile" noun="entries" />
+            </>
+          )}
+        </div>
+      </MobileBody>
+    </div>
+  );
+}
+
+function MobileAssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }) {
+  if (leads.length === 0) {
+    return (
+      <EmptyPanel>
+        {empty
+          ? "No leads currently assigned to this employee."
+          : "No leads match this filter — widen the period or the cut."}
+      </EmptyPanel>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {leads.map((lead) => {
+        const accent = leadAccent(lead.status);
+        const source = lead.source === "MANUAL_ENTRY" ? "Manual Intake" : lead.source;
+        return (
+          <div
+            key={lead.id}
+            style={{ background: "#fff", border: `1px solid ${E.border}`, borderRadius: 18, padding: "14px 15px" }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) auto", alignItems: "center", gap: 12 }}>
+              <div
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: "50%",
+                  background: E.field,
+                  border: `2px solid ${accent}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  color: "#4a5c5a",
+                  flexShrink: 0,
+                }}
+                aria-hidden
+              >
+                {initialsOf(lead.name)}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 14.5,
+                    fontWeight: 700,
+                    letterSpacing: "-0.3px",
+                    color: E.inkMobile,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {lead.name}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, minWidth: 0 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0, color: accent }}>
+                    {LEAD_STATUS_LABELS[lead.status as LeadStatus] ?? lead.status}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: E.hair, flexShrink: 0 }}>·</span>
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      fontWeight: 500,
+                      color: E.label,
+                      fontVariantNumeric: "tabular-nums",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {lead.phone || lead.email || "No contact"}
+                  </span>
+                </div>
+              </div>
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: E.faint, whiteSpace: "nowrap", flexShrink: 0 }}>
+                {formatBusinessDate(lastTouchAt(lead))}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: E.faint,
+                marginTop: 11,
+                paddingTop: 10,
+                borderTop: "1px solid #f0f6f5",
+              }}
+            >
+              {lead.campaignName ? `${source} · ${lead.campaignName}` : source}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileDeals({ deals, empty }: { deals: DealRecord[]; empty: boolean }) {
+  if (deals.length === 0) {
+    return (
+      <EmptyPanel>
+        {empty ? "No closed deals recorded for this employee yet." : "No deals settled in this period."}
+      </EmptyPanel>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {deals.map((deal) => (
+        <div
+          key={deal.id}
+          style={{ background: "#fff", border: `1px solid ${E.border}`, borderRadius: 18, padding: "14px 15px" }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr)", alignItems: "center", gap: 12 }}>
+            <div
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 14,
+                background: E.tealTint,
+                color: E.tealInk,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+              aria-hidden
+            >
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 14.5,
+                  fontWeight: 700,
+                  letterSpacing: "-0.3px",
+                  color: E.inkMobile,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {deal.customer?.name || "Customer"}
+              </div>
+              <div
+                style={{
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                  color: E.label,
+                  marginTop: 3,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                Settled {formatBusinessDate(deal.dealDate ?? deal.enteredAt)}
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 10,
+              marginTop: 12,
+              paddingTop: 11,
+              borderTop: "1px solid #f0f6f5",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.9px", textTransform: "uppercase", color: E.faint }}>
+                Received
+              </div>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: E.inkMobile,
+                  marginTop: 3,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {formatMoney(deal.amountReceived)}
+              </div>
+            </div>
+            <div style={{ padding: "8px 12px", borderRadius: 14, background: E.tint }}>
+              <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.9px", textTransform: "uppercase", color: "#7fb0ab" }}>
+                Profit
+              </div>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 800,
+                  color: E.tealInk,
+                  marginTop: 2,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {formatMoney(deal.profit)}
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Add / edit sheet                                                            */
+/* -------------------------------------------------------------------------- */
+
+const SHEET_FIELD: React.CSSProperties = {
+  border: `1px solid ${E.border}`,
+  background: E.field,
+  borderRadius: 14,
+  padding: "13px 14px",
+  fontSize: 14,
+  fontWeight: 600,
+  color: E.inkMobile,
+  outline: "none",
+  width: "100%",
+  fontFamily: "inherit",
+};
+
+const SHEET_LABEL: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 11.5,
+  fontWeight: 600,
+  color: E.muted,
+  minWidth: 0,
+};
+
+function generatePassword(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint32Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (n) => alphabet[n % alphabet.length]).join("");
+}
+
+function dateInputValue(value: { toDate?: () => Date } | null | undefined): string {
+  const date = typeof value?.toDate === "function" ? value.toDate() : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Karachi",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+/**
+ * The design's sheet carries six fields. This carries every field the desktop
+ * form does — a password (Firebase Auth cannot create a user without one), the
+ * lane priority, the joining date, the lead-assignment mode, the KPI targets
+ * and notes — because an admin on a phone must be able to create a usable
+ * account, not a half-configured one.
+ */
+function MobileEmployeeForm({
+  employee,
+  getIdToken,
+  onClose,
+  onSaved,
+}: {
+  employee: EmployeeMetrics | null;
+  getIdToken: () => Promise<string>;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const editing = Boolean(employee);
+
+  const [name, setName] = useState(employee?.name ?? "");
+  const [email, setEmail] = useState(employee?.email ?? "");
+  const [phone, setPhone] = useState(employee?.phone ?? "");
+  const [joinedAt, setJoinedAt] = useState(dateInputValue(employee?.joinedAt ?? employee?.createdAt));
+  const [password, setPassword] = useState("");
+  const [jobTitle, setJobTitle] = useState<string>(employee?.jobTitle ?? DEFAULT_JOB_TITLE);
+  const [status, setStatus] = useState<"ACTIVE" | "DISABLED">(employee?.status ?? "ACTIVE");
+  const [priority, setPriority] = useState(employee?.priority ?? MAX_PRIORITY);
+  const [autoAssign, setAutoAssign] = useState(employee?.autoAssign !== false);
+  const [notes, setNotes] = useState(employee?.notes ?? "");
+  const [targets, setTargets] = useState<KpiTargets>({ ...DEFAULT_KPI_TARGETS, ...employee?.targets });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError(null);
+    if (name.trim().length < 2) return setError("Enter the employee's full name.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError("Enter a valid email address.");
+    if (!editing && password.length < 8) return setError("The password must be at least 8 characters.");
+    if (editing && password && password.length < 8)
+      return setError("The new password must be at least 8 characters, or leave it blank.");
+
+    setBusy(true);
+    try {
+      const token = await getIdToken();
+
+      if (!editing) {
+        const res = await createEmployee(token, {
+          name: name.trim(),
+          email: email.trim(),
+          password,
+          priority,
+          jobTitle,
+          status,
+          targets,
+          phone: phone.trim() || null,
+          notes: notes.trim() || null,
+          joinedAt: joinedAt || null,
+          autoAssign,
+        });
+        if (res.ok) onSaved(`${name.trim()} added to the directory.`);
+        else setError(res.error || "Could not create the account.");
+        return;
+      }
+
+      const current = employee!;
+      const res = await updateEmployee(token, current.uid, {
+        name: name.trim() !== current.name ? name.trim() : undefined,
+        email: email.trim() !== current.email ? email.trim() : undefined,
+        password: password || undefined,
+        priority: priority !== current.priority ? priority : undefined,
+        jobTitle: jobTitle !== current.jobTitle ? jobTitle : undefined,
+        targets,
+        phone: phone.trim() || null,
+        notes: notes.trim() || null,
+        joinedAt: joinedAt || null,
+        autoAssign,
+      });
+      if (!res.ok) {
+        setError(res.error || "Could not update the employee.");
+        return;
+      }
+
+      if (status !== current.status) {
+        const change =
+          status === "DISABLED"
+            ? await disableEmployee(token, current.uid)
+            : await enableEmployee(token, current.uid);
+        if (!change.ok) {
+          setError(change.error || "Saved, but the status could not be changed.");
+          return;
+        }
+      }
+
+      onSaved(`${name.trim()} updated.`);
+    } catch {
+      setError("A network error occurred. Nothing was saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Sheet
+      title={editing ? "Edit Employee" : "New Employee"}
+      subtitle={editing ? "Changes take effect on save." : "Add a team member to the directory."}
+      onClose={onClose}
+    >
+      {error && <MobileNotice tone="error" text={error} />}
+
+      <label style={SHEET_LABEL}>
+        <span>Full Name</span>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Ali Raza"
+          autoComplete="name"
+          disabled={busy}
+          style={SHEET_FIELD}
+        />
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Email Address</span>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="e.g. ali@example.com"
+          autoComplete="off"
+          disabled={busy}
+          style={SHEET_FIELD}
+        />
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Phone Number</span>
+        <input
+          value={phone ?? ""}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="e.g. 0300 1234567"
+          inputMode="tel"
+          autoComplete="tel"
+          disabled={busy}
+          style={SHEET_FIELD}
+        />
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Date Joined</span>
+        <input
+          type="date"
+          value={joinedAt}
+          onChange={(e) => setJoinedAt(e.target.value)}
+          disabled={busy}
+          style={SHEET_FIELD}
+        />
+      </label>
+
+      <div style={{ ...SHEET_LABEL, gap: 6 }}>
+        <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span>{editing ? "New Password" : "Temporary Password"}</span>
+          <button
+            type="button"
+            onClick={() => setPassword(generatePassword())}
+            disabled={busy}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: E.tealInk,
+              fontSize: 11.5,
+              fontWeight: 700,
+              cursor: "pointer",
+              padding: 0,
+              fontFamily: "inherit",
+            }}
+          >
+            Generate
+          </button>
+        </span>
+        <input
+          // Shown in the clear on the phone: the admin is reading it out to the
+          // new employee, and a dotted field they cannot check is worse here
+          // than on a desktop with a reveal button beside it.
+          type="text"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder={editing ? "Leave blank to keep current" : "At least 8 characters"}
+          autoComplete="new-password"
+          disabled={busy}
+          style={SHEET_FIELD}
+        />
+      </div>
+
+      <label style={SHEET_LABEL}>
+        <span>Role</span>
+        <select
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+          disabled={busy}
+          style={SHEET_FIELD}
+        >
+          {JOB_TITLES.map((title) => (
+            <option key={title} value={title}>
+              {title}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Monthly Target (PKR)</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          value={targets.revenue}
+          onChange={(e) => setTargets((prev) => ({ ...prev, revenue: Math.max(0, Number(e.target.value) || 0) }))}
+          disabled={busy}
+          style={{ ...SHEET_FIELD, fontVariantNumeric: "tabular-nums" }}
+        />
+      </label>
+
+      <div style={{ ...SHEET_LABEL, gap: 7 }}>
+        <span>Status</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }} role="radiogroup" aria-label="Status">
+          {(["ACTIVE", "DISABLED"] as const).map((value) => {
+            const selected = status === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setStatus(value)}
+                disabled={busy}
+                className="mob-press"
+                style={{
+                  padding: "10px 20px",
+                  borderRadius: 999,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  border: `1px solid ${selected ? E.teal : E.border}`,
+                  background: selected ? E.teal : E.field,
+                  color: selected ? "#fff" : E.muted,
+                  WebkitTapHighlightColor: "transparent",
+                }}
+              >
+                {value === "ACTIVE" ? "Active" : "Inactive"}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <label style={SHEET_LABEL}>
+        <span>Lead Assignment</span>
+        <select
+          value={autoAssign ? "auto" : "manual"}
+          onChange={(e) => setAutoAssign(e.target.value === "auto")}
+          disabled={busy}
+          style={SHEET_FIELD}
+        >
+          <option value="auto">Include in round-robin</option>
+          <option value="manual">Manual assignment only</option>
+        </select>
+      </label>
+
+      <label style={SHEET_LABEL}>
+        <span>Lane Priority (1 = first in line)</span>
+        <select
+          value={priority}
+          onChange={(e) => setPriority(Number(e.target.value))}
+          disabled={busy}
+          style={SHEET_FIELD}
+        >
+          {Array.from({ length: MAX_PRIORITY }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              Priority {n}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div
+        style={{
+          border: `1px solid ${E.border}`,
+          background: E.field,
+          borderRadius: 16,
+          padding: "13px 14px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 11,
+        }}
+      >
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.2px", textTransform: "uppercase", color: E.tealInk }}>
+          Monthly KPI Targets
+        </span>
+        {KPI_METRICS.map((metric) => (
+          <label key={metric} style={{ ...SHEET_LABEL, flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{KPI_METRIC_LABELS[metric]}</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={100000}
+              value={targets[metric]}
+              onChange={(e) => setTargets((prev) => ({ ...prev, [metric]: Math.max(1, Number(e.target.value) || 1) }))}
+              disabled={busy}
+              style={{ ...SHEET_FIELD, width: 110, background: "#fff", fontVariantNumeric: "tabular-nums" }}
+            />
+          </label>
+        ))}
+      </div>
+
+      <label style={SHEET_LABEL}>
+        <span>Notes</span>
+        <textarea
+          rows={3}
+          value={notes ?? ""}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Territory, reporting line, anything worth recording"
+          disabled={busy}
+          style={{ ...SHEET_FIELD, resize: "vertical" }}
+        />
+      </label>
+
+      <SheetAction
+        label={busy ? "Saving…" : editing ? "Save Changes" : "Add to Directory"}
+        disabled={busy}
+        onPress={submit}
+      />
+    </Sheet>
+  );
+}
+
+function MobileNotice({
+  tone,
+  text,
+  onDismiss,
+}: {
+  tone: "error" | "success";
+  text: string;
+  onDismiss?: () => void;
+}) {
+  const error = tone === "error";
+  return (
+    <div
+      role={error ? "alert" : "status"}
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 10,
+        border: `1px solid ${error ? "#f0c4bd" : "#bfe0dc"}`,
+        background: error ? E.redBg : E.tealTint,
+        color: error ? "#a33a29" : E.deep,
+        borderRadius: 14,
+        padding: "11px 13px",
+        fontSize: 12.5,
+        fontWeight: 600,
+        marginBottom: 11,
+      }}
+    >
+      <span>{text}</span>
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0 }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}

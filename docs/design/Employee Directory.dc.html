@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; font-family:'Manrope', system-ui, sans-serif; background:#eef4f3; -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
+  * { box-sizing:border-box; }
+  input, select, textarea { font-family:inherit; }
+  input::placeholder, textarea::placeholder { color:#9aacaa; }
+  a { color:#2f7d78; text-decoration:none; }
+  a:hover { color:#1f5c58; }
+  ::-webkit-scrollbar { width:7px; height:7px; }
+  ::-webkit-scrollbar-thumb { background:#c3d9d6; border-radius:4px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+</style>
+</helmet>
+<div style="display:flex; flex-direction:column; height:100vh; min-height:840px; background:#eef4f3; color:#2b3a39;">
+
+  <div style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:24px; padding:13px 28px 13px 96px; background:#fff; border-bottom:1px solid #e2ecea;">
+    <div style="display:flex; align-items:center; gap:9px; max-width:400px; background:#f4f8f7; border:1px solid #e2ecea; border-radius:10px; padding:10px 14px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8fa2a0" stroke-width="2"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg>
+      <input placeholder="Search leads or customers..." style="flex:1; min-width:0; border:none; outline:none; background:transparent; font-size:13.5px; font-weight:500; color:#2b3a39;">
+    </div>
+    <div style="display:flex; align-items:center; gap:18px;">
+      <div style="position:relative; width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer;" style-hover="background:#f4f8f7;">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#5b6d6b" stroke-width="1.7" stroke-linecap="round"><path d="M18 15V10a6 6 0 1 0-12 0v5l-1.5 2.5h15L18 15ZM10 20a2 2 0 0 0 4 0"></path></svg>
+        <div style="position:absolute; top:8px; right:9px; width:7px; height:7px; border-radius:50%; background:#e05a4a; border:1.5px solid #fff;"></div>
+      </div>
+      <div style="width:1px; height:24px; background:#e2ecea;"></div>
+      <div style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+        <div style="width:34px; height:34px; border-radius:50%; background:#3f8f8a; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700;">M</div>
+        <span style="font-size:14px; font-weight:600; color:#22302f;">Mahziyarmktcrm</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8fa2a0" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"></path></svg>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex:1; display:grid; grid-template-columns:96px 1fr; min-height:0;">
+
+    <div style="background:#fff; border-right:1px solid #e2ecea; display:flex; flex-direction:column; align-items:center; padding:18px 0 24px; gap:6px; overflow-y:auto;">
+      <div style="width:42px; height:42px; border-radius:13px; background:#3f8f8a; display:flex; align-items:center; justify-content:center; color:#fff; font-size:17px; font-weight:800; margin-bottom:14px;">M</div>
+      <sc-for list="{{ nav }}" as="item" hint-placeholder-count="8">
+        <div onClick="{{ item.select }}" style="{{ item.style }}" style-hover="background:#f2f8f7; color:#2f7d78;">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{{ item.d }}"></path></svg>
+          <span style="font-size:10.5px; font-weight:600; text-align:center; line-height:1.2;">{{ item.label }}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="min-height:0; overflow-y:auto; padding:24px 28px 32px;">
+
+      <div style="position:relative; overflow:hidden; border-radius:22px; background:linear-gradient(115deg,#1f5c58 0%,#3f8f8a 62%,#4fa39c 100%); color:#fff; padding:24px 28px; margin-bottom:16px;">
+        <svg viewBox="0 0 400 200" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%; opacity:0.18;">
+          <circle cx="352" cy="26" r="86" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+          <circle cx="352" cy="26" r="130" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+          <circle cx="300" cy="176" r="60" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+        </svg>
+        <div style="position:relative; display:flex; align-items:flex-end; justify-content:space-between; gap:24px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:16px; min-width:0;">
+            <div style="width:52px; height:52px; border-radius:16px; background:rgba(255,255,255,0.18); border:1.5px solid rgba(255,255,255,0.42); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 4.5a3.2 3.2 0 0 1 0 7"></path></svg>
+            </div>
+            <div style="min-width:0;">
+              <div style="font-size:10.5px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; opacity:0.72;">Directory</div>
+              <div style="font-size:29px; font-weight:800; letter-spacing:-1px; margin-top:1px;">Employee Directory</div>
+              <div style="font-size:13px; font-weight:500; opacity:0.82; margin-top:4px;">{{ heroLine }}</div>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:8px; padding:11px 18px; border-radius:10px; background:rgba(255,255,255,0.14); border:1px solid rgba(255,255,255,0.45); color:#fff; font-size:13.5px; font-weight:600; cursor:pointer;" style-hover="background:rgba(255,255,255,0.24);">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"></path></svg>
+              <span style="white-space:nowrap;">Recalculate Priority</span>
+            </div>
+            <div onClick="{{ openAdd }}" style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-radius:10px; background:#fff; color:#1f5c58; font-size:13.5px; font-weight:700; cursor:pointer;" style-hover="background:#e8f5f3;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+              <span style="white-space:nowrap;">New Employee</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(252px, 1fr)); gap:14px; margin-bottom:20px;">
+        <sc-for list="{{ stats }}" as="s" hint-placeholder-count="4">
+          <div style="position:relative; overflow:hidden; background:#fff; border:1px solid #e2ecea; border-radius:16px; padding:16px 18px;" style-hover="border-color:#b6d9d5;">
+            <div style="{{ s.stripeStyle }}"></div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div style="display:flex; align-items:center; gap:9px; min-width:0;">
+                <div style="{{ s.iconStyle }}">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ s.d }}"></path></svg>
+                </div>
+                <span style="font-size:10.5px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#8fa2a0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;">{{ s.label }}</span>
+              </div>
+              <span style="{{ s.deltaStyle }}">{{ s.delta }}</span>
+            </div>
+            <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-top:11px;">
+              <div style="min-width:0;">
+                <div style="font-size:28px; font-weight:800; letter-spacing:-1px; color:#1b2827; font-variant-numeric:tabular-nums; line-height:1; white-space:nowrap;">{{ s.value }}</div>
+                <div style="font-size:11.5px; font-weight:500; color:#9aacaa; margin-top:6px;">{{ s.note }}</div>
+              </div>
+              <div style="display:flex; align-items:flex-end; gap:3px; height:34px; flex-shrink:0;">
+                <sc-for list="{{ s.spark }}" as="b" hint-placeholder-count="7">
+                  <div style="{{ b.style }}"></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="background:#fff; border:1px solid #e2ecea; border-radius:18px; overflow:hidden;">
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding:16px 20px; border-bottom:1px solid #eef4f3;">
+          <div style="display:flex; align-items:center; gap:9px; width:300px; background:#f4f8f7; border:1px solid #e2ecea; border-radius:10px; padding:10px 14px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8fa2a0" stroke-width="2"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg>
+            <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Search employees..." style="flex:1; min-width:0; border:none; outline:none; background:transparent; font-size:13.5px; font-weight:500; color:#2b3a39;">
+          </div>
+          <div style="display:flex; align-items:center; gap:4px; padding:4px; border-radius:11px; background:#f0f6f5;">
+            <sc-for list="{{ filters }}" as="f" hint-placeholder-count="3">
+              <div onClick="{{ f.select }}" style="{{ f.style }}">{{ f.label }}</div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:minmax(240px,2.4fr) 1fr 1fr 1fr 1.3fr; gap:16px; padding:13px 24px; background:#f7fbfa; border-bottom:1px solid #eef4f3; font-size:10.5px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#8fa2a0;">
+          <div>Employee</div>
+          <div style="text-align:center;">Status</div>
+          <div style="text-align:center;">Handled</div>
+          <div style="text-align:center;">Won / Lost</div>
+          <div style="text-align:right;">Profit Generated</div>
+        </div>
+
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="2">
+          <div onClick="{{ r.open }}" style="display:grid; grid-template-columns:minmax(240px,2.4fr) 1fr 1fr 1fr 1.3fr; gap:16px; align-items:center; padding:15px 24px; border-bottom:1px solid #f2f7f6; cursor:pointer;" style-hover="background:#f7fbfa;">
+            <div style="display:flex; align-items:center; gap:14px; min-width:0;">
+              <div style="width:42px; height:42px; border-radius:50%; background:#f2f8f7; border:1.5px solid #b6d9d5; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#2f7d78; flex-shrink:0;">{{ r.initials }}</div>
+              <div style="min-width:0;">
+                <div style="font-size:15.5px; font-weight:700; letter-spacing:-0.35px; color:#1b2827; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ r.name }}</div>
+                <div style="font-size:12.5px; font-weight:500; color:#8fa2a0; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ r.email }}</div>
+              </div>
+            </div>
+            <div style="display:flex; justify-content:center;">
+              <span style="{{ r.tagStyle }}">{{ r.status }}</span>
+            </div>
+            <div style="text-align:center; font-size:18px; font-weight:700; letter-spacing:-0.4px; color:#1b2827; font-variant-numeric:tabular-nums;">{{ r.handled }}</div>
+            <div style="text-align:center; font-size:16px; font-weight:700; letter-spacing:-0.3px; font-variant-numeric:tabular-nums;">
+              <span style="color:#2f7d78;">{{ r.won }}</span><span style="color:#cddfdd; font-weight:500;"> / </span><span style="color:#c0574a;">{{ r.lost }}</span>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:flex-end; gap:11px;">
+              <span style="font-size:15.5px; font-weight:700; letter-spacing:-0.3px; color:#2f7d78; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ r.profit }}</span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3f8f8a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 6 6-6 6M14 6l6 6-6 6"></path></svg>
+            </div>
+          </div>
+        </sc-for>
+
+        <sc-if value="{{ noRows }}">
+          <div style="padding:52px 24px; text-align:center; font-size:13.5px; font-weight:500; color:#8fa2a0;">No employees match this search.</div>
+        </sc-if>
+
+        <div style="padding:14px 24px; font-size:12.5px; font-weight:500; color:#9aacaa;">{{ countLine }}</div>
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ profileOpen }}">
+    <div style="position:fixed; inset:0; z-index:45; background:rgba(24,52,50,0.4); display:flex; align-items:center; justify-content:center; padding:34px 24px;">
+      <div style="width:100%; max-width:1000px; max-height:100%; background:#fff; border-radius:20px; box-shadow:0 30px 80px rgba(18,54,52,0.3); display:grid; grid-template-rows:auto auto auto 1fr; overflow:hidden;">
+
+        <div style="position:relative; overflow:hidden; display:flex; align-items:center; gap:16px; padding:22px 26px; background:linear-gradient(115deg,#1f5c58 0%,#3f8f8a 62%,#4fa39c 100%); color:#fff;">
+          <svg viewBox="0 0 400 140" preserveAspectRatio="none" style="position:absolute; inset:0; width:100%; height:100%; opacity:0.16;">
+            <circle cx="356" cy="18" r="72" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+            <circle cx="356" cy="18" r="112" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+            <circle cx="292" cy="132" r="52" fill="none" stroke="#fff" stroke-width="1.2"></circle>
+          </svg>
+          <div style="position:relative; width:54px; height:54px; border-radius:17px; background:rgba(255,255,255,0.2); border:1.5px solid rgba(255,255,255,0.5); display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:800; flex-shrink:0;">{{ prof.initials }}</div>
+          <div style="position:relative; min-width:0; flex:1;">
+            <div style="display:flex; align-items:center; gap:11px; flex-wrap:wrap;">
+              <span style="font-size:23px; font-weight:800; letter-spacing:-0.7px;">{{ prof.name }}</span>
+              <span style="padding:4px 12px; border-radius:999px; background:rgba(255,255,255,0.22); font-size:10.5px; font-weight:700; letter-spacing:0.8px; text-transform:uppercase;">{{ prof.status }}</span>
+              <span style="padding:4px 12px; border-radius:999px; border:1px solid rgba(255,255,255,0.5); font-size:11.5px; font-weight:600; white-space:nowrap;">Priority {{ prof.priority }}</span>
+            </div>
+            <div style="font-size:12.5px; font-weight:500; opacity:0.85; margin-top:4px;">{{ prof.email }} &nbsp;·&nbsp; {{ prof.role }} &nbsp;·&nbsp; Joined {{ prof.joined }}</div>
+          </div>
+          <div style="position:relative; display:flex; align-items:center; gap:10px; flex-shrink:0;">
+            <div style="display:flex; align-items:center; gap:8px; padding:10px 18px; border-radius:10px; background:#fff; color:#2f7d78; font-size:13px; font-weight:700; cursor:pointer;" style-hover="background:#eafaf8;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 20h4l11-11-4-4L4 16v4Z"></path></svg>
+              <span style="white-space:nowrap;">Edit Details</span>
+            </div>
+            <div onClick="{{ closeProfile }}" style="width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer;" style-hover="background:rgba(255,255,255,0.18);">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:1px; background:#eef4f3; border-bottom:1px solid #eef4f3;">
+          <sc-for list="{{ profStats }}" as="s" hint-placeholder-count="6">
+            <div style="{{ s.cellStyle }}">
+              <div style="font-size:9.5px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:#8fa2a0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ s.label }}</div>
+              <div style="font-size:21px; font-weight:800; margin-top:4px; letter-spacing:-0.6px; font-variant-numeric:tabular-nums; white-space:nowrap; color:{{ s.color }};">{{ s.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:6px; padding:0 26px; background:#fff; border-bottom:1px solid #eef4f3;">
+          <sc-for list="{{ profTabs }}" as="t" hint-placeholder-count="3">
+            <div onClick="{{ t.select }}" style="{{ t.style }}">
+              <span style="white-space:nowrap;">{{ t.label }}</span>
+              <span style="{{ t.countStyle }}">{{ t.count }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="min-height:0; overflow-y:auto; padding:20px 26px 26px; background:#f7fbfa;">
+
+          <sc-if value="{{ profTabLeads }}">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <sc-for list="{{ assigned }}" as="l" hint-placeholder-count="5">
+                <div style="display:grid; grid-template-columns:44px minmax(0,1.4fr) minmax(0,1fr) auto; align-items:center; gap:16px; background:#fff; border:1px solid #e2ecea; border-radius:14px; padding:15px 18px; cursor:pointer;" style-hover="border-color:#b6d9d5;">
+                  <div style="{{ l.avatarStyle }}">{{ l.initials }}</div>
+                  <div style="min-width:0;">
+                    <div style="font-size:15.5px; font-weight:700; letter-spacing:-0.35px; color:#1b2827; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.name }}</div>
+                    <div style="display:flex; align-items:center; gap:7px; margin-top:3px; min-width:0;">
+                      <span style="{{ l.statusStyle }}">{{ l.status }}</span>
+                      <span style="font-size:12px; color:#c3d5d3;">·</span>
+                      <span style="font-size:12.5px; font-weight:500; color:#8fa2a0; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.phone }}</span>
+                    </div>
+                  </div>
+                  <div style="min-width:0;">
+                    <div style="font-size:10px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#9aacaa;">Source</div>
+                    <div style="font-size:13px; font-weight:600; color:#3c4d4b; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.source }}</div>
+                    <sc-if value="{{ l.campaign }}">
+                      <div style="font-size:11.5px; font-weight:500; color:#9aacaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.campaign }}</div>
+                    </sc-if>
+                  </div>
+                  <div style="text-align:right; flex-shrink:0;">
+                    <div style="font-size:10px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#9aacaa;">Last touch</div>
+                    <div style="font-size:13px; font-weight:600; color:#3c4d4b; margin-top:2px; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ l.touch }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ profTabDeals }}">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <sc-for list="{{ deals }}" as="d" hint-placeholder-count="2">
+                <div style="display:grid; grid-template-columns:44px minmax(0,1.5fr) auto auto; align-items:center; gap:18px; background:#fff; border:1px solid #e2ecea; border-radius:14px; padding:15px 18px;" style-hover="border-color:#b6d9d5;">
+                  <div style="width:44px; height:44px; border-radius:14px; background:#e8f5f3; color:#2f7d78; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+                  </div>
+                  <div style="min-width:0;">
+                    <div style="font-size:15.5px; font-weight:700; letter-spacing:-0.35px; color:#1b2827; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ d.name }}</div>
+                    <div style="font-size:12.5px; font-weight:500; color:#8fa2a0; margin-top:3px; font-variant-numeric:tabular-nums;">{{ d.phone }} &nbsp;·&nbsp; Settled {{ d.date }}</div>
+                  </div>
+                  <div style="text-align:right; flex-shrink:0;">
+                    <div style="font-size:10px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#9aacaa;">Received</div>
+                    <div style="font-size:15px; font-weight:700; color:#1b2827; margin-top:2px; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ d.received }}</div>
+                  </div>
+                  <div style="text-align:right; flex-shrink:0; padding:8px 14px; border-radius:12px; background:#f2f8f7;">
+                    <div style="font-size:10px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#7fb0ab;">Profit</div>
+                    <div style="font-size:15px; font-weight:800; color:#2f7d78; margin-top:2px; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ d.profit }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ profTabAnalytics }}">
+            <div style="display:grid; gap:14px;">
+
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:14px;">
+                <sc-for list="{{ anKpis }}" as="k" hint-placeholder-count="3">
+                  <div style="background:#fff; border:1px solid #e2ecea; border-radius:16px; padding:16px 18px; display:flex; align-items:center; gap:15px;">
+                    <div style="position:relative; width:62px; height:62px; flex-shrink:0;">
+                      <svg width="62" height="62" viewBox="0 0 62 62" style="display:block;">
+                        <circle cx="31" cy="31" r="26" fill="none" stroke="#eef4f3" stroke-width="7"></circle>
+                        <circle cx="31" cy="31" r="26" fill="none" stroke="{{ k.color }}" stroke-width="7" stroke-linecap="round" stroke-dasharray="{{ k.dash }}" transform="rotate(-90 31 31)"></circle>
+                      </svg>
+                      <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:13.5px; font-weight:800; letter-spacing:-0.4px; color:#1b2827; font-variant-numeric:tabular-nums;">{{ k.value }}</div>
+                    </div>
+                    <div style="min-width:0;">
+                      <div style="font-size:10px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#8fa2a0;">{{ k.label }}</div>
+                      <div style="font-size:14px; font-weight:700; color:#1b2827; margin-top:5px;">{{ k.detail }}</div>
+                      <div style="font-size:11.5px; font-weight:500; color:#9aacaa; margin-top:2px;">{{ k.note }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="background:#fff; border:1px solid #e2ecea; border-radius:16px; padding:20px 22px 18px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+                  <span style="font-size:15.5px; font-weight:800; letter-spacing:-0.3px; color:#1b2827;">Activity by Month</span>
+                  <div style="display:flex; align-items:center; gap:16px;">
+                    <sc-for list="{{ anSeries }}" as="s" hint-placeholder-count="2">
+                      <div style="display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; color:#7e918f;">
+                        <span style="width:13px; height:4px; border-radius:2px; background:{{ s.color }};"></span>
+                        <span style="white-space:nowrap;">{{ s.label }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="display:grid; grid-template-columns:30px 1fr; gap:10px; margin-top:18px;">
+                  <div style="display:flex; flex-direction:column; justify-content:space-between; height:172px; font-size:11px; font-weight:600; color:#9aacaa; text-align:right; font-variant-numeric:tabular-nums;">
+                    <span>{{ anMax }}</span>
+                    <span>{{ anMid }}</span>
+                    <span>0</span>
+                  </div>
+                  <div>
+                    <div style="position:relative; height:172px; border-bottom:1px solid #e6efee;">
+                      <div style="position:absolute; left:0; right:0; top:0; border-top:1px dashed #eef4f3;"></div>
+                      <div style="position:absolute; left:0; right:0; top:50%; border-top:1px dashed #eef4f3;"></div>
+                      <div style="position:absolute; inset:0; display:grid; grid-template-columns:repeat(6, 1fr); align-items:end;">
+                        <sc-for list="{{ anMonths }}" as="m" hint-placeholder-count="6">
+                          <div style="display:flex; align-items:flex-end; justify-content:center; gap:7px; height:100%;">
+                            <sc-for list="{{ m.bars }}" as="b" hint-placeholder-count="2">
+                              <div title="{{ b.title }}" style="{{ b.style }}"></div>
+                            </sc-for>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(6, 1fr); margin-top:10px; font-size:11.5px; font-weight:600; color:#8fa2a0; text-align:center;">
+                      <sc-for list="{{ anMonths }}" as="m" hint-placeholder-count="6">
+                        <span>{{ m.label }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px; align-items:start;">
+                <div style="background:#fff; border:1px solid #e2ecea; border-radius:16px; padding:20px 22px;">
+                  <div style="font-size:15.5px; font-weight:800; letter-spacing:-0.3px; color:#1b2827;">Target Achieved</div>
+                  <div style="display:flex; flex-direction:column; gap:18px; margin-top:16px;">
+                    <sc-for list="{{ anTargets }}" as="t" hint-placeholder-count="2">
+                      <div>
+                        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+                          <span style="font-size:11px; font-weight:700; letter-spacing:1.1px; text-transform:uppercase; color:#8fa2a0;">{{ t.label }}</span>
+                          <span style="font-size:16px; font-weight:800; letter-spacing:-0.4px; color:{{ t.color }}; font-variant-numeric:tabular-nums;">{{ t.value }}</span>
+                        </div>
+                        <div style="height:9px; border-radius:999px; background:#eef4f3; margin-top:8px; overflow:hidden;">
+                          <div style="{{ t.fillStyle }}"></div>
+                        </div>
+                        <div style="font-size:11.5px; font-weight:500; color:#9aacaa; margin-top:6px;">{{ t.note }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+
+                <div style="background:#fff; border:1px solid #e2ecea; border-radius:16px; padding:20px 22px 10px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                    <span style="font-size:15.5px; font-weight:800; letter-spacing:-0.3px; color:#1b2827;">Lead Outcomes</span>
+                    <span style="font-size:11.5px; font-weight:600; color:#9aacaa; white-space:nowrap;">{{ prof.handled }} total</span>
+                  </div>
+                  <sc-for list="{{ anOutcomes }}" as="o" hint-placeholder-count="4">
+                    <div style="display:grid; grid-template-columns:minmax(86px,auto) 1fr 26px; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #f2f7f6;">
+                      <span style="font-size:13px; font-weight:600; color:#3c4d4b; white-space:nowrap;">{{ o.label }}</span>
+                      <div style="height:8px; border-radius:999px; background:#eef4f3; overflow:hidden;">
+                        <div style="{{ o.fillStyle }}"></div>
+                      </div>
+                      <span style="font-size:13.5px; font-weight:700; color:#1b2827; text-align:right; font-variant-numeric:tabular-nums;">{{ o.count }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ profTabActivity }}">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <sc-for list="{{ activity }}" as="a" hint-placeholder-count="5">
+                <div style="display:grid; grid-template-columns:40px minmax(0,1fr) auto; align-items:center; gap:16px; background:#fff; border:1px solid #e2ecea; border-radius:14px; padding:14px 18px;">
+                  <div style="width:40px; height:40px; border-radius:13px; background:#f2f8f7; color:#2f7d78; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ a.d }}"></path></svg>
+                  </div>
+                  <div style="min-width:0;">
+                    <div style="font-size:14.5px; font-weight:700; letter-spacing:-0.3px; color:#1b2827; text-wrap:pretty;">{{ a.action }}</div>
+                    <div style="font-size:12.5px; font-weight:500; color:#8fa2a0; margin-top:2px;">{{ a.detail }}</div>
+                  </div>
+                  <div style="font-size:12.5px; font-weight:600; color:#9aacaa; white-space:nowrap; font-variant-numeric:tabular-nums; flex-shrink:0;">{{ a.when }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ addOpen }}">
+    <div style="position:fixed; inset:0; z-index:50; background:rgba(24,52,50,0.4); display:flex; align-items:center; justify-content:center; padding:40px 24px;">
+      <div style="width:100%; max-width:680px; max-height:100%; background:#fff; border-radius:20px; box-shadow:0 30px 80px rgba(18,54,52,0.3); display:grid; grid-template-rows:auto 1fr auto; overflow:hidden;">
+
+        <div style="display:flex; align-items:center; gap:14px; padding:20px 26px; background:#3f8f8a; color:#fff;">
+          <div style="width:42px; height:42px; border-radius:13px; background:rgba(255,255,255,0.2); border:1.5px solid rgba(255,255,255,0.5); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="8" r="3.4"></circle><path d="M3.5 20c0-3.3 2.9-5 6.5-5 1.2 0 2.3.2 3.2.5M18 14v6M15 17h6"></path></svg>
+          </div>
+          <div style="flex:1;">
+            <div style="font-size:19px; font-weight:800; letter-spacing:-0.5px;">New Employee</div>
+            <div style="font-size:12.5px; font-weight:500; opacity:0.86; margin-top:2px;">Add a team member and start attributing leads to them.</div>
+          </div>
+          <div onClick="{{ closeAdd }}" style="width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer;" style-hover="background:rgba(255,255,255,0.18);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+          </div>
+        </div>
+
+        <div style="min-height:0; overflow-y:auto; padding:22px 26px 26px;">
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:#2f7d78; margin-bottom:14px;">Identity</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px 18px;">
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Full Name <span style="color:#e05a4a;">*</span></span>
+              <input placeholder="e.g. Ali Raza" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Email Address <span style="color:#e05a4a;">*</span></span>
+              <input placeholder="e.g. ali@example.com" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Phone Number</span>
+              <input placeholder="e.g. 0300 1234567" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Date Joined</span>
+              <input type="date" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:10px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none;">
+            </label>
+          </div>
+
+          <div style="height:1px; background:#eef4f3; margin:22px 0;"></div>
+
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:#2f7d78; margin-bottom:14px;">Role &amp; Access</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px 18px;">
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Role</span>
+              <select style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none; cursor:pointer;">
+                <option>Sales Executive</option>
+                <option>Senior Executive</option>
+                <option>Team Lead</option>
+                <option>Manager</option>
+              </select>
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Monthly Target (PKR)</span>
+              <input placeholder="0" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none;">
+            </label>
+            <div style="display:flex; flex-direction:column; gap:7px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Status</span>
+              <div style="display:flex; align-items:center; gap:9px;">
+                <sc-for list="{{ statusOpts }}" as="o" hint-placeholder-count="2">
+                  <div onClick="{{ o.select }}" style="{{ o.style }}">{{ o.label }}</div>
+                </sc-for>
+              </div>
+            </div>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Lead Assignment</span>
+              <select style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none; cursor:pointer;">
+                <option>Include in round-robin</option>
+                <option>Manual assignment only</option>
+              </select>
+            </label>
+          </div>
+
+          <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b; margin-top:16px;">
+            <span>Notes</span>
+            <textarea rows="3" placeholder="Territory, reporting line, anything worth recording" style="border:1px solid #e2ecea; background:#f7fbfa; border-radius:10px; padding:11px 13px; font-size:13.5px; font-weight:500; color:#22302f; outline:none; resize:vertical;"></textarea>
+          </label>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:11px; padding:16px 26px; background:#f7fbfa; border-top:1px solid #eef4f3;">
+          <div onClick="{{ closeAdd }}" style="padding:11px 22px; border-radius:10px; border:1px solid #d6e5e3; background:#fff; color:#5b6d6b; font-size:13.5px; font-weight:600; cursor:pointer;" style-hover="background:#f2f8f7;">Cancel</div>
+          <div onClick="{{ closeAdd }}" style="display:flex; align-items:center; gap:9px; padding:12px 22px; border-radius:10px; background:#3f8f8a; color:#fff; font-size:13.5px; font-weight:700; cursor:pointer;" style-hover="background:#2f7d78;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M20 6 9 17l-5-5"></path></svg>
+            <span>Add to Directory</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+const EMPLOYEES = [
+  {
+    name: "ammad", email: "ammad@gmail.com", status: "Active",
+    handled: 2, won: 1, lost: 0, profit: 50000,
+    priority: 8, role: "Sales Executive", joined: "21 Aug 2026",
+    acceptance: "100%", winRate: "50.0%", missed: 0,
+    monthlyTarget: 60000, mtd: 83, ytd: 41,
+    trend: [
+      { label: "Mar", leads: 0, won: 0 },
+      { label: "Apr", leads: 0, won: 0 },
+      { label: "May", leads: 0, won: 0 },
+      { label: "Jun", leads: 0, won: 0 },
+      { label: "Jul", leads: 0, won: 0 },
+      { label: "Aug", leads: 2, won: 1 }
+    ],
+    assigned: [
+      { name: "ammad", phone: "03100412312", status: "Closed Won", source: "CAMPAIGN_IMPORT", campaign: "testCampaing", touch: "22 Aug 2026" },
+      { name: "Hamza Tariq", phone: "03004412390", status: "Interested", source: "Manual Intake", campaign: "—", touch: "26 Aug 2026" }
+    ],
+    deals: [
+      { name: "ammad", phone: "03100412312", date: "22 Aug 2026", received: "Rs 320,000", profit: "Rs 50,000" }
+    ],
+    activity: [
+      { action: "Closed deal with ammad", detail: "Rs 50,000 profit settled", when: "22 Aug 2026, 01:40 pm" },
+      { action: "Marked Hamza Tariq as Interested", detail: "After intro call", when: "26 Aug 2026, 11:15 am" },
+      { action: "Account created", detail: "Sales Executive, priority 8", when: "21 Aug 2026, 10:05 am" }
+    ]
+  },
+  {
+    name: "testemployee", email: "testemployee@gmail.com", status: "Active",
+    handled: 5, won: 2, lost: 1, profit: 10000,
+    priority: 10, role: "Sales Executive", joined: "18 Aug 2026",
+    acceptance: "80.0%", winRate: "40.0%", missed: 0,
+    monthlyTarget: 40000, mtd: 25, ytd: 44,
+    trend: [
+      { label: "Mar", leads: 0, won: 0 },
+      { label: "Apr", leads: 0, won: 0 },
+      { label: "May", leads: 0, won: 0 },
+      { label: "Jun", leads: 1, won: 0 },
+      { label: "Jul", leads: 1, won: 0 },
+      { label: "Aug", leads: 3, won: 2 }
+    ],
+    assigned: [
+      { name: "newLead", phone: "03105105220", status: "Assigned", source: "Manual Intake", campaign: "—", touch: "25 Aug 2026" },
+      { name: "testClient", phone: "03135506223", status: "Closed Won", source: "Manual Intake", campaign: "—", touch: "24 Aug 2026" },
+      { name: "ABDULLAH AHSAN", phone: "03135506223", status: "Interested", source: "CAMPAIGN_IMPORT", campaign: "testCampaing", touch: "25 Aug 2026" },
+      { name: "ammad", phone: "03100412312", status: "Closed Won", source: "CAMPAIGN_IMPORT", campaign: "testCampaing", touch: "22 Aug 2026" },
+      { name: "Raqeeb Ahmed", phone: "03135506223", status: "Closed Lost", source: "CAMPAIGN_IMPORT", campaign: "testCampaing", touch: "21 Aug 2026" }
+    ],
+    deals: [
+      { name: "testClient", phone: "03135506223", date: "24 Aug 2026", received: "Rs 40,000", profit: "Rs 6,000" },
+      { name: "ammad", phone: "03100412312", date: "22 Aug 2026", received: "Rs 25,000", profit: "Rs 4,000" }
+    ],
+    activity: [
+      { action: "Closed deal with testClient", detail: "Rs 6,000 profit settled", when: "24 Aug 2026, 05:12 pm" },
+      { action: "Marked ABDULLAH AHSAN as Interested", detail: "After site visit call", when: "25 Aug 2026, 04:15 pm" },
+      { action: "Closed deal with ammad", detail: "Rs 4,000 profit settled", when: "22 Aug 2026, 01:40 pm" },
+      { action: "Lost Raqeeb Ahmed", detail: "Budget mismatch", when: "21 Aug 2026, 11:05 am" },
+      { action: "Account created", detail: "Sales Executive, priority 10", when: "18 Aug 2026, 04:00 pm" }
+    ]
+  }
+];
+
+const NAV = [
+  { key: "dashboard", label: "Dashboard", d: "M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z" },
+  { key: "leads", label: "Leads", d: "M4 6h16M4 12h10M4 18h13" },
+  { key: "myday", label: "My Day", d: "M6 4h12v16H6zM9 4v16" },
+  { key: "customers", label: "Customers", d: "M12 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM5 20c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5" },
+  { key: "employees", label: "Employees", d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4" },
+  { key: "campaigns", label: "Campaigns", d: "M4 16l5-5 4 3 7-8" },
+  { key: "targets", label: "My Target", d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" },
+  { key: "reports", label: "Reports", d: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" }
+];
+
+const STAT_ICONS = [
+  "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4",
+  "M4 6h16M4 12h10M4 18h13",
+  "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
+  "M3 17l6-6 4 3 8-8M15 6h6v6"
+];
+
+const LEAD_DOTS = {
+  "Closed Won": "#2f7d78",
+  "Closed Lost": "#c0574a",
+  "Interested": "#3f7ea3",
+  "Assigned": "#c99a2e"
+};
+
+function ACT_ICON(action) {
+  const a = action.toLowerCase();
+  if (a.indexOf("closed deal") === 0) return "M20 6 9 17l-5-5";
+  if (a.indexOf("lost") === 0) return "M6 6l12 12M18 6 6 18";
+  if (a.indexOf("account created") === 0) return "M12 11a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8ZM5 20c0-3.3 3.1-5.2 7-5.2s7 1.9 7 5.2";
+  return "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7.5V12l3.5 2";
+}
+
+const LEAD_TAGS = {
+  "Closed Won": "background:#e8f5f3; color:#2f7d78;",
+  "Closed Lost": "background:#fdeeec; color:#b4524a;",
+  "Interested": "background:#eef6fb; color:#3f7ea3;",
+  "Assigned": "background:#fdf5e6; color:#a5762a;"
+};
+
+class Component extends DCLogic {
+  state = { query: "", filter: "All", navKey: "employees", addOpen: false, newStatus: "Active", profile: null, profTab: "leads" };
+
+  rows() {
+    const q = this.state.query.trim().toLowerCase();
+    return EMPLOYEES.filter(e => {
+      if (this.state.filter !== "All" && e.status !== this.state.filter) return false;
+      if (!q) return true;
+      return (e.name + " " + e.email).toLowerCase().includes(q);
+    });
+  }
+
+  initials(name) {
+    const p = name.trim().split(/\s+/);
+    return (p.length === 1 ? p[0].slice(0, 2) : p[0][0] + p[1][0]).toUpperCase();
+  }
+
+  dash(pct, r) {
+    const c = 2 * Math.PI * r;
+    return (Math.max(0, Math.min(1, pct / 100)) * c) + " " + c;
+  }
+
+  analytics(p) {
+    const trend = p.trend;
+    const rawMax = Math.max.apply(null, trend.map(m => Math.max(m.leads, m.won))) || 1;
+    const max = rawMax < 4 ? 4 : Math.ceil(rawMax / 2) * 2;
+    const chartH = 172;
+    const colors = ["#3f8f8a", "#1f5c58"];
+    const winPct = p.handled ? Math.round((p.won / p.handled) * 100) : 0;
+    const accPct = parseFloat(p.acceptance) || 0;
+    const targetPct = Math.min(100, Math.round((p.profit / p.monthlyTarget) * 100));
+
+    const outcomes = [
+      { label: "Closed Won", count: p.won, color: "#2f7d78" },
+      { label: "Closed Lost", count: p.lost, color: "#c0574a" },
+      { label: "In Progress", count: Math.max(0, p.handled - p.won - p.lost), color: "#3f7ea3" },
+      { label: "Missed", count: p.missed, color: "#c99a2e" }
+    ];
+    const oMax = Math.max.apply(null, outcomes.map(o => o.count)) || 1;
+
+    return {
+      max,
+      months: trend.map(m => ({
+        label: m.label,
+        bars: [m.leads, m.won].map((v, i) => ({
+          title: (i === 0 ? "Leads: " : "Deals won: ") + v,
+          style: "width:16px; border-radius:5px 5px 0 0; height:" +
+            (v > 0 ? Math.max(8, Math.round((v / max) * chartH)) : 4) + "px; background:" +
+            (v > 0 ? colors[i] : "#e9f1f0") + ";"
+        }))
+      })),
+      kpis: [
+        { label: "Win Rate", value: winPct + "%", detail: p.won + " won of " + p.handled, note: "lifetime conversion", pct: winPct, color: "#3f8f8a" },
+        { label: "Acceptance", value: p.acceptance, detail: "Leads accepted on time", note: p.missed + " missed", pct: accPct, color: "#4fa39c" },
+        { label: "Target", value: targetPct + "%", detail: "Rs " + p.profit.toLocaleString() + " of " + "Rs " + p.monthlyTarget.toLocaleString(), note: "monthly profit target", pct: targetPct, color: targetPct >= 60 ? "#2f7d78" : "#c99a2e" }
+      ].map(k => Object.assign(k, { dash: this.dash(k.pct, 26) })),
+      targets: [
+        { label: "MTD", value: p.mtd + "%", pct: p.mtd, note: "against this month's target" },
+        { label: "YTD", value: p.ytd + "%", pct: p.ytd, note: "against annual target" }
+      ].map(t => Object.assign(t, {
+        color: t.pct >= 60 ? "#2f7d78" : "#c0574a",
+        fillStyle: "height:100%; border-radius:999px; width:" + Math.max(2, Math.min(100, t.pct)) +
+          "%; background:" + (t.pct >= 60 ? "linear-gradient(90deg,#3f8f8a,#63b3ad)" : "linear-gradient(90deg,#d8735f,#c0574a)") + ";"
+      })),
+      outcomes: outcomes.map(o => Object.assign(o, {
+        fillStyle: "height:100%; border-radius:999px; width:" +
+          Math.max(o.count > 0 ? 5 : 0, Math.round((o.count / oMax) * 100)) + "%; background:" +
+          (o.count > 0 ? o.color : "transparent") + ";"
+      }))
+    };
+  }
+
+  renderVals() {
+    const rows = this.rows();
+    const totals = EMPLOYEES.reduce((a, e) => ({
+      handled: a.handled + e.handled, won: a.won + e.won, profit: a.profit + e.profit
+    }), { handled: 0, won: 0, profit: 0 });
+    const winRate = totals.handled ? Math.round((totals.won / totals.handled) * 100) : 0;
+    const prof = EMPLOYEES.find(e => e.email === this.state.profile) || null;
+    const an = prof ? this.analytics(prof) : null;
+
+    return {
+      query: this.state.query,
+      onQuery: e => this.setState({ query: e.target.value }),
+      noRows: rows.length === 0,
+      countLine: rows.length + " of " + EMPLOYEES.length + (EMPLOYEES.length === 1 ? " team member" : " team members") + " shown",
+
+      addOpen: this.state.addOpen,
+      openAdd: () => this.setState({ addOpen: true }),
+      closeAdd: () => this.setState({ addOpen: false }),
+
+      profileOpen: !!prof,
+      closeProfile: () => this.setState({ profile: null }),
+      prof: prof ? Object.assign({}, prof, { initials: this.initials(prof.name) }) : {},
+      assigned: prof ? prof.assigned.map(l => Object.assign({}, l, {
+        campaign: l.campaign && l.campaign !== "—" ? l.campaign : null,
+        initials: this.initials(l.name),
+        avatarStyle: "width:44px; height:44px; border-radius:50%; background:#f7fbfa; border:2px solid " +
+          (LEAD_DOTS[l.status] || "#c3d5d3") +
+          "; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#4a5c5a; flex-shrink:0;",
+        statusStyle: "font-size:12.5px; font-weight:700; white-space:nowrap; flex-shrink:0; color:" + (LEAD_DOTS[l.status] || "#7e918f") + ";"
+      })) : [],
+      deals: prof ? prof.deals : [],
+      activity: prof ? prof.activity.map(a => Object.assign({}, a, { d: ACT_ICON(a.action) })) : [],
+      profTabLeads: this.state.profTab === "leads",
+      profTabDeals: this.state.profTab === "deals",
+      profTabAnalytics: this.state.profTab === "analytics",
+      profTabActivity: this.state.profTab === "activity",
+
+      anMax: prof ? String(an.max) : "",
+      anMid: prof ? String(Math.round(an.max / 2)) : "",
+      anSeries: [
+        { label: "Leads", color: "#3f8f8a" },
+        { label: "Deals won", color: "#1f5c58" }
+      ],
+      anMonths: prof ? an.months : [],
+      anKpis: prof ? an.kpis : [],
+      anTargets: prof ? an.targets : [],
+      anOutcomes: prof ? an.outcomes : [],
+      profStats: prof ? [
+        { label: "Leads Handled", value: String(prof.handled), color: "#1b2827" },
+        { label: "Acceptance Rate", value: prof.acceptance, color: "#1b2827" },
+        { label: "Win Rate", value: prof.winRate, color: "#1b2827" },
+        { label: "Missed Leads", value: String(prof.missed), color: "#1b2827" },
+        { label: "Won / Lost", value: prof.won + " / " + prof.lost, color: "#2f7d78" },
+        { label: "Profit Generated", value: "Rs " + prof.profit.toLocaleString(), color: "#2f7d78" }
+      ].map((s, i) => Object.assign(s, {
+        cellStyle: "background:" + (i === 5 ? "#f2f8f7" : "#fff") + "; padding:14px 18px;"
+      })) : [],
+      profTabs: prof ? [
+        { key: "leads", label: "Assigned Leads", count: prof.assigned.length },
+        { key: "deals", label: "Deals Closed", count: prof.deals.length },
+        { key: "activity", label: "Activity", count: prof.activity.length },
+        { key: "analytics", label: "Analytics", count: null }
+      ].map(t => {
+        const active = t.key === this.state.profTab;
+        return {
+          label: t.label, count: t.count,
+          select: () => this.setState({ profTab: t.key }),
+          style: "display:flex; align-items:center; gap:8px; padding:15px 4px; margin-right:26px; cursor:pointer; font-size:14px; font-weight:700; letter-spacing:-0.2px; color:" +
+            (active ? "#2f7d78" : "#7e918f") + "; border-bottom:2.5px solid " + (active ? "#3f8f8a" : "transparent") + ";",
+          countStyle: "min-width:22px; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:700; text-align:center; display:" +
+            (t.count === null ? "none" : "inline-block") + "; background:" +
+            (active ? "#dcecea" : "#f2f7f6") + "; color:" + (active ? "#2f7d78" : "#8fa2a0") + ";"
+        };
+      }) : [],
+
+      heroLine: EMPLOYEES.length + " team members · " + totals.handled + " leads handled · " + winRate + "% win rate",
+
+      stats: [
+        { label: "Team Members", value: String(EMPLOYEES.length), note: "both active", delta: "+1", up: true, spark: [2, 2, 3, 3, 4, 5, 5], accent: "#3f8f8a" },
+        { label: "Leads Handled", value: String(totals.handled), note: "lifetime", delta: "+3", up: true, spark: [1, 2, 2, 4, 3, 5, 6], accent: "#3f8f8a" },
+        { label: "Win Rate", value: winRate + "%", note: totals.won + " won of " + totals.handled, delta: "+6%", up: true, spark: [2, 3, 2, 4, 4, 5, 6], accent: "#4fa39c" },
+        { label: "Profit Generated", value: "Rs " + totals.profit.toLocaleString(), note: "all time", delta: "+Rs 50k", up: true, spark: [1, 1, 2, 2, 3, 5, 6], accent: "#2f7d78" }
+      ].map((s, i) => {
+        const max = Math.max.apply(null, s.spark);
+        return Object.assign(s, {
+          d: STAT_ICONS[i],
+          iconStyle: "width:28px; height:28px; border-radius:9px; background:#f2f8f7; color:" + s.accent + "; display:flex; align-items:center; justify-content:center; flex-shrink:0;",
+          stripeStyle: "position:absolute; left:0; top:0; bottom:0; width:3px; background:" + s.accent + ";",
+          deltaStyle: "flex-shrink:0; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; " +
+            (s.up ? "background:#e8f5f3; color:#2f7d78;" : "background:#fdeeec; color:#b4524a;"),
+          spark: s.spark.map((v, j) => ({
+            style: "width:6px; border-radius:3px 3px 0 0; height:" + Math.max(5, Math.round((v / max) * 34)) + "px; background:" +
+              (j === s.spark.length - 1 ? s.accent : "#d9e9e7") + ";"
+          }))
+        });
+      }),
+
+      statusOpts: ["Active", "Inactive"].map(label => {
+        const active = this.state.newStatus === label;
+        return {
+          label,
+          select: () => this.setState({ newStatus: label }),
+          style: "padding:10px 20px; border-radius:10px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid " +
+            (active ? "#3f8f8a" : "#e2ecea") + "; background:" + (active ? "#3f8f8a" : "#f7fbfa") +
+            "; color:" + (active ? "#fff" : "#5b6d6b") + ";"
+        };
+      }),
+
+      nav: NAV.map(n => {
+        const active = n.key === this.state.navKey;
+        return {
+          label: n.label, d: n.d,
+          select: () => this.setState({ navKey: n.key }),
+          style: "display:flex; flex-direction:column; align-items:center; gap:6px; width:78px; padding:11px 4px; border-radius:12px; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#7e918f") + "; background:" + (active ? "#e4f0ef" : "transparent") + ";"
+        };
+      }),
+
+      filters: ["All", "Active", "Inactive"].map(label => {
+        const active = this.state.filter === label;
+        return {
+          label,
+          select: () => this.setState({ filter: label }),
+          style: "padding:8px 20px; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#7e918f") + "; background:" + (active ? "#fff" : "transparent") +
+            "; box-shadow:" + (active ? "0 1px 3px rgba(31,92,88,0.12)" : "none") + ";"
+        };
+      }),
+
+      rows: rows.map(e => ({
+        name: e.name,
+        email: e.email,
+        status: e.status,
+        initials: this.initials(e.name),
+        open: () => this.setState({ profile: e.email, profTab: "leads" }),
+        handled: e.handled,
+        won: e.won,
+        lost: e.lost,
+        profit: "Rs " + e.profit.toLocaleString(),
+        tagStyle: "display:inline-block; padding:5px 15px; border-radius:999px; font-size:12px; font-weight:700; letter-spacing:0.2px; " +
+          (e.status === "Active"
+            ? "background:#e8f5f3; color:#2f7d78;"
+            : "background:#f2f7f6; color:#8fa2a0;")
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

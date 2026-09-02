@@ -1,0 +1,289 @@
+rules_version = '2';
+
+// Security Rules are the outer boundary (architecture.md §7, invariant 5).
+//
+// Two principles run through this file:
+//
+//  1. The client SDK never writes. Every write in this product goes through a
+//     Server Action using the Admin SDK, which re-checks role and ownership
+//     itself. Rules exist to stop anyone bypassing that path with the public
+//     web API key, which ships in the browser bundle and is not a secret.
+//
+//  2. Reads are scoped by role. BR-10 says employees only ever see their own
+//     leads and data — enforced here at the query layer, not by hiding things
+//     in the UI.
+//
+// Role comes from the `role` custom claim, set only by the Admin SDK. If an
+// admin appears to have no access, their claim has not been issued yet — run
+// `npm run set-admin-role -- <email>` and sign in again.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return request.auth.token.role;
+    }
+
+    function isAdmin() {
+      return signedIn() && role() == 'admin';
+    }
+
+    function isEmployee() {
+      return signedIn() && role() == 'employee';
+    }
+
+    // A sub admin manages a subset of the roster and a subset of the Data Bank.
+    //
+    // Every scoped rule below tests one denormalised field —
+    // `resource.data.subAdminUid == request.auth.uid` — rather than looking up
+    // a list held on the sub admin. That is not a style choice: Firestore
+    // checks a *list* query against the rules before running it, and can only
+    // allow it when the query's own constraints prove every document it could
+    // return is readable. A scope living in another document proves nothing, so
+    // the client query carries `where('subAdminUid','==',uid)` and this rule
+    // mirrors it exactly.
+    function isSubAdmin() {
+      return signedIn() && role() == 'subadmin';
+    }
+
+    /** True when the document in hand belongs to this sub admin's team. */
+    function ownsTeam() {
+      return isSubAdmin() && resource.data.subAdminUid == request.auth.uid;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    // Whether the caller is the employee currently working a given lead.
+    // Rules cache identical get() calls within one evaluation, so reading a
+    // list of follow-ups costs one lookup, not one per document.
+    function ownsLead(leadId) {
+      return isEmployee()
+        && get(/databases/$(database)/documents/leads/$(leadId)).data.assignedUserId == request.auth.uid;
+    }
+
+    /** The sub admin whose team is working this lead. */
+    function managesLead(leadId) {
+      return isSubAdmin()
+        && get(/databases/$(database)/documents/leads/$(leadId)).data.subAdminUid == request.auth.uid;
+    }
+
+    // Employee profiles. Admin manages the roster; an employee may read only
+    // their own record. Priority and status are never client-writable — that
+    // would let an employee promote themselves in the rotation.
+    match /users/{userId} {
+      // A sub admin reads their own team's profiles — the roster their whole
+      // dashboard is built from. `useEmployees` carries the matching
+      // `where('subAdminUid','==',uid)` so the list query is provable.
+      allow read: if isAdmin() || isSelf(userId) || ownsTeam();
+      allow write: if false;
+
+      // Monthly KPI counters (connects, registrations, meetings, revenue).
+      // Same scope as the profile itself: an employee sees their own numbers,
+      // never a colleague's. Written only by the server, inside the same
+      // transaction as the follow-up or deal that caused the increment.
+      // A sub admin sees their team's KPI counters (§10). This is the one
+      // place a parent lookup is unavoidable — the counter documents carry no
+      // team field of their own, and adding one would mean rewriting every
+      // month's document whenever somebody changes team.
+      match /kpiMonths/{monthId} {
+        allow read: if isAdmin()
+          || isSelf(userId)
+          || (isSubAdmin()
+              && get(/databases/$(database)/documents/users/$(userId)).data.subAdminUid == request.auth.uid);
+        allow write: if false;
+      }
+    }
+
+    // Attendance. An employee reads only their own days; the admin reads the
+    // whole team. Written only by the server, which decides the office/remote
+    // label from the request's own IP — a client-writable record would make
+    // the whole feature meaningless.
+    match /attendance/{recordId} {
+      // A sub admin reads their own days here. Their team's attendance is
+      // deliberately not exposed: the record carries the employee's uid but no
+      // team field, so a rule for it would need a lookup per day per employee —
+      // a read amplification the feature does not justify. The admin, who owns
+      // the attendance policy, sees everyone.
+      allow read: if isAdmin()
+        || ((isEmployee() || isSubAdmin()) && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /campaigns/{campaignId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /leads/{leadId} {
+      allow read: if isAdmin()
+        || (isEmployee() && resource.data.assignedUserId == request.auth.uid)
+        || ownsTeam();
+      allow write: if false;
+
+      // BR-13 / BR-14: a submitted follow-up is permanent. Update and delete
+      // are denied for every role, admin included. This is defence in depth —
+      // there is also no update or delete code path anywhere in the app.
+      match /followUps/{followUpId} {
+        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId);
+        allow create: if false;
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // Audit trail (FR-29). Append-only, and only the server appends.
+      match /events/{eventId} {
+        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId);
+        allow write: if false;
+      }
+    }
+
+    // Closed deals carry customer contact details and financials. An employee
+    // sees only the deals credited to them (PRD §2: own revenue/profit only).
+    //
+    // `get` and `list` are split because the two cases fail differently.
+    //
+    // The document id **is** the lead id, so the detail pane reads
+    // `closedDeals/{leadId}` directly to find out whether a lead has been
+    // closed. On a lead with no deal that document does not exist, `resource`
+    // is null, and `resource.data.userId` then errors — which Firestore treats
+    // as a false condition and reports to the client as
+    // `permission-denied`, not "not found". Every employee opening the Deal
+    // Entry tab on an open lead hit that. Allowing the null case discloses
+    // nothing: the client can already see the lead is not closed.
+    //
+    // A list, by contrast, is checked before it runs and must prove every
+    // document it could return is readable, so `useMyDeals` carries
+    // where('userId','==',uid). `resource` is never null there — the
+    // documents exist by definition.
+    match /closedDeals/{dealId} {
+      allow get: if isAdmin()
+        || (isEmployee() && (resource == null || resource.data.userId == request.auth.uid))
+        || (isSubAdmin() && (resource == null || resource.data.subAdminUid == request.auth.uid));
+      allow list: if isAdmin()
+        || (isEmployee() && resource.data.userId == request.auth.uid)
+        || ownsTeam();
+      allow write: if false;
+    }
+
+    // The complete profit split for a deal — every recipient and every
+    // percentage on one document. **Admin only, and that is the point** (§22):
+    // a sub admin must never learn what another sub admin was paid, and
+    // Firestore grants a whole document or none of it, so the full picture
+    // cannot live anywhere a sub admin can read. Each person's own share is
+    // written separately to `dealPayouts` below.
+    match /dealDistributions/{distributionId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // One row per person per finalised deal, carrying only that person's own
+    // number. An employee reads their own commission; a sub admin reads their
+    // own and their team's; the company's share is never written here at all.
+    match /dealPayouts/{payoutId} {
+      allow read: if isAdmin()
+        || resource.data.recipientUid == request.auth.uid
+        || ownsTeam();
+      allow write: if false;
+    }
+
+    // Office expenses are admin-only in both directions (BR-20).
+    match /expenses/{expenseId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Admin alerts: red flags, missed acceptances, stale leads (FR-19).
+    // Employees see the alerts addressed to them by uid (BR-7/BR-9 "you've
+    // been assigned" and accept-window alerts).
+    //
+    // Addressed **by uid only**. The previous version also allowed any
+    // employee to read any doc with `targetRole == 'employee'`, which let one
+    // employee read another's alerts — including the lead names in them. Every
+    // employee notification the server writes carries `targetUid`, so nothing
+    // is lost by dropping that clause.
+    //
+    // A list query must prove it can only return readable documents, so the
+    // client query has to carry the matching `where` — see `useNotifications`.
+    match /notifications/{notificationId} {
+      // Addressed by uid for everyone who is not an admin, sub admins included:
+      // every non-admin notification the server writes carries `targetUid`, and
+      // a role-wide clause would let one person read another's alerts and the
+      // lead names inside them.
+      allow read: if isAdmin()
+        || ((isEmployee() || isSubAdmin()) && resource.data.targetUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Accounts module (Committee, Investment, Capital Investments, Personal
+    // Expense, Receivable, Income Sheet) — admin-only, both directions, same
+    // as Office Expenses above. Not part of the original PRD module list but
+    // real, wired-up functionality; scope matches expenses.
+    match /committee/{recordId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /investments/{recordId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /capitalInvestments/{recordId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /personalExpenses/{recordId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /receivables/{recordId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Rotation state and integration flags. Never exposed to employees —
+    // config/distribution reveals the whole team's lead counts.
+    match /config/{configId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // The Data Bank — cold lead lists imported from spreadsheets.
+    //
+    // Admin-only, both collections. This is the company's cold database: an
+    // employee receives one of these rows when an admin promotes it into a
+    // lead assigned to them, never by reading the source list. Making it
+    // readable to employees would hand every one of them an exportable copy
+    // of every number the business has ever bought.
+    match /dataBankFolders/{folderId} {
+      allow read: if isAdmin() || ownsTeam();
+      allow write: if false;
+    }
+
+    // Records carry no team field of their own — a folder handed to a different
+    // sub admin would otherwise mean rewriting every one of its rows, and a
+    // folder can hold 40,000. The folder is looked up instead. Rules cache
+    // identical get() calls within one evaluation, and a page of records all
+    // comes from the same folder, so a page costs one extra lookup rather than
+    // one per row.
+    match /dataBankRecords/{recordId} {
+      allow read: if isAdmin()
+        || (isSubAdmin()
+            && get(/databases/$(database)/documents/dataBankFolders/$(resource.data.folderId)).data.subAdminUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

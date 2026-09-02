@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; font-family:'Plus Jakarta Sans', system-ui, sans-serif; background:#dfeceb; -webkit-font-smoothing:antialiased; }
+  * { box-sizing:border-box; }
+  a { color:#2f7d78; text-decoration:none; }
+  a:hover { color:#1f5c58; }
+  ::-webkit-scrollbar { width:0; height:0; }
+</style>
+</helmet>
+<div style="min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding:24px 16px; background:#dfeceb;">
+  <div style="width:390px; height:844px; border-radius:44px; background:#e9f1f0; box-shadow:0 22px 60px rgba(18,54,52,0.22); overflow:hidden; display:grid; grid-template-rows:auto auto 1fr auto; position:relative;">
+
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 26px 6px; background:#3f8f8a; color:#fff; font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums;">
+      <span>9:41</span>
+      <div style="display:flex; align-items:center; gap:5px;">
+        <svg width="16" height="11" viewBox="0 0 16 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"></rect><rect x="4.3" y="5" width="3" height="6" rx="1"></rect><rect x="8.6" y="2.5" width="3" height="8.5" rx="1"></rect><rect x="12.9" y="0" width="3" height="11" rx="1" opacity="0.45"></rect></svg>
+        <svg width="22" height="11" viewBox="0 0 22 11" fill="none"><rect x="0.5" y="0.5" width="18" height="10" rx="3" stroke="#fff" opacity="0.6"></rect><rect x="2.4" y="2.4" width="12" height="6.2" rx="1.8" fill="#fff"></rect><path d="M20.4 4v3a2 2 0 0 0 0-3Z" fill="#fff" opacity="0.6"></path></svg>
+      </div>
+    </div>
+
+    <div style="padding:8px 20px 20px; background:#3f8f8a; color:#fff; border-radius:0 0 26px 26px;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:14px;">
+        <div style="min-width:0;">
+          <div style="font-size:12px; font-weight:600; letter-spacing:1.3px; text-transform:uppercase; opacity:0.78;">Day End Report</div>
+          <div style="font-size:24px; font-weight:800; letter-spacing:-0.7px; margin-top:3px;">Hi Umair</div>
+          <div style="font-size:12.5px; font-weight:500; opacity:0.8; margin-top:2px; font-variant-numeric:tabular-nums;">Friday, 28 August 2026</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+          <div style="position:relative; width:38px; height:38px; border-radius:50%; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; cursor:pointer;">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><path d="M18 15V10a6 6 0 1 0-12 0v5l-1.5 2.5h15L18 15ZM10 20a2 2 0 0 0 4 0"></path></svg>
+            <div style="position:absolute; top:6px; right:8px; width:8px; height:8px; border-radius:50%; background:#ffcf6b; border:1.5px solid #3f8f8a;"></div>
+          </div>
+          <div style="width:38px; height:38px; border-radius:50%; background:#fff; color:#2f7d78; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700;">U</div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:10px; margin-top:18px; padding:14px 16px; border-radius:18px; background:rgba(255,255,255,0.14); border:1px solid rgba(255,255,255,0.2);">
+        <sc-for list="{{ attendance }}" as="a" hint-placeholder-count="3">
+          <div style="{{ a.style }}">
+            <div style="font-size:10.5px; font-weight:600; letter-spacing:0.4px; opacity:0.82; white-space:nowrap;">{{ a.label }}</div>
+            <div style="font-size:14.5px; font-weight:700; letter-spacing:-0.3px; margin-top:4px; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ a.value }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="min-height:0; overflow-y:auto; padding:18px 18px 26px;">
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <sc-for list="{{ attGauges }}" as="g" hint-placeholder-count="2">
+          <div style="background:#fbfdfd; border:1px solid #dceae8; border-radius:20px; padding:16px 14px 18px; display:flex; flex-direction:column; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:7px; align-self:flex-start;">
+              <span style="width:7px; height:7px; border-radius:50%; background:#3f8f8a;"></span>
+              <span style="font-size:11.5px; font-weight:700; letter-spacing:0.8px; color:#5b6d6b;">{{ g.label }}</span>
+            </div>
+            <div style="position:relative; width:100%; max-width:96px; aspect-ratio:1;">
+              <svg width="100%" height="100%" viewBox="0 0 96 96" style="display:block;">
+                <circle cx="48" cy="48" r="39" fill="none" stroke="#e6f1f0" stroke-width="9"></circle>
+                <circle cx="48" cy="48" r="39" fill="none" stroke="#3f8f8a" stroke-width="9" stroke-linecap="round" stroke-dasharray="{{ g.dash }}" transform="rotate(-90 48 48)"></circle>
+              </svg>
+              <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;">
+                <span style="font-size:17px; font-weight:800; letter-spacing:-0.6px; color:#22302f; font-variant-numeric:tabular-nums;">{{ g.value }}</span>
+                <span style="font-size:9.5px; font-weight:600; letter-spacing:0.5px; color:#8fa2a0;">ATTEND</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin:22px 2px 12px;">
+        <span style="font-size:16.5px; font-weight:700; letter-spacing:-0.3px; color:#22302f;">Key Performance</span>
+        <div style="display:flex; align-items:center; gap:4px; padding:3px; border-radius:999px; background:#dceae8;">
+          <sc-for list="{{ kpiTabs }}" as="t" hint-placeholder-count="2">
+            <div onClick="{{ t.select }}" style="{{ t.style }}">{{ t.label }}</div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="3">
+          <div style="display:grid; grid-template-columns:44px 1fr auto; align-items:center; gap:14px; background:#fbfdfd; border:1px solid #dceae8; border-radius:18px; padding:14px 16px;">
+            <div style="position:relative; width:44px; height:44px;">
+              <svg width="44" height="44" viewBox="0 0 44 44" style="display:block;">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="#e6f1f0" stroke-width="5"></circle>
+                <circle cx="22" cy="22" r="18" fill="none" stroke="{{ k.color }}" stroke-width="5" stroke-linecap="round" stroke-dasharray="{{ k.dash }}" transform="rotate(-90 22 22)"></circle>
+              </svg>
+              <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center;">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="{{ k.color }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ k.icon }}"></path></svg>
+              </div>
+            </div>
+            <div style="min-width:0;">
+              <div style="font-size:14.5px; font-weight:600; letter-spacing:-0.2px; color:#22302f; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ k.label }}</div>
+              <div style="font-size:12px; font-weight:500; color:#8fa2a0; margin-top:1px;">{{ k.sub }}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:18px; font-weight:800; letter-spacing:-0.5px; color:{{ k.color }}; font-variant-numeric:tabular-nums;">{{ k.value }}</div>
+              <div style="{{ k.pillStyle }}">{{ k.pill }}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="margin-top:22px; background:#fbfdfd; border:1px solid #dceae8; border-radius:20px; padding:18px 16px 16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <span style="font-size:15.5px; font-weight:700; letter-spacing:-0.2px; color:#22302f;">Target Achieved</span>
+          <span style="padding:4px 12px; border-radius:999px; background:#eef5f4; border:1px solid #dceae8; font-size:11px; font-weight:600; color:#5b6d6b;">2026</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px; margin-top:16px;">
+          <sc-for list="{{ targets }}" as="t" hint-placeholder-count="2">
+            <div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+                <span style="font-size:12.5px; font-weight:600; letter-spacing:0.4px; color:#5b6d6b;">{{ t.label }}</span>
+                <span style="font-size:15px; font-weight:800; letter-spacing:-0.4px; color:#c0574a; font-variant-numeric:tabular-nums;">{{ t.value }}</span>
+              </div>
+              <div style="height:9px; border-radius:999px; background:#eef4f3; margin-top:8px; overflow:hidden;">
+                <div style="{{ t.fillStyle }}"></div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="margin-top:16px; background:#fbfdfd; border:1px solid #dceae8; border-radius:20px; padding:18px 16px 8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <span style="font-size:15.5px; font-weight:700; letter-spacing:-0.2px; color:#22302f;">Portfolio</span>
+          <span style="font-size:16px; font-weight:800; letter-spacing:-0.5px; color:#2f7d78; font-variant-numeric:tabular-nums;">{{ portfolioTotal }}</span>
+        </div>
+        <sc-for list="{{ portfolio }}" as="p" hint-placeholder-count="3">
+          <div style="display:grid; grid-template-columns:34px 1fr auto; align-items:center; gap:13px; padding:13px 0; border-bottom:1px solid #f0f6f5;">
+            <div style="{{ p.badgeStyle }}">{{ p.initial }}</div>
+            <div style="min-width:0;">
+              <div style="font-size:14px; font-weight:600; letter-spacing:-0.2px; color:#22302f;">{{ p.label }}</div>
+              <div style="height:6px; border-radius:999px; background:#eef4f3; margin-top:6px; overflow:hidden;">
+                <div style="{{ p.fillStyle }}"></div>
+              </div>
+            </div>
+            <span style="font-size:13.5px; font-weight:700; letter-spacing:-0.2px; color:{{ p.amountColor }}; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ p.amount }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="position:relative; background:#fbfdfd; border-top:1px solid #dceae8; padding:10px 12px 22px;">
+      <div style="display:grid; grid-template-columns:repeat(5, 1fr); align-items:end;">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="5">
+          <div onClick="{{ t.select }}" style="{{ t.style }}">
+            <sc-if value="{{ t.isCall }}">
+              <div style="width:52px; height:52px; border-radius:50%; background:#3f8f8a; box-shadow:0 8px 18px rgba(31,92,88,0.34); display:flex; align-items:center; justify-content:center; margin-top:-26px;">
+                <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M5 4h3l2 5-2.2 1.6a12 12 0 0 0 5.6 5.6L15 14l5 2v3a2 2 0 0 1-2.2 2A16 16 0 0 1 3 6.2 2 2 0 0 1 5 4Z"></path></svg>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isNormal }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; flex-direction:column; align-items:center; gap:5px;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{{ t.d }}"></path></svg>
+                <span style="font-size:10px; font-weight:600; letter-spacing:0.1px;">{{ t.label }}</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+      <div style="position:absolute; left:50%; bottom:8px; transform:translateX(-50%); width:126px; height:4px; border-radius:999px; background:#c3d5d3;"></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:430,&quot;height&quot;:900}}">
+const PORTFOLIO = [
+  { label: "Rental", amount: 5.9 },
+  { label: "Installment", amount: 4.1 },
+  { label: "Investment", amount: 0.0 }
+];
+
+const KPI = {
+  MTD: [
+    { label: "Connects", sub: "Target 100 calls", value: "310%", pct: 100, color: "#3f8f8a", pill: "On track", good: true, icon: "M5 4h3l2 5-2.2 1.6a12 12 0 0 0 5.6 5.6L15 14l5 2v3a2 2 0 0 1-2.2 2A16 16 0 0 1 3 6.2 2 2 0 0 1 5 4Z" },
+    { label: "Client Registration", sub: "Target 30 clients", value: "63%", pct: 63, color: "#c99a2e", pill: "Behind", good: false, icon: "M12 11a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8ZM5 20c0-3.3 3.1-5.2 7-5.2s7 1.9 7 5.2" },
+    { label: "Meeting", sub: "Target 12 meetings", value: "788%", pct: 100, color: "#3f8f8a", pill: "On track", good: true, icon: "M4 5h16v15H4zM8 3v4M16 3v4M4 10h16" }
+  ],
+  YTD: [
+    { label: "Connects", sub: "2,684 of 1,200", value: "223%", pct: 100, color: "#3f8f8a", pill: "On track", good: true, icon: "M5 4h3l2 5-2.2 1.6a12 12 0 0 0 5.6 5.6L15 14l5 2v3a2 2 0 0 1-2.2 2A16 16 0 0 1 3 6.2 2 2 0 0 1 5 4Z" },
+    { label: "Client Registration", sub: "148 of 360", value: "41%", pct: 41, color: "#c99a2e", pill: "Behind", good: false, icon: "M12 11a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8ZM5 20c0-3.3 3.1-5.2 7-5.2s7 1.9 7 5.2" },
+    { label: "Meeting", sub: "512 of 144", value: "355%", pct: 100, color: "#3f8f8a", pill: "On track", good: true, icon: "M4 5h16v15H4zM8 3v4M16 3v4M4 10h16" }
+  ]
+};
+
+const TABS = [
+  { key: "dashboard", label: "Home", d: "M4 11 12 4l8 7v9H4z" },
+  { key: "leads", label: "Leads", d: "M4 6h16M4 12h10M4 18h13" },
+  { key: "call", label: "", call: true },
+  { key: "team", label: "Team", d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4" },
+  { key: "reports", label: "Reports", d: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" }
+];
+
+class Component extends DCLogic {
+  state = { kpiRange: "MTD", tab: "dashboard" };
+
+  dash(pct, r) {
+    const c = 2 * Math.PI * r;
+    return (Math.max(0, Math.min(1, pct / 100)) * c) + " " + c;
+  }
+
+  renderVals() {
+    const portMax = Math.max.apply(null, PORTFOLIO.map(p => p.amount)) || 1;
+    const portTotal = PORTFOLIO.reduce((a, p) => a + p.amount, 0);
+
+    return {
+      attendance: [
+        { label: "CHECK IN", value: "9:15 AM" },
+        { label: "CHECK OUT", value: "7:13 PM" },
+        { label: "WORKED", value: "9h 57m" }
+      ].map((a, i) => Object.assign(a, {
+        style: "flex:1; min-width:0; text-align:center;" + (i > 0 ? " border-left:1px solid rgba(255,255,255,0.22);" : "")
+      })),
+
+      attGauges: [
+        { label: "MTD", pct: 90.5, value: "90.5%" },
+        { label: "YTD", pct: 81.3, value: "81.3%" }
+      ].map(g => Object.assign(g, { dash: this.dash(g.pct, 39) })),
+
+      kpiTabs: ["MTD", "YTD"].map(label => {
+        const active = this.state.kpiRange === label;
+        return {
+          label,
+          select: () => this.setState({ kpiRange: label }),
+          style: "padding:6px 16px; border-radius:999px; font-size:12px; font-weight:700; letter-spacing:0.4px; cursor:pointer; color:" +
+            (active ? "#fff" : "#5b6d6b") + "; background:" + (active ? "#3f8f8a" : "transparent") + ";"
+        };
+      }),
+
+      kpis: KPI[this.state.kpiRange].map(k => Object.assign({}, k, {
+        dash: this.dash(k.pct, 18),
+        pillStyle: "display:inline-block; margin-top:3px; padding:2px 9px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:0.3px; " +
+          (k.good
+            ? "background:#e8f5f3; color:#2f7d78;"
+            : "background:#fdf5e6; color:#a5762a;")
+      })),
+
+      targets: [
+        { label: "MTD", value: "1.33%", pct: 1.33 },
+        { label: "YTD", value: "44.33%", pct: 44.33 }
+      ].map(t => Object.assign(t, {
+        fillStyle: "height:100%; border-radius:999px; width:" + Math.max(2, t.pct) +
+          "%; background:linear-gradient(90deg,#d8735f,#c0574a);"
+      })),
+
+      portfolio: PORTFOLIO.map(p => ({
+        label: p.label,
+        initial: p.label.charAt(0),
+        amount: p.amount > 0 ? "PKR " + p.amount.toFixed(1) + "M" : "—",
+        amountColor: p.amount > 0 ? "#2f7d78" : "#a9bcba",
+        badgeStyle: "width:34px; height:34px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:13.5px; font-weight:700; color:#fff; background:" +
+          (p.amount > 0 ? "#3f8f8a" : "#bcd6d3") + ";",
+        fillStyle: "height:100%; border-radius:999px; width:" +
+          Math.max(p.amount > 0 ? 5 : 0, Math.round((p.amount / portMax) * 100)) + "%; background:" +
+          (p.amount > 0 ? "linear-gradient(90deg,#3f8f8a,#63b3ad)" : "transparent") + ";"
+      })),
+
+      portfolioTotal: "PKR " + portTotal.toFixed(1) + "M",
+
+      tabs: TABS.map(t => {
+        const active = t.key === this.state.tab;
+        return {
+          label: t.label, d: t.d || "",
+          isCall: t.call || null,
+          isNormal: !t.call,
+          select: () => this.setState({ tab: t.key }),
+          style: "display:flex; flex-direction:column; align-items:center; justify-content:flex-end; padding:4px 0; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#93a5a3") + ";"
+        };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>

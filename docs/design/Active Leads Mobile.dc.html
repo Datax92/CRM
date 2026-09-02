@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; font-family:'Manrope', system-ui, sans-serif; background:#dfeceb; -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
+  * { box-sizing:border-box; }
+  input, textarea, select { font-family:inherit; }
+  input::placeholder, textarea::placeholder { color:#9aacaa; }
+  a { color:#2f7d78; text-decoration:none; }
+  a:hover { color:#1f5c58; }
+  ::-webkit-scrollbar { width:0; height:0; }
+</style>
+</helmet>
+<div style="min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding:24px 16px; background:#dfeceb;">
+  <div style="width:390px; height:844px; border-radius:44px; background:#e9f1f0; box-shadow:0 22px 60px rgba(18,54,52,0.22); overflow:hidden; position:relative; display:grid; grid-template-rows:auto 1fr auto;">
+
+    <div style="background:#3f8f8a; color:#fff; border-radius:0 0 26px 26px; padding:14px 20px 18px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; padding:0 6px 8px;">
+        <span>9:41</span>
+        <div style="display:flex; align-items:center; gap:5px;">
+          <svg width="16" height="11" viewBox="0 0 16 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"></rect><rect x="4.3" y="5" width="3" height="6" rx="1"></rect><rect x="8.6" y="2.5" width="3" height="8.5" rx="1"></rect><rect x="12.9" y="0" width="3" height="11" rx="1" opacity="0.45"></rect></svg>
+          <svg width="22" height="11" viewBox="0 0 22 11" fill="none"><rect x="0.5" y="0.5" width="18" height="10" rx="3" stroke="#fff" opacity="0.6"></rect><rect x="2.4" y="2.4" width="12" height="6.2" rx="1.8" fill="#fff"></rect><path d="M20.4 4v3a2 2 0 0 0 0-3Z" fill="#fff" opacity="0.6"></path></svg>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:14px;">
+        <div style="min-width:0;">
+          <div style="font-size:11.5px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; opacity:0.78;">Pipeline</div>
+          <div style="font-size:24px; font-weight:800; letter-spacing:-0.7px; margin-top:2px;">All Leads</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+          <div style="width:38px; height:38px; border-radius:50%; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; cursor:pointer;">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M7 12h10M10 17h4"></path></svg>
+          </div>
+          <div style="width:38px; height:38px; border-radius:50%; background:#fff; color:#2f7d78; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700;">M</div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:9px; margin-top:16px; padding:11px 15px; border-radius:999px; background:rgba(255,255,255,0.16); border:1px solid rgba(255,255,255,0.22);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="2"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg>
+        <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Search name, phone or ID" style="flex:1; min-width:0; border:none; outline:none; background:transparent; font-size:13.5px; font-weight:500; color:#fff;">
+      </div>
+    </div>
+
+    <div style="min-height:0; display:grid; grid-template-rows:auto 1fr;">
+      <div style="display:flex; align-items:center; gap:8px; padding:14px 18px 10px; overflow-x:auto;">
+        <sc-for list="{{ chips }}" as="c" hint-placeholder-count="4">
+          <div onClick="{{ c.select }}" style="{{ c.style }}">
+            <span>{{ c.label }}</span>
+            <sc-if value="{{ c.badge }}">
+              <span style="{{ c.badgeStyle }}">{{ c.badge }}</span>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="min-height:0; overflow-y:auto; padding:2px 18px 24px; display:flex; flex-direction:column; gap:11px;">
+        <sc-for list="{{ leads }}" as="l" hint-placeholder-count="3">
+          <div onClick="{{ l.open }}" style="display:grid; grid-template-columns:48px minmax(0,1fr) auto; align-items:center; gap:13px; background:#fbfdfd; border:1px solid #dceae8; border-radius:20px; padding:14px 16px;" style-hover="border-color:#8cc3bf;">
+            <div style="{{ l.avatarStyle }}">{{ l.initials }}</div>
+            <div style="min-width:0;">
+              <div style="font-size:15.5px; font-weight:700; letter-spacing:-0.35px; color:#22302f; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.name }}</div>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:4px; min-width:0;">
+                <span style="{{ l.statusStyle }}">{{ l.statusLabel }}</span>
+                <span style="font-size:12px; font-weight:500; color:#a0b2b0; flex-shrink:0;">·</span>
+                <span style="font-size:12px; font-weight:500; color:#8fa2a0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.phone }}</span>
+              </div>
+            </div>
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:7px; flex-shrink:0;">
+              <span style="font-size:11.5px; font-weight:500; color:#9aacaa; white-space:nowrap; font-variant-numeric:tabular-nums;">{{ l.shortDate }}</span>
+              <div style="display:flex; align-items:center; gap:7px;">
+                <span style="{{ l.countStyle }}">{{ l.touches }}</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3f8f8a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 6 6-6 6M14 6l6 6-6 6"></path></svg>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+        <sc-if value="{{ noResults }}">
+          <div style="padding:46px 12px; text-align:center; font-size:13.5px; font-weight:500; color:#8fa2a0;">No leads match this filter.</div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="position:relative; background:#fbfdfd; border-top:1px solid #dceae8; padding:10px 12px 22px;">
+      <div style="display:grid; grid-template-columns:repeat(5, 1fr); align-items:end;">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="5">
+          <div onClick="{{ t.select }}" style="{{ t.style }}">
+            <sc-if value="{{ t.isAdd }}">
+              <div onClick="{{ openAdd }}" style="width:52px; height:52px; border-radius:50%; background:#3f8f8a; box-shadow:0 8px 18px rgba(31,92,88,0.34); display:flex; align-items:center; justify-content:center; margin-top:-26px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isNormal }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; flex-direction:column; align-items:center; gap:5px;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{{ t.d }}"></path></svg>
+                <span style="font-size:10px; font-weight:600;">{{ t.label }}</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+      <div style="position:absolute; left:50%; bottom:8px; transform:translateX(-50%); width:126px; height:4px; border-radius:999px; background:#c3d5d3;"></div>
+    </div>
+
+    <sc-if value="{{ detailOpen }}">
+      <div style="position:absolute; inset:0; z-index:30; background:#e9f1f0; display:grid; grid-template-rows:auto auto auto 1fr auto;">
+
+        <div style="background:#3f8f8a; color:#fff; padding:14px 20px 18px; border-radius:0 0 26px 26px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; font-size:12.5px; font-weight:600; font-variant-numeric:tabular-nums; padding:0 6px 10px;">
+            <span>9:41</span>
+            <div style="display:flex; align-items:center; gap:5px;">
+              <svg width="16" height="11" viewBox="0 0 16 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"></rect><rect x="4.3" y="5" width="3" height="6" rx="1"></rect><rect x="8.6" y="2.5" width="3" height="8.5" rx="1"></rect><rect x="12.9" y="0" width="3" height="11" rx="1" opacity="0.45"></rect></svg>
+              <svg width="22" height="11" viewBox="0 0 22 11" fill="none"><rect x="0.5" y="0.5" width="18" height="10" rx="3" stroke="#fff" opacity="0.6"></rect><rect x="2.4" y="2.4" width="12" height="6.2" rx="1.8" fill="#fff"></rect><path d="M20.4 4v3a2 2 0 0 0 0-3Z" fill="#fff" opacity="0.6"></path></svg>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <div onClick="{{ closeDetail }}" style="width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0;">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round"><path d="m14 6-6 6 6 6"></path></svg>
+            </div>
+            <span style="font-size:12px; font-weight:600; letter-spacing:1.3px; text-transform:uppercase; opacity:0.82;">Lead Detail</span>
+            <div style="width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:14px; margin-top:16px;">
+            <div style="width:56px; height:56px; border-radius:18px; background:rgba(255,255,255,0.2); border:1.5px solid rgba(255,255,255,0.55); display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; flex-shrink:0;">{{ sel.initials }}</div>
+            <div style="min-width:0;">
+              <div style="font-size:21px; font-weight:800; letter-spacing:-0.6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ sel.name }}</div>
+              <div style="display:flex; align-items:center; gap:8px; margin-top:5px; flex-wrap:wrap;">
+                <span style="padding:3px 11px; border-radius:999px; background:rgba(255,255,255,0.24); font-size:10.5px; font-weight:700; letter-spacing:0.7px;">{{ sel.status }}</span>
+                <span style="font-size:12px; font-weight:500; opacity:0.85; font-variant-numeric:tabular-nums;">ID {{ sel.id }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr 44px; gap:9px; margin-top:16px;">
+            <div style="display:flex; align-items:center; justify-content:center; gap:8px; padding:11px; border-radius:999px; background:#fff; color:#2f7d78; font-size:13.5px; font-weight:700; cursor:pointer;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 4h3l2 5-2.2 1.6a12 12 0 0 0 5.6 5.6L15 14l5 2v3a2 2 0 0 1-2.2 2A16 16 0 0 1 3 6.2 2 2 0 0 1 5 4Z"></path></svg>
+              <span>Call</span>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:center; gap:8px; padding:11px; border-radius:999px; border:1.5px solid rgba(255,255,255,0.65); font-size:13.5px; font-weight:700; cursor:pointer;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 12a9 9 0 1 1-4.2-7.6L21 4l-1 4.2A8.9 8.9 0 0 1 21 12Z"></path></svg>
+              <span>WhatsApp</span>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:center; border-radius:999px; border:1.5px solid rgba(255,255,255,0.65); cursor:pointer;">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2.5"></rect><path d="m3.6 6.5 8.4 6 8.4-6"></path></svg>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; background:#dceae8; margin:14px 18px 0; border:1px solid #dceae8; border-radius:16px; overflow:hidden;">
+          <sc-for list="{{ facts }}" as="f" hint-placeholder-count="4">
+            <div style="background:#fbfdfd; padding:12px 14px; min-width:0;">
+              <div style="font-size:9.5px; font-weight:700; letter-spacing:1px; color:#8fa2a0;">{{ f.label }}</div>
+              <div style="font-size:13.5px; font-weight:600; color:#22302f; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ f.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:4px; margin:14px 18px 0; padding:4px; border-radius:999px; background:#dceae8;">
+          <sc-for list="{{ detailTabs }}" as="t" hint-placeholder-count="3">
+            <div onClick="{{ t.select }}" style="{{ t.style }}">{{ t.label }}</div>
+          </sc-for>
+        </div>
+
+        <div style="min-height:0; overflow-y:auto; padding:14px 18px 22px;">
+
+          <sc-if value="{{ tabNotes }}">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <sc-for list="{{ followups }}" as="n" hint-placeholder-count="3">
+                <div style="background:#fbfdfd; border:1px solid #dceae8; border-radius:18px; padding:14px 15px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                    <span style="font-size:12px; font-weight:700; letter-spacing:0.3px; color:#2f7d78;">Touch #{{ n.n }}</span>
+                    <span style="font-size:11.5px; font-weight:500; color:#9aacaa; font-variant-numeric:tabular-nums;">{{ n.when }}</span>
+                  </div>
+                  <div style="font-size:13.5px; font-weight:500; line-height:1.5; color:#3c4d4b; margin-top:8px; text-wrap:pretty;">{{ n.body }}</div>
+                  <sc-if value="{{ n.channel }}">
+                    <span style="display:inline-block; margin-top:10px; padding:4px 11px; border-radius:999px; background:#e8f5f3; color:#2f7d78; font-size:10.5px; font-weight:700; letter-spacing:0.3px;">{{ n.channel }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ tabAudit }}">
+            <div>
+              <sc-for list="{{ audit }}" as="e" hint-placeholder-count="4">
+                <div style="display:grid; grid-template-columns:16px 1fr; gap:12px; padding-bottom:16px;">
+                  <div style="display:flex; flex-direction:column; align-items:center; gap:4px; padding-top:5px;">
+                    <div style="width:8px; height:8px; border-radius:50%; background:#3f8f8a;"></div>
+                    <div style="width:1.5px; flex:1; min-height:22px; background:#d6e7e5;"></div>
+                  </div>
+                  <div>
+                    <div style="font-size:13.5px; font-weight:600; color:#22302f; text-wrap:pretty;">{{ e.action }}</div>
+                    <div style="font-size:12px; font-weight:500; color:#8fa2a0; margin-top:2px;">{{ e.detail }}</div>
+                    <div style="font-size:11.5px; font-weight:500; color:#a9bcba; margin-top:3px; font-variant-numeric:tabular-nums;">{{ e.when }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ tabDeal }}">
+            <div style="background:#fbfdfd; border:1px solid #dceae8; border-radius:20px; padding:16px;">
+              <div style="font-size:15.5px; font-weight:700; letter-spacing:-0.2px; color:#22302f;">Record Won Deal</div>
+              <div style="font-size:12.5px; font-weight:500; color:#8fa2a0; margin-top:3px;">Closing this lead records revenue permanently.</div>
+              <div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+                <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+                  <span>Amount Received (PKR)</span>
+                  <input value="{{ received }}" onChange="{{ onReceived }}" placeholder="0" style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+                </label>
+                <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+                  <span>Payable Amount (PKR)</span>
+                  <input value="{{ payable }}" onChange="{{ onPayable }}" placeholder="0" style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+                </label>
+                <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+                  <span>Payment Method</span>
+                  <select style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+                    <option>Cash</option>
+                    <option>Bank Transfer</option>
+                    <option>Cheque</option>
+                    <option>Card</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding:13px 15px; border-radius:16px; background:#eef8f7; border:1px solid #bfe0dc;">
+                <span style="font-size:10.5px; font-weight:700; letter-spacing:0.9px; color:#2f7d78;">GROSS PROFIT</span>
+                <span style="font-size:16px; font-weight:800; letter-spacing:-0.4px; color:#2f7d78; font-variant-numeric:tabular-nums;">{{ grossProfit }}</span>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+
+        <div style="padding:12px 18px 26px; background:#fbfdfd; border-top:1px solid #dceae8;">
+          <div style="display:flex; align-items:center; justify-content:center; gap:9px; padding:15px; border-radius:999px; background:#3f8f8a; color:#fff; font-size:14.5px; font-weight:700; cursor:pointer;" style-hover="background:#2f7d78;">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+            <span>{{ primaryAction }}</span>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ addOpen }}">
+      <div style="position:absolute; inset:0; z-index:40; background:rgba(24,52,50,0.42); display:flex; align-items:flex-end;">
+        <div style="width:100%; max-height:88%; background:#fbfdfd; border-radius:28px 28px 0 0; display:grid; grid-template-rows:auto 1fr auto; overflow:hidden;">
+          <div style="padding:14px 20px 12px;">
+            <div style="width:44px; height:4px; border-radius:999px; background:#dceae8; margin:0 auto 14px;"></div>
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+              <div>
+                <div style="font-size:19px; font-weight:800; letter-spacing:-0.5px; color:#22302f;">Add Lead</div>
+                <div style="font-size:12.5px; font-weight:500; color:#8fa2a0; margin-top:2px;">Manual entry into the pipeline.</div>
+              </div>
+              <div onClick="{{ closeAdd }}" style="width:34px; height:34px; border-radius:50%; background:#eef5f4; display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0;">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#5b6d6b" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+              </div>
+            </div>
+          </div>
+          <div style="min-height:0; overflow-y:auto; padding:6px 20px 20px; display:flex; flex-direction:column; gap:13px;">
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Full Name</span>
+              <input placeholder="e.g. Ali Raza" style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Phone Number</span>
+              <input placeholder="e.g. 0300 1234567" style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+            </label>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>City / Location</span>
+              <input placeholder="e.g. Lahore" style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:600; color:#22302f; outline:none;">
+            </label>
+            <div style="display:flex; flex-direction:column; gap:7px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>Status</span>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <sc-for list="{{ newStatusOpts }}" as="o" hint-placeholder-count="3">
+                  <div onClick="{{ o.select }}" style="{{ o.style }}">{{ o.label }}</div>
+                </sc-for>
+              </div>
+            </div>
+            <label style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; font-weight:600; color:#5b6d6b;">
+              <span>First Note</span>
+              <textarea rows="3" placeholder="What was discussed..." style="border:1px solid #dceae8; background:#f7fbfa; border-radius:14px; padding:13px 14px; font-size:14px; font-weight:500; color:#22302f; outline:none; resize:none;"></textarea>
+            </label>
+          </div>
+          <div style="padding:12px 20px 26px; border-top:1px solid #e6f1f0;">
+            <div onClick="{{ closeAdd }}" style="display:flex; align-items:center; justify-content:center; padding:15px; border-radius:999px; background:#3f8f8a; color:#fff; font-size:14.5px; font-weight:700; cursor:pointer;" style-hover="background:#2f7d78;">Add Lead to Pipeline</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:430,&quot;height&quot;:900}}">
+const LEADS = [
+  {
+    id: "3691703", name: "newLead", phone: "+92 310 5105220", email: "newlead@gmail.com", city: "Lahore",
+    status: "ASSIGNED", assignee: "testemployee", source: "Manual Entry", campaign: "—",
+    date: "04 July 2026, 02:10 PM", bucket: "overdue", stage: "Contacted",
+    followups: [
+      { n: 2, when: "25 Aug, 4:20 pm", body: "Called, asked to share the package sheet on WhatsApp.", channel: "Phone Call" },
+      { n: 1, when: "20 Aug, 11:36 am", body: "First contact attempt — no answer.", channel: "Phone Call" }
+    ],
+    audit: [
+      { action: "Status changed to ASSIGNED", detail: "by admin", when: "20 Aug 2026, 11:22 am" },
+      { action: "Assigned to testemployee", detail: "Auto round-robin", when: "20 Aug 2026, 11:21 am" },
+      { action: "Lead created", detail: "Manual entry", when: "20 Aug 2026, 11:20 am" }
+    ]
+  },
+  {
+    id: "3679434", name: "ABDULLAH AHSAN", phone: "+92 313 5506223", email: "datax.sol@gmail.com", city: "Islamabad",
+    status: "ACCEPTED", assignee: "testemployee", source: "Campaign Import", campaign: "testCampaing",
+    date: "27 June 2026, 02:35 PM", bucket: "overdue", stage: "Negotiation",
+    followups: [
+      { n: 5, when: "25 Aug, 4:14 pm", body: "Discussed settlement figure, awaiting confirmation.", channel: "Phone Call" },
+      { n: 4, when: "25 Aug, 4:14 pm", body: "Shared revised proposal over email.", channel: null },
+      { n: 3, when: "25 Aug, 4:14 pm", body: "Site visit scheduled for Thursday.", channel: null },
+      { n: 2, when: "21 Aug, 12:02 pm", body: "Sent package details on WhatsApp.", channel: "WhatsApp" },
+      { n: 1, when: "18 Aug, 4:31 pm", body: "Lead accepted and qualified.", channel: "Phone Call" }
+    ],
+    audit: [
+      { action: "Pipeline stage set to Negotiation", detail: "by testemployee", when: "25 Aug 2026, 04:15 pm" },
+      { action: "Note added (Touch #5)", detail: "by testemployee", when: "25 Aug 2026, 04:14 pm" },
+      { action: "Status changed to ACCEPTED", detail: "by testemployee", when: "18 Aug 2026, 04:31 pm" },
+      { action: "Imported from campaign", detail: "testCampaing", when: "18 Aug 2026, 04:07 pm" }
+    ]
+  }
+];
+
+const TABS = [
+  { key: "dashboard", label: "Home", d: "M4 11 12 4l8 7v9H4z" },
+  { key: "leads", label: "Leads", d: "M4 6h16M4 12h10M4 18h13" },
+  { key: "add", label: "", add: true },
+  { key: "team", label: "Team", d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4" },
+  { key: "reports", label: "Reports", d: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" }
+];
+
+const STATUS_TAGS = {
+  ASSIGNED: "background:#fdf5e6; color:#a5762a; border:1px solid #f0e0c0;",
+  ACCEPTED: "background:#eef6fb; color:#3f7ea3; border:1px solid #cfe2ee;"
+};
+
+class Component extends DCLogic {
+  state = { query: "", chip: "All", tab: "leads", selected: null, detailTab: "notes", addOpen: false, newStatus: "New", received: "", payable: "" };
+
+  filtered() {
+    const q = this.state.query.trim().toLowerCase();
+    return LEADS.filter(l => {
+      if (this.state.chip === "Overdue" && l.bucket !== "overdue") return false;
+      if (this.state.chip === "Today" && l.bucket !== "today") return false;
+      if (this.state.chip === "Done" && l.bucket !== "done") return false;
+      if (!q) return true;
+      return (l.name + " " + l.phone + " " + l.id).toLowerCase().includes(q);
+    });
+  }
+
+  initials(name) {
+    const p = name.trim().split(/\s+/);
+    return (p.length === 1 ? p[0].slice(0, 2) : p[0][0] + p[1][0]).toUpperCase();
+  }
+
+  renderVals() {
+    const rows = this.filtered();
+    const sel = LEADS.find(l => l.id === this.state.selected) || null;
+    const r = parseFloat(this.state.received.replace(/[^0-9.]/g, ""));
+    const p = parseFloat(this.state.payable.replace(/[^0-9.]/g, ""));
+    const gp = isNaN(r) ? null : (isNaN(p) ? r : r - p);
+
+    return {
+      query: this.state.query,
+      onQuery: e => this.setState({ query: e.target.value }),
+      noResults: rows.length === 0,
+
+      detailOpen: !!sel,
+      closeDetail: () => this.setState({ selected: null }),
+      sel: sel ? Object.assign({}, sel, { initials: this.initials(sel.name) }) : {},
+      primaryAction: this.state.detailTab === "deal" ? "Close Deal & Settle" : "Add Follow-up Note",
+
+      facts: sel ? [
+        { label: "PHONE", value: sel.phone },
+        { label: "CITY", value: sel.city },
+        { label: "ASSIGNEE", value: sel.assignee },
+        { label: "STAGE", value: sel.stage }
+      ] : [],
+
+      followups: sel ? sel.followups : [],
+      audit: sel ? sel.audit : [],
+      tabNotes: this.state.detailTab === "notes",
+      tabAudit: this.state.detailTab === "audit",
+      tabDeal: this.state.detailTab === "deal",
+      received: this.state.received,
+      payable: this.state.payable,
+      onReceived: e => this.setState({ received: e.target.value }),
+      onPayable: e => this.setState({ payable: e.target.value }),
+      grossProfit: gp === null ? "—" : "PKR " + gp.toLocaleString(),
+
+      detailTabs: [
+        { key: "notes", label: "Follow-ups" },
+        { key: "audit", label: "Audit" },
+        { key: "deal", label: "Deal" }
+      ].map(t => {
+        const active = t.key === this.state.detailTab;
+        return {
+          label: t.label,
+          select: () => this.setState({ detailTab: t.key }),
+          style: "flex:1; text-align:center; padding:9px 6px; border-radius:999px; font-size:12.5px; font-weight:700; letter-spacing:-0.1px; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#6c7d7b") + "; background:" + (active ? "#fff" : "transparent") + ";"
+        };
+      }),
+
+      addOpen: this.state.addOpen,
+      openAdd: () => this.setState({ addOpen: true }),
+      closeAdd: () => this.setState({ addOpen: false }),
+      newStatusOpts: ["New", "Assigned", "Accepted"].map(label => {
+        const active = this.state.newStatus === label;
+        return {
+          label,
+          select: () => this.setState({ newStatus: label }),
+          style: "padding:9px 18px; border-radius:999px; font-size:12.5px; font-weight:600; cursor:pointer; border:1px solid " +
+            (active ? "#3f8f8a" : "#dceae8") + "; background:" + (active ? "#3f8f8a" : "#f7fbfa") +
+            "; color:" + (active ? "#fff" : "#5b6d6b") + ";"
+        };
+      }),
+
+      chips: ["All", "Today", "Done", "Overdue"].map(label => {
+        const active = this.state.chip === label;
+        const badge = label === "Overdue" ? LEADS.filter(l => l.bucket === "overdue").length : null;
+        return {
+          label, badge,
+          select: () => this.setState({ chip: label }),
+          style: "display:flex; align-items:center; gap:7px; flex-shrink:0; padding:9px 17px; border-radius:999px; font-size:12.5px; font-weight:600; cursor:pointer; border:1px solid " +
+            (active ? "#3f8f8a" : "#dceae8") + "; background:" + (active ? "#3f8f8a" : "#fbfdfd") +
+            "; color:" + (active ? "#fff" : "#5b6d6b") + ";",
+          badgeStyle: "min-width:19px; padding:1px 6px; border-radius:999px; font-size:10.5px; font-weight:700; text-align:center; background:" +
+            (active ? "rgba(255,255,255,0.28)" : "#e05a4a") + "; color:#fff;"
+        };
+      }),
+
+      leads: rows.map(l => {
+        const accent = l.status === "ASSIGNED" ? "#d9a33f" : "#5f9fc4";
+        return {
+          name: l.name,
+          phone: l.phone,
+          shortDate: l.date.replace(/^(\d+) (\w{3})\w* (\d{4}), (.+)$/, function (m, d, mon, y, t) {
+            return d + " " + mon + " " + y + ", " + t.toLowerCase();
+          }),
+          statusLabel: l.status.charAt(0) + l.status.slice(1).toLowerCase(),
+          touches: l.followups.length,
+          initials: this.initials(l.name),
+          open: () => this.setState({ selected: l.id, detailTab: "notes", received: "", payable: "" }),
+          avatarStyle: "width:48px; height:48px; border-radius:50%; background:#fff; border:2px solid " + accent +
+            "; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; letter-spacing:0.2px; color:#4a5c5a; flex-shrink:0;",
+          statusStyle: "font-size:12px; font-weight:700; color:" + accent + "; flex-shrink:0;",
+          countStyle: "min-width:22px; height:22px; padding:0 6px; border-radius:999px; background:#3f8f8a; color:#fff; font-size:11.5px; font-weight:700; display:flex; align-items:center; justify-content:center;"
+        };
+      }),
+
+      tabs: TABS.map(t => {
+        const active = t.key === this.state.tab;
+        return {
+          label: t.label, d: t.d || "",
+          isAdd: t.add || null,
+          isNormal: !t.add,
+          select: () => { if (!t.add) this.setState({ tab: t.key }); },
+          style: "display:flex; flex-direction:column; align-items:center; justify-content:flex-end; padding:4px 0; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#93a5a3") + ";"
+        };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>
