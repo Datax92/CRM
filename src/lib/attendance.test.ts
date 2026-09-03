@@ -169,9 +169,19 @@ describe('attendance rate', () => {
     assert.equal(percent, 0);
   });
 
-  test('leave counts against attendance but is still a working day', () => {
-    const { percent } = attendanceRate(['PRESENT', 'LEAVE']);
-    assert.equal(percent, 50);
+  test('approved leave leaves the denominator rather than counting as a miss', () => {
+    // Changed with the Attendance module (§7): leave is granted time off, and
+    // an approved day must not read as a failure to attend. It drops out of
+    // the working days entirely rather than counting as a zero.
+    assert.equal(attendanceRate(['PRESENT', 'LEAVE']).percent, 100);
+    assert.equal(attendanceRate(['PRESENT', 'LEAVE']).workingDays, 1);
+  });
+
+  test('a late day is a full day attended', () => {
+    // The penalty for lateness is the deduction rule (§5), not a second,
+    // hidden penalty inside the attendance percentage.
+    assert.equal(attendanceRate(['LATE']).percent, 100);
+    assert.equal(attendanceRate(['PRESENT', 'LATE', 'ABSENT']).percent, 66.7);
   });
 });
 

@@ -20,6 +20,14 @@ import {
   type AttendanceStatus,
 } from '@/lib/attendance';
 
+/** One side of a correction — what the day said before, and after. */
+export interface AttendanceAdjustmentSide {
+  status?: AttendanceStatus | null;
+  late?: boolean;
+  checkIn?: string | null;
+  checkOut?: string | null;
+}
+
 export interface AttendanceRecord {
   id: string;
   uid: string;
@@ -33,7 +41,37 @@ export interface AttendanceRecord {
   network?: AttendanceNetwork;
   lastIp?: string | null;
   overrideStatus?: AttendanceStatus;
-  overrideNote?: string;
+  overrideNote?: string | null;
+  /** Whether the check-in that opened the day was after the allowed time (§5). */
+  late?: boolean;
+  lateByMinutes?: number;
+  /** The threshold as it stood at the punch, so a later policy cannot re-judge it. */
+  lateAfter?: string;
+  /** The address the day was opened from (§2), kept beside the last one. */
+  checkInIp?: string | null;
+  /** Set when an approved leave wrote this day (§7). */
+  leaveType?: 'CASUAL' | 'MEDICAL';
+  leaveRequestId?: string | null;
+  /** `SYSTEM` when the absence sweep wrote it, rather than a person (§4). */
+  markedAbsentBy?: string | null;
+  absenceCutoff?: string;
+  /**
+   * A correction, stored **beside** the observed times rather than over them
+   * (§11) — `HH:MM` in Karachi. Absent means nobody has corrected the day.
+   */
+  adjustedCheckIn?: string | null;
+  adjustedCheckOut?: string | null;
+  /** Who corrected this day, when, and what changed (§11). */
+  adjustments?: Array<{
+    at?: FirestoreTimestamp;
+    byUid: string;
+    byName?: string | null;
+    from?: AttendanceAdjustmentSide;
+    to?: AttendanceAdjustmentSide;
+    note?: string | null;
+  }>;
+  adjustedAt?: FirestoreTimestamp;
+  adjustedByUid?: string | null;
 }
 
 export interface AttendanceDay {
@@ -45,6 +83,12 @@ export interface AttendanceDay {
   firstAt: Date | null;
   lastAt: Date | null;
   isFuture: boolean;
+  /**
+   * The stored row, so clicking a date can show everything §3 asks for — the
+   * IP, the late margin, the leave type, who adjusted it — without a second
+   * read. Null on a day nothing was written for.
+   */
+  record: AttendanceRecord | null;
 }
 
 function toDate(value: FirestoreTimestamp | undefined): Date | null {
@@ -184,6 +228,11 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
       let status: AttendanceStatus;
       if (record?.overrideStatus) {
         status = record.overrideStatus;
+      } else if (record?.late) {
+        // §3 — Late is its own colour on the calendar, and its own column in
+        // the reports. An override still wins: HR excusing a late is exactly
+        // the case a manual adjustment exists for.
+        status = 'LATE';
       } else if (dayKey > todayKey) {
         status = 'UNRECORDED';
       } else if (weekday === WEEKLY_OFF_DAY) {
@@ -201,6 +250,7 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
         firstAt,
         lastAt,
         isFuture: dayKey > todayKey,
+        record: record ?? null,
       };
     });
 
@@ -215,10 +265,13 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
       .filter((r) => r.dayKey.startsWith(year) && r.dayKey <= todayKey)
       .map((r) =>
         r.overrideStatus ??
-        deriveStatus(r.workedMinutes ?? workedMinutes(
-          toDate(r.firstActionAt)?.getTime(),
-          toDate(r.lastActionAt)?.getTime()
-        ), true)
+        (r.late
+          ? ('LATE' as AttendanceStatus)
+          : deriveStatus(
+              r.workedMinutes ??
+                workedMinutes(toDate(r.firstActionAt)?.getTime(), toDate(r.lastActionAt)?.getTime()),
+              true
+            ))
       );
 
     return {

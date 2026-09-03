@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Menu, X, Home, Briefcase, LogOut, Target, Users, DollarSign,
@@ -8,7 +8,9 @@ import {
   Settings, ChevronsLeft, ChevronsRight, Database, FolderOpen,
   ListChecks, IdCard, SlidersHorizontal,
   Handshake, Receipt, FileBarChart, Users2, Building2, TrendingUp,
-  PiggyBank, ReceiptText, Wallet2, BarChart3, Megaphone, PieChart
+  PiggyBank, ReceiptText, Wallet2, BarChart3, Megaphone, PieChart,
+  CalendarCheck, CalendarDays, CalendarClock, UserCheck, AlertTriangle, LayoutDashboard,
+  BadgeDollarSign
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -16,6 +18,12 @@ import { MobileShell } from "./mobile/MobileShell";
 import { NotificationsPanel } from "./NotificationsPanel";
 import Link from "next/link";
 import { BrandLogo } from "./BrandLogo";
+
+/**
+ * The height a rail flyout is guaranteed, so it is never squeezed into a
+ * sliver against the bottom of the screen. Anything past this scrolls.
+ */
+const MIN_FLYOUT_HEIGHT = 260;
 
 export function GlobalLayout({ children }: { children: React.ReactNode }) {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
@@ -27,12 +35,30 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   // Which rail section has its flyout open. Only meaningful while collapsed.
-  const [railFlyout, setRailFlyout] = useState<string | null>(null);
+  /**
+   * The collapsed rail's flyout menu.
+   *
+   * It carries **where to draw the panel**, not just which one is open.
+   * Anchored to the rail item with `absolute top-0` it ran straight off the
+   * bottom of the screen for any menu with more than four entries —
+   * Attendance has seven — and the panel clipped rather than scrolled, so the
+   * last items simply could not be reached.
+   *
+   * Position is measured from the button and clamped into the viewport, and
+   * the panel is `position: fixed`, which also frees it from every clipping
+   * ancestor between here and the rail.
+   */
+  const [railFlyout, setRailFlyout] = useState<{
+    title: string;
+    top: number;
+    left: number;
+    maxHeight: number;
+  } | null>(null);
   const [topbarSearch, setTopbarSearch] = useState("");
   const profileRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
-  const { user, role, logout, getIdToken } = useAuth();
+  const { user, role, isHr, logout, getIdToken } = useAuth();
   const router = useRouter();
   // Phones get their own shell — a teal header per screen and a bottom tab
   // bar — rather than a narrowed sidebar. Measured in JS, not a media query;
@@ -65,6 +91,31 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
     setSidebarOpen((open) => (open ? false : open));
   }, [pathname]);
 
+  /**
+   * The flyout's position is measured once, when it opens. A resize or a
+   * scroll invalidates that measurement, and a menu left hanging in the wrong
+   * place is worse than one that has closed — so it closes.
+   *
+   * The handler is a `useCallback` outside the effect rather than a closure
+   * inside it: this project's lint rule rejects a `setState` written in an
+   * effect body, and it cannot see that this one only ever runs from a browser
+   * event.
+   */
+  const closeFlyout = useCallback(() => {
+    setRailFlyout((open) => (open ? null : open));
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("resize", closeFlyout);
+    // Capture phase: the scroll that matters is the sidebar's own, and that
+    // does not bubble to the window.
+    window.addEventListener("scroll", closeFlyout, true);
+    return () => {
+      window.removeEventListener("resize", closeFlyout);
+      window.removeEventListener("scroll", closeFlyout, true);
+    };
+  }, [closeFlyout]);
+
   if (!user) return <>{children}</>;
 
   if (isMobile) return <MobileShell role={role ?? undefined}>{children}</MobileShell>;
@@ -95,7 +146,16 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         title: "Employee Hub", short: "Team", icon: Users,
         subItems: [
           { title: "Directory", path: "/admin/employees/directory", icon: IdCard },
+          // §4 — activity per person over a date range, computed from the
+          // records rather than kept as a separate statistic.
+          { title: "Reports", path: "/admin/team/reports", icon: BarChart3 },
           { title: "Priority Settings", path: "/admin/employees/priority", icon: SlidersHorizontal }
+        ]
+      },
+      {
+        title: "Clients", icon: Users2,
+        subItems: [
+          { title: "Folders", path: "/admin/clients", icon: FolderOpen }
         ]
       },
       {
@@ -103,6 +163,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         subItems: [
           { title: "Closed Deals", path: "/admin/financials/deals", icon: Handshake },
           { title: "Profit Distribution", path: "/admin/financials/distribution", icon: PieChart },
+          { title: "Salary / Payroll", path: "/admin/financials/payroll", icon: BadgeDollarSign },
           { title: "Office Expenses", path: "/admin/financials/expenses", icon: Receipt },
           { title: "Reports", path: "/admin/financials/reports", icon: FileBarChart }
         ]
@@ -119,7 +180,18 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           { title: "Personal Expense", path: "/admin/accounts/personal-expense", icon: Wallet2 }
         ]
       },
-      { title: "Search", icon: Search, path: "/admin/search" },
+      {
+        title: "Attendance", short: "Time", icon: CalendarCheck,
+        subItems: [
+          { title: "Dashboard", path: "/admin/attendance", icon: LayoutDashboard },
+          { title: "My Attendance", path: "/admin/attendance/me", icon: UserCheck },
+          { title: "Calendar", path: "/admin/attendance/calendar", icon: CalendarDays },
+          { title: "Leave Management", path: "/admin/attendance/leave", icon: CalendarClock },
+          { title: "Attendance Reports", path: "/admin/attendance/reports", icon: FileBarChart },
+          { title: "Late / Absence", path: "/admin/attendance/records", icon: AlertTriangle },
+          { title: "Settings", path: "/admin/attendance/settings", icon: Settings }
+        ]
+      },
       { title: "Settings", icon: Settings, path: "/admin/settings" }
     ]
     : role === "subadmin"
@@ -143,13 +215,40 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         {
           title: "My Team", short: "Team", icon: Users,
           subItems: [
-            { title: "Team Performance", path: "/subadmin/team", icon: IdCard }
+            { title: "Team Performance", path: "/subadmin/team", icon: IdCard },
+            { title: "Reports", path: "/subadmin/reports", icon: BarChart3 }
+          ]
+        },
+        {
+          title: "Clients", icon: Users2,
+          subItems: [
+            { title: "Folders", path: "/subadmin/clients", icon: FolderOpen }
+          ]
+        },
+        {
+          title: "Attendance", short: "Time", icon: CalendarCheck,
+          subItems: [
+            { title: "Dashboard", path: "/subadmin/attendance", icon: LayoutDashboard },
+            { title: "My Attendance", path: "/subadmin/attendance/me", icon: UserCheck },
+            { title: "Calendar", path: "/subadmin/attendance/calendar", icon: CalendarDays },
+            { title: "Leave Management", path: "/subadmin/attendance/leave", icon: CalendarClock },
+            { title: "Attendance Reports", path: "/subadmin/attendance/reports", icon: FileBarChart },
+            { title: "Late / Absence", path: "/subadmin/attendance/records", icon: AlertTriangle },
+            ...(isHr
+              ? [{ title: "Settings", path: "/subadmin/attendance/settings", icon: Settings }]
+              : [])
           ]
         },
         {
           title: "Earnings", short: "Money", icon: DollarSign,
           subItems: [
-            { title: "My Earnings", path: "/subadmin/earnings", icon: Wallet }
+            { title: "My Earnings", path: "/subadmin/earnings", icon: Wallet },
+            ...(isHr
+              ? [
+                  { title: "Salary / Payroll", path: "/subadmin/financials/payroll", icon: BadgeDollarSign },
+                  { title: "Office Expenses", path: "/subadmin/financials/expenses", icon: Receipt }
+                ]
+              : [{ title: "My Salary", path: "/subadmin/salary", icon: BadgeDollarSign }])
           ]
         }
       ]
@@ -167,8 +266,20 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           title: "Performance", short: "Stats", icon: Activity,
           subItems: [
             { title: "My Stats", path: "/employee/performance/stats", icon: BarChart3 },
+            // §6 — their own report, in their own side panel. Scoped on the
+            // server, so it can only ever be their row.
+            { title: "My Report", path: "/employee/reports", icon: FileBarChart },
             // Their own commission on the deals they closed — nobody else's.
-            { title: "My Earnings", path: "/employee/earnings", icon: Wallet }
+            { title: "My Earnings", path: "/employee/earnings", icon: Wallet },
+            { title: "My Salary", path: "/employee/salary", icon: BadgeDollarSign }
+          ]
+        },
+        {
+          title: "Attendance", short: "Time", icon: CalendarCheck,
+          subItems: [
+            { title: "My Attendance", path: "/employee/attendance", icon: UserCheck },
+            { title: "Calendar", path: "/employee/attendance/calendar", icon: CalendarDays },
+            { title: "My Leave", path: "/employee/attendance/leave", icon: CalendarClock }
           ]
         }
       ]
@@ -192,13 +303,28 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         // `overflow-x-visible` while railed: the flyout panel has to escape the
         // 96px rail. The vertical scroll that the long Accounts list needs is
         // kept on the inner nav instead.
-        className={`fixed inset-y-0 left-0 z-50 flex transform flex-col justify-between border-r border-[#dceae8] bg-[#f5faf9] shadow-xl transition-all duration-300 ease-in-out md:relative md:translate-x-0 md:shadow-none ${
-          isCollapsed ? "overflow-y-auto md:overflow-visible" : "overflow-y-auto overflow-x-hidden"
-        } custom-scrollbar ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"} ${
+        className={`fixed inset-y-0 left-0 z-50 flex transform flex-col justify-between overflow-hidden border-r border-[#dceae8] bg-[#f5faf9] shadow-xl transition-all duration-300 ease-in-out md:relative md:translate-x-0 md:shadow-none ${
+          isCollapsed ? "md:overflow-visible" : ""
+        } ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"} ${
           isCollapsed ? "w-64 md:w-24" : "w-64"
         }`}
       >
-        <div>
+        {/*
+          `min-h-0` is load-bearing: a flex child defaults to `min-height:auto`,
+          which refuses to shrink below its content — so without it the nav
+          simply overflows the viewport and the last items are unreachable
+          rather than scrolling. The scroll lives here rather than on the
+          <aside> so the footer's Collapse and Sign out stay pinned.
+
+          The collapsed rail keeps `overflow-visible` on desktop, because its
+          flyout panel has to escape the 96px rail and a scroll container clips
+          on both axes.
+        */}
+        <div
+          className={`flex min-h-0 flex-1 flex-col ${
+            isCollapsed ? "overflow-y-auto md:overflow-visible" : "overflow-y-auto"
+          } overflow-x-hidden custom-scrollbar`}
+        >
           {/* Logo Area */}
           <div
             className={`flex h-18 items-center border-b border-[#dceae8] bg-[#f5faf9] ${
@@ -233,7 +359,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
                   const isActive = children
                     ? children.some((s) => pathname === s.path || pathname.startsWith(s.path + "/"))
                     : pathname === item.path;
-                  const flyoutOpen = railFlyout === item.title;
+                  const flyoutOpen = railFlyout?.title === item.title;
                   // A 76px rail item fits one word; the full title stays on the
                   // expanded sidebar and as the flyout heading.
                   const railLabel = item.short ?? item.title;
@@ -256,7 +382,26 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
                   return (
                     <div key={idx} className="relative">
                       <button
-                        onClick={() => setRailFlyout(flyoutOpen ? null : item.title)}
+                        onClick={(event) => {
+                          if (flyoutOpen) {
+                            setRailFlyout(null);
+                            return;
+                          }
+
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          // Never above 12px, never so low that the panel has
+                          // no room; whatever is left becomes its max height,
+                          // and the list inside scrolls.
+                          const floor = Math.max(12, window.innerHeight - 12 - MIN_FLYOUT_HEIGHT);
+                          const top = Math.max(12, Math.min(rect.top, floor));
+
+                          setRailFlyout({
+                            title: item.title,
+                            top,
+                            left: rect.right + 8,
+                            maxHeight: window.innerHeight - top - 16,
+                          });
+                        }}
                         className={railClass}
                         aria-expanded={flyoutOpen}
                         aria-haspopup="menu"
@@ -265,16 +410,26 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
                         <span>{railLabel}</span>
                       </button>
 
-                      {flyoutOpen && children && (
+                      {flyoutOpen && children && railFlyout && (
                         <div
                           role="menu"
                           aria-label={item.title}
-                          className="absolute left-full top-0 z-50 ml-2 w-56 overflow-hidden rounded-xl border border-[#dceae8] bg-white shadow-[0_18px_40px_rgba(18,54,52,0.16)]"
+                          // `fixed`, so the panel is measured against the
+                          // viewport rather than an ancestor that may clip or
+                          // scroll. The header stays put and only the list
+                          // scrolls, so the menu always says what it is.
+                          style={{
+                            position: "fixed",
+                            top: railFlyout.top,
+                            left: railFlyout.left,
+                            maxHeight: railFlyout.maxHeight,
+                          }}
+                          className="z-50 flex w-56 flex-col rounded-xl border border-[#dceae8] bg-white shadow-[0_18px_40px_rgba(18,54,52,0.16)]"
                         >
-                          <p className="border-b border-[#e6f1f0] bg-[#f5faf9] px-4 py-2.5 text-[11px] tracking-[0.8px] text-[#7e918f]">
+                          <p className="shrink-0 rounded-t-xl border-b border-[#e6f1f0] bg-[#f5faf9] px-4 py-2.5 text-[11px] tracking-[0.8px] text-[#7e918f]">
                             {item.title.toUpperCase()}
                           </p>
-                          <div className="flex flex-col p-1.5">
+                          <div className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto p-1.5">
                             {children.map((sub, subIdx) => {
                               const subActive = pathname === sub.path || pathname.startsWith(sub.path + "/");
                               return (

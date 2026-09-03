@@ -154,7 +154,24 @@ export function HeroRings({ set = "hero" }: { set?: RingSet }) {
   );
 }
 
-export function Card({ children, style, radius = 16 }: { children: ReactNode; style?: CSSProperties; radius?: number }) {
+export function Card({
+  children,
+  style,
+  radius = 16,
+  onClick,
+  onKeyDown,
+  role,
+  tabIndex,
+}: {
+  children: ReactNode;
+  style?: CSSProperties;
+  radius?: number;
+  /** Present when the whole card is the target — a dossier lead row, say. */
+  onClick?: () => void;
+  onKeyDown?: (event: React.KeyboardEvent) => void;
+  role?: string;
+  tabIndex?: number;
+}) {
   return (
     <div
       style={{
@@ -164,6 +181,11 @@ export function Card({ children, style, radius = 16 }: { children: ReactNode; st
         minWidth: 0,
         ...style,
       }}
+    
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+      role={role}
+      tabIndex={tabIndex}
     >
       {children}
     </div>

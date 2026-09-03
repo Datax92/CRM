@@ -35,6 +35,7 @@ import {
   Check,
   Shuffle,
   AlertTriangle,
+  Wallet,
 } from "lucide-react";
 import {
   createEmployee,
@@ -44,6 +45,11 @@ import {
   enableEmployee,
 } from "@/lib/clientActions";
 import { MAX_PRIORITY } from "@/lib/constants/distribution";
+import {
+  MANAGER_KINDS,
+  MANAGER_KIND_LABELS,
+  type ManagerKind,
+} from "@/lib/constants/hierarchy";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import type { EmployeeMetrics } from "@/lib/metrics";
@@ -120,6 +126,8 @@ export function ManagerFormModal({
   const [joinedAt, setJoinedAt] = useState(dateInputValue(manager?.joinedAt ?? manager?.createdAt));
   const [notes, setNotes] = useState(manager?.notes ?? "");
   const [status, setStatus] = useState<"ACTIVE" | "DISABLED">(manager?.status ?? "ACTIVE");
+  const [managerKind, setManagerKind] = useState<ManagerKind>(manager?.managerKind ?? "SALES");
+  const [monthlySalary, setMonthlySalary] = useState(manager?.monthlySalary ?? 0);
   const [team, setTeam] = useState<Set<string>>(
     () => new Set(employees.filter((e) => e.subAdminUid === manager?.uid).map((e) => e.uid))
   );
@@ -170,6 +178,8 @@ export function ManagerFormModal({
           phone: phone.trim() || null,
           notes: notes.trim() || null,
           joinedAt: joinedAt || null,
+          managerKind,
+          monthlySalary,
         });
 
         if (!created.ok) {
@@ -185,6 +195,8 @@ export function ManagerFormModal({
           phone: phone.trim() || null,
           notes: notes.trim() || null,
           joinedAt: joinedAt || null,
+          managerKind,
+          monthlySalary,
         });
 
         if (!updated.ok) {
@@ -378,6 +390,45 @@ export function ManagerFormModal({
         </div>
       </OverlayCard>
 
+      <OverlayCard title="What this manager runs">
+        <div style={{ ...LABEL, gap: 8 }}>
+          <span>Manager type</span>
+          <div style={{ display: "grid", gap: 8 }} role="radiogroup" aria-label="Manager type">
+            {MANAGER_KINDS.map((kind) => {
+              const on = managerKind === kind;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setManagerKind(kind)}
+                  disabled={busy}
+                  style={{
+                    textAlign: "left",
+                    borderRadius: 12,
+                    border: `1px solid ${on ? T.teal : T.line}`,
+                    background: on ? T.tealSoft : T.surface,
+                    color: on ? T.teal : T.muted,
+                    padding: "11px 14px",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ display: "block", fontSize: 13.5, fontWeight: 700 }}>
+                    {MANAGER_KIND_LABELS[kind]}
+                  </span>
+                  <span style={{ display: "block", fontSize: 11.5, marginTop: 2, opacity: 0.85 }}>
+                    {kind === "HR"
+                      ? "Runs attendance, leave and the attendance rules for the whole company, as well as their own sales team."
+                      : "Runs their own team: their leads, their folders, their attendance and their leave."}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </OverlayCard>
+
       <OverlayCard title="Details">
         <div style={grid(isMobile)}>
           <label style={LABEL}>
@@ -402,6 +453,21 @@ export function ManagerFormModal({
               value={joinedAt}
               onChange={(e) => setJoinedAt(e.target.value)}
               disabled={busy}
+              style={FIELD}
+            />
+          </label>
+
+          <label style={LABEL}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <Wallet size={12} /> Monthly salary (PKR)
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={monthlySalary}
+              onChange={(e) => setMonthlySalary(Math.max(0, Number(e.target.value) || 0))}
+              disabled={busy}
+              placeholder="0"
               style={FIELD}
             />
           </label>

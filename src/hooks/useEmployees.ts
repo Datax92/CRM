@@ -6,6 +6,7 @@ import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import { normalizeJobTitle } from '@/lib/constants/roles';
 
 import type { KpiTargets } from '@/lib/kpi';
+import type { SalaryProfile } from '@/lib/payroll';
 
 export interface EmployeeData {
   uid: string;
@@ -39,6 +40,20 @@ export interface EmployeeData {
   accessRole?: 'employee' | 'subadmin';
   /** The sub admin who manages them. Absent means the admin directly. */
   subAdminUid?: string | null;
+  /** Sales or HR (§13). Only meaningful on a manager account. */
+  managerKind?: 'SALES' | 'HR';
+  /** Base for percentage late deductions and payroll (§5, §12). 0 = unrecorded. */
+  monthlySalary?: number;
+  /**
+   * Recurring pay — allowances, bonus, standing deductions, and the two
+   * switches that decide whether commission and attendance deductions apply.
+   * `basic` mirrors `monthlySalary`: one salary figure, not two.
+   */
+  salaryProfile?: SalaryProfile;
+  /** Every change to the profile, with who made it — the brief asks for it. */
+  salaryHistory?: { at: string; byUid: string; from: SalaryProfile; to: SalaryProfile }[];
+  /** A manager the admin has explicitly granted salary visibility. */
+  salaryAccess?: boolean;
   /** 0–1, from the last recalculation. */
   kpiScore?: number;
   priorityRecalculatedAt?: FirestoreTimestamp;
@@ -103,6 +118,8 @@ export function useEmployees(
             autoPriority: raw.autoPriority !== false,
             accessRole: raw.role === 'subadmin' ? 'subadmin' : 'employee',
             subAdminUid: typeof raw.subAdminUid === 'string' ? raw.subAdminUid : null,
+            managerKind: raw.managerKind === 'HR' ? 'HR' : 'SALES',
+            monthlySalary: typeof raw.monthlySalary === 'number' ? raw.monthlySalary : 0,
             kpiScore: typeof raw.kpiScore === 'number' ? raw.kpiScore : undefined,
             priorityRecalculatedAt: raw.priorityRecalculatedAt,
             createdAt: raw.createdAt,

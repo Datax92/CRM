@@ -14,7 +14,10 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { describeLeadSource } from "@/lib/leadSource";
 import { createPortal } from "react-dom";
+import { LeadDetailPane } from "@/components/leads/LeadDetailPane";
+import { useAuth } from "@/context/AuthContext";
 import type { Lead } from "@/hooks/useLeads";
 import type { DealRecord } from "@/hooks/useFinancials";
 import type { EmployeeMetrics } from "@/lib/metrics";
@@ -70,6 +73,13 @@ export function EmployeeDetailModal({
   onEdit: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("leads");
+  /**
+   * §12 — a lead opened from the dossier shows the *complete* record: the same
+   * `LeadDetailPane` the pipeline uses, on the same document. A summary built
+   * here would be a second description of a lead to keep true.
+   */
+  const [openLead, setOpenLead] = useState<Lead | null>(null);
+  const { getIdToken } = useAuth();
   const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
 
   const ownLeads = useMemo(
@@ -437,7 +447,11 @@ export function EmployeeDetailModal({
                   variant="web"
                   countLine={`${shownLeads.length} of ${ownLeads.length} lead${ownLeads.length === 1 ? "" : "s"}`}
                 />
-                <AssignedLeads leads={leadPages.items} empty={ownLeads.length === 0} />
+                <AssignedLeads
+                  leads={leadPages.items}
+                  empty={ownLeads.length === 0}
+                  onOpen={setOpenLead}
+                />
                 <Pager pagination={leadPages} variant="web" noun="leads" />
               </>
             )}
@@ -480,6 +494,49 @@ export function EmployeeDetailModal({
           </div>
         </div>
       </div>
+
+      {/* §12 — the complete lead record, opened over the dossier. The same
+          pane the pipeline uses, reading the same document, so the KYC, the
+          remark and follow-ups, the status, the stage and the deal are all
+          there rather than a reduced copy. */}
+      {openLead && (
+        <div
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setOpenLead(null);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 210,
+            background: "rgba(15, 42, 40, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "clamp(0px, 3vw, 32px)",
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 900,
+              height: "min(92vh, 100dvh)",
+              borderRadius: 18,
+              overflow: "hidden",
+              background: "#f3faf9",
+              boxShadow: "0 26px 64px rgba(15,42,40,0.32)",
+            }}
+          >
+            <LeadDetailPane
+              key={openLead.id}
+              lead={leads.find((row) => row.id === openLead.id) ?? openLead}
+              onClose={() => setOpenLead(null)}
+              userRole="admin"
+              getIdToken={getIdToken}
+              assigneeName={employee.name}
+            />
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );
@@ -487,7 +544,16 @@ export function EmployeeDetailModal({
 
 /* -------------------------------------------------------------------------- */
 
-function AssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }) {
+function AssignedLeads({
+  leads,
+  empty,
+  onOpen,
+}: {
+  leads: Lead[];
+  empty: boolean;
+  /** §12 — opens the complete lead record, not a summary of it. */
+  onOpen: (lead: Lead) => void;
+}) {
   if (leads.length === 0) {
     return (
       <EmptyPanel>
@@ -512,6 +578,16 @@ function AssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }) {
               alignItems: "center",
               gap: 16,
               padding: "15px 18px",
+              cursor: "pointer",
+            }}
+            onClick={() => onOpen(lead)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen(lead);
+              }
             }}
           >
             <div
@@ -582,7 +658,7 @@ function AssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }) {
                   textOverflow: "ellipsis",
                 }}
               >
-                {lead.source === "MANUAL_ENTRY" ? "Manual Intake" : lead.source}
+                {describeLeadSource(lead)}
               </div>
               {lead.campaignName && (
                 <div

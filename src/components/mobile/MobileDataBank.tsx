@@ -43,6 +43,12 @@ import { watchGone } from "@/lib/watchGone";
 import { initialsOf } from "@/lib/leadDisplay";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
 import { CursorPager } from "@/components/employees/DossierControls";
+import {
+  buildAssignOptions,
+  describeAssignee,
+  groupAssignOptions,
+  type AssignOption,
+} from "@/lib/assignTargets";
 import { FolderFormModal } from "@/components/dataBank/FolderFormModal";
 import { ImportModal } from "@/components/dataBank/ImportModal";
 import { RecordFormModal } from "@/components/dataBank/RecordFormModal";
@@ -355,9 +361,19 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   const page = useDataBankRecords(folderId, { search: query, status, enabled: isManager });
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
 
-  const activeEmployees = useMemo(
-    () => employees.filter((employee) => employee.status === "ACTIVE"),
-    [employees]
+  /**
+   * Employees, managers and "Admin / Myself" (§2) — the same list the desktop
+   * Data Bank offers, from the same builder, so the two surfaces cannot
+   * disagree about who a record may go to.
+   */
+  const assignOptions = useMemo(
+    () =>
+      buildAssignOptions(employees, {
+        uid: user?.uid ?? "",
+        name: user?.email?.split("@")[0] ?? "Me",
+        role: role ?? null,
+      }),
+    [employees, user?.uid, user?.email, role]
   );
 
   const afterWrite = (message: string) => {
@@ -653,7 +669,7 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           key={selected.id}
           record={selected}
           folder={folder}
-          employees={activeEmployees}
+          assignOptions={assignOptions}
           getIdToken={getIdToken}
           onClose={() => setSelectedId(null)}
           onEdit={() => setFormFor({ record: selected })}
@@ -700,7 +716,7 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
 function MobileRecordDetail({
   record,
   folder,
-  employees,
+  assignOptions,
   getIdToken,
   onClose,
   onEdit,
@@ -709,7 +725,7 @@ function MobileRecordDetail({
 }: {
   record: DataBankRecord;
   folder: DataBankFolder;
-  employees: Array<{ uid: string; name: string; priority: number }>;
+  assignOptions: AssignOption[];
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onEdit: () => void;
@@ -779,7 +795,7 @@ function MobileRecordDetail({
         ])
       );
       if (outcome.from === "database" || outcome.res?.ok) {
-        const who = employees.find((e) => e.uid === assignee)?.name ?? "the team";
+        const who = describeAssignee(assignOptions, assignee);
         onRemoved(`${record.name} is now a lead assigned to ${who}.`);
       } else if (outcome.res) {
         setError(outcome.res.error);
@@ -1078,11 +1094,15 @@ function MobileRecordDetail({
               fontFamily: "inherit",
             }}
           >
-            <option value="">Choose a team member…</option>
-            {employees.map((employee) => (
-              <option key={employee.uid} value={employee.uid}>
-                {employee.name} · P{employee.priority}
-              </option>
+            <option value="">Choose who this goes to…</option>
+            {groupAssignOptions(assignOptions).map((section) => (
+              <optgroup key={section.group} label={section.label}>
+                {section.options.map((option) => (
+                  <option key={option.uid} value={option.uid}>
+                    {option.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           <button
@@ -1099,11 +1119,14 @@ function MobileRecordDetail({
           >
             {busy ? "Working…" : "Promote to lead"}
           </button>
-          {employees.length === 0 && (
+          {assignOptions.length === 0 && (
             <p style={{ marginTop: 9, fontSize: 12, fontWeight: 600, color: M.amberInk }}>
-              No active employees to assign to — resume someone in the Team directory first.
+              Nobody to assign to — resume someone in the Team directory first.
             </p>
           )}
+          <p style={{ marginTop: 8, fontSize: 11.5, color: M.faint, lineHeight: 1.5 }}>
+            An employee gets it in their pipeline. A manager, or you, get it in the Client section.
+          </p>
         </div>
 
         <button
@@ -1153,7 +1176,7 @@ function MobileRecordDetail({
 /* Small shared pieces                                                        */
 /* ========================================================================== */
 
-const EYEBROW = {
+export const EYEBROW = {
   fontSize: 11.5,
   fontWeight: 600,
   letterSpacing: "1.4px",
@@ -1161,7 +1184,7 @@ const EYEBROW = {
   opacity: 0.78,
 } as const;
 
-const TITLE = {
+export const TITLE = {
   fontSize: 24,
   fontWeight: 800,
   letterSpacing: "-0.7px",
@@ -1177,7 +1200,7 @@ const LABEL = {
   color: M.fainter,
 } as const;
 
-const LIST_BODY = {
+export const LIST_BODY = {
   minHeight: 0,
   flex: 1,
   overflowY: "auto",
@@ -1218,7 +1241,7 @@ const PRIMARY_BUTTON = {
   fontFamily: "inherit",
 } as const;
 
-function HeaderStat({ label, value }: { label: string; value: string }) {
+export function HeaderStat({ label, value }: { label: string; value: string }) {
   return (
     <div
       style={{
@@ -1240,7 +1263,7 @@ function HeaderStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Figure({ value, label, tone = M.ink }: { value: string; label: string; tone?: string }) {
+export function Figure({ value, label, tone = M.ink }: { value: string; label: string; tone?: string }) {
   return (
     <div>
       <div style={{ fontSize: 21, fontWeight: 800, color: tone, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>
@@ -1267,7 +1290,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-function MiniAction({
+export function MiniAction({
   children,
   onPress,
   d,
@@ -1306,7 +1329,7 @@ function MiniAction({
   );
 }
 
-function Note({ tone, children }: { tone: "error" | "success"; children: React.ReactNode }) {
+export function Note({ tone, children }: { tone: "error" | "success"; children: React.ReactNode }) {
   const error = tone === "error";
   return (
     <div
@@ -1327,7 +1350,7 @@ function Note({ tone, children }: { tone: "error" | "success"; children: React.R
   );
 }
 
-function Empty({ title, body }: { title: string; body: string }) {
+export function Empty({ title, body }: { title: string; body: string }) {
   return (
     <div style={{ padding: "44px 14px", textAlign: "center" }}>
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke={M.ghost} strokeWidth="1.5" style={{ margin: "0 auto" }} aria-hidden>
@@ -1343,7 +1366,7 @@ function Empty({ title, body }: { title: string; body: string }) {
 }
 
 /** Placeholder cards while the first snapshot lands — see `MobileLeads`. */
-function SkeletonCards() {
+export function SkeletonCards() {
   return (
     <>
       {[0, 1, 2, 3].map((i) => (

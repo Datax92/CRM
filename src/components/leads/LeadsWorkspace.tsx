@@ -46,7 +46,7 @@ import { AssignModal } from "@/components/admin/AssignModal";
 import { LeadDetailPane } from "./LeadDetailPane";
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { Pager } from "@/components/employees/DossierControls";
-import { Search, SlidersHorizontal, Database } from "lucide-react";
+import { Search, SlidersHorizontal, Database, ChevronLeft } from "lucide-react";
 
 /**
  * What each role may do from this screen.
@@ -93,12 +93,34 @@ const ROW_TONES = {
  * @param basePath The route this workspace lives at, so the filter chips write
  *   back to the right URL.
  */
+/**
+ * An optional restriction on which leads the workspace shows.
+ *
+ * A Client folder is a *view* of the pipeline, not a second pipeline — so
+ * rather than a second leads screen with a second detail pane, the folder
+ * renders **this** component with its own set of lead ids. Same list, same
+ * chips, same `LeadDetailPane`, same actions, same everything: there is one
+ * lead screen in this product and this is it.
+ *
+ * `title` replaces the panel heading ("All leads") with the folder's name, and
+ * `backHref` puts a way out where the folder list is.
+ */
+export interface LeadScope {
+  /** Only these leads. An empty set shows an empty folder, not the pipeline. */
+  leadIds: Set<string>;
+  title: string;
+  subtitle?: string;
+  backHref?: string;
+}
+
 export function LeadsWorkspace({
   workspaceRole,
   basePath,
+  scope,
 }: {
   workspaceRole: WorkspaceRole;
   basePath: string;
+  scope?: LeadScope;
 }) {
   const { role, user, loading: authLoading, getIdToken } = useAuth();
   useProtectedRoute([workspaceRole]);
@@ -153,10 +175,13 @@ export function LeadsWorkspace({
    * but every lead they can see is their own, which is more useful to say than
    * a bare "Assigned".
    */
-  const employeeName = (uid: string | null | undefined) => {
+  const employeeName = (uid: string | null | undefined, lead?: { assigneeName?: string | null }) => {
     if (!uid) return undefined;
     if (uid === user?.uid) return "You";
-    return employees.find((e) => e.uid === uid)?.name;
+    // The roster, then the name denormalised onto the lead at assignment. An
+    // employee's own workspace has no roster to read — Security Rules refuse
+    // it — so without that fallback their rows would say "Unassigned".
+    return employees.find((e) => e.uid === uid)?.name ?? lead?.assigneeName ?? undefined;
   };
 
   // Resolving the Karachi day boundary does Intl formatting, which is far too
@@ -165,18 +190,28 @@ export function LeadsWorkspace({
   // the next navigation, which is the right trade for a workday tool.
   const todayRange = useMemo(() => resolveRange("TODAY"), []);
 
+  /**
+   * The folder's leads, when the workspace is scoped to one. Applied before
+   * search so every count on the screen describes the folder, not the
+   * pipeline behind it.
+   */
+  const inScope = useMemo(
+    () => (scope ? leads.filter((lead) => scope.leadIds.has(lead.id)) : leads),
+    [leads, scope]
+  );
+
   /** Search first; the chip counts describe what the current search matched. */
   const searched = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return leads;
-    return leads.filter((lead) =>
+    if (!q) return inScope;
+    return inScope.filter((lead) =>
       [lead.name, lead.phone, lead.email, lead.city, lead.id]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
         .includes(q)
     );
-  }, [leads, query]);
+  }, [inScope, query]);
 
   const counts = useMemo(
     () => countByFilter(searched, todayRange, workspaceRole),
@@ -200,9 +235,10 @@ export function LeadsWorkspace({
   // you close a deal while the Active chip is up, the lead leaves the list but
   // the pane should stay open on its new deal record, not blank out mid-action.
   // A lead deleted upstream drops to null here on its own.
-  const selected = selectedId ? (leads.find((l) => l.id === selectedId) ?? null) : null;
+  const selected = selectedId ? (inScope.find((l) => l.id === selectedId) ?? null) : null;
 
-  if (isMobile) return <MobileLeads workspaceRole={workspaceRole} basePath={basePath} />;
+  if (isMobile)
+    return <MobileLeads workspaceRole={workspaceRole} basePath={basePath} scope={scope} />;
 
   if (authLoading || leadsLoading) return <FullPageSpinner />;
 
@@ -219,7 +255,7 @@ export function LeadsWorkspace({
         className={`min-w-0 flex-col border-r border-[#dceae8] bg-[#fbfdfd] ${
           showDetailOnMobile ? "hidden min-h-0 lg:flex" : "flex min-h-0"
         }`}
-        aria-label="All leads"
+        aria-label={scope?.title ?? "All leads"}
       >
         {/*
           `min-h` matches the detail header's height (46px avatar + 2×16px
@@ -231,14 +267,47 @@ export function LeadsWorkspace({
           beats the one inherited from this teal parent.
         */}
         <div className="flex min-h-[78px] shrink-0 items-center justify-between gap-3 bg-[#4f9c99] px-5 py-3.5 text-white">
-          <h1 className="text-base font-medium tracking-[1.2px] text-white">ALL LEADS</h1>
+          {/* The folder's name when scoped, clamped to two lines rather than
+              truncated: "ALL LEADS" always fits, but a folder name is the one
+              thing on this bar that has to be readable. */}
+          <div className="min-w-0">
+            <h1
+              className="text-base font-medium tracking-[1.2px] text-white"
+              style={
+                scope
+                  ? {
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                      letterSpacing: "0.4px",
+                    }
+                  : undefined
+              }
+            >
+              {scope ? scope.title.toUpperCase() : "ALL LEADS"}
+            </h1>
+            {scope?.subtitle && (
+              <p className="mt-0.5 truncate text-[11.5px] text-white/80">{scope.subtitle}</p>
+            )}
+          </div>
           {/*
             Manual entry has moved to the Data Bank. This pipeline is now
             inbound work only — Meta Ads intake, plus anything promoted out of
             a cold list — so the button that used to seed it by hand points at
             where that job lives instead.
           */}
-          {CAPABILITIES[workspaceRole].canCreateLead && (
+          {/* Out of a folder, back to the folder list it came from. */}
+          {scope?.backHref && (
+            <Link
+              href={scope.backHref}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/15 py-1.5 pr-3.5 pl-3 text-[12.5px] text-white transition-colors hover:bg-white/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            >
+              <ChevronLeft size={14} />
+              <span>Folders</span>
+            </Link>
+          )}
+          {!scope && CAPABILITIES[workspaceRole].canCreateLead && (
             <Link
               href="/admin/data-bank"
               className="inline-flex items-center gap-1.5 rounded-full bg-white/15 py-1.5 pr-3.5 pl-3 text-[12.5px] text-white transition-colors hover:bg-white/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
@@ -400,15 +469,18 @@ export function LeadsWorkspace({
                           plausible-but-wrong id that someone could quote. */}
                       {LEAD_STATUS_LABELS[lead.status] ?? lead.status} · {lead.id}
                     </span>
-                    {/* The exact origin, folder and all (§1). On the row rather
-                        than only in the detail pane, because "which list did
-                        this come from" is a question asked while scanning the
-                        list, not after opening one. */}
+                    {/* The exact origin, folder and all (§1), and who is on it
+                        (§7). Both are questions asked while scanning the list,
+                        not after opening a lead. */}
                     <span
                       className="mt-0.5 block truncate text-[11px] text-[#9aacaa]"
-                      title={describeLeadSource(lead)}
+                      title={`${describeLeadSource(lead)} · ${employeeName(lead.assignedUserId, lead) ?? "Unassigned"}`}
                     >
                       {describeLeadSource(lead)}
+                      {" · "}
+                      <span className={lead.assignedUserId ? "text-[#5b6d6b]" : "text-[#c08a2e]"}>
+                        {employeeName(lead.assignedUserId, lead) ?? "Unassigned"}
+                      </span>
                     </span>
                   </span>
 

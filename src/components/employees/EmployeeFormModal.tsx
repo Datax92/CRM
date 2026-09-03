@@ -117,6 +117,10 @@ export function EmployeeFormModal({
   const [autoAssign, setAutoAssign] = useState(employee?.autoAssign !== false);
   const [notes, setNotes] = useState(employee?.notes ?? "");
   const [targets, setTargets] = useState<KpiTargets>({ ...DEFAULT_KPI_TARGETS, ...employee?.targets });
+  // The base for a percentage late deduction (§5) and the payroll figures
+  // in the Money hub (§12). Zero means "not recorded", and a percentage
+  // rule then charges nothing rather than guessing.
+  const [monthlySalary, setMonthlySalary] = useState(employee?.monthlySalary ?? 0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
@@ -166,6 +170,7 @@ export function EmployeeFormModal({
           notes: notes.trim() || null,
           joinedAt: joinedAt || null,
           autoAssign,
+          monthlySalary,
         });
         if (res.ok) onSaved(`${name.trim()} added to the directory.`);
         else setError(res.error || "Could not create the account.");
@@ -188,6 +193,7 @@ export function EmployeeFormModal({
         notes: notes.trim() || null,
         joinedAt: joinedAt || null,
         autoAssign,
+        monthlySalary,
       });
       if (!res.ok) {
         setError(res.error || "Could not update the employee.");
@@ -458,6 +464,23 @@ export function EmployeeFormModal({
                   </option>
                 ))}
               </select>
+            </label>
+
+            <label style={LABEL}>
+              {/* The base for a percentage late deduction and the payroll
+                  figures. Distinct from the target below it: one is what they
+                  are paid, the other is what they are asked to bring in. */}
+              <span>Monthly Salary (PKR)</span>
+              <input
+                type="number"
+                min={0}
+                max={1000000000}
+                value={monthlySalary}
+                onChange={(e) => setMonthlySalary(Math.max(0, Number(e.target.value) || 0))}
+                placeholder="0"
+                disabled={busy}
+                style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
+              />
             </label>
 
             <label style={LABEL}>

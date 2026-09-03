@@ -50,6 +50,16 @@ service cloud.firestore {
       return signedIn() && role() == 'subadmin';
     }
 
+    /**
+     * An HR manager. The kind rides in the auth claim rather than the profile
+     * document, so this costs nothing to evaluate — a `get()` here would be a
+     * read on every expense query. A manager with no claim reads as Sales,
+     * which grants nothing.
+     */
+    function isHr() {
+      return isSubAdmin() && request.auth.token.managerKind == 'HR';
+    }
+
     /** True when the document in hand belongs to this sub admin's team. */
     function ownsTeam() {
       return isSubAdmin() && resource.data.subAdminUid == request.auth.uid;
@@ -104,14 +114,62 @@ service cloud.firestore {
     // whole team. Written only by the server, which decides the office/remote
     // label from the request's own IP — a client-writable record would make
     // the whole feature meaningless.
+    // Attendance. Written only by the server, which decides the office/remote
+    // label from the request's own IP and the late verdict from the configured
+    // time — a client-writable record would make the whole module meaningless.
+    //
+    // **A manager reads their team's days through the Attendance screens, which
+    // go through Server Actions rather than this rule.** The record carries the
+    // employee's uid but no team field, so a rule for it would need a lookup
+    // per day per employee; the actions do that check once against the roster
+    // instead. What this rule allows directly is the two cases with no lookup:
+    // the admin, and a person's own days.
     match /attendance/{recordId} {
-      // A sub admin reads their own days here. Their team's attendance is
-      // deliberately not exposed: the record carries the employee's uid but no
-      // team field, so a rule for it would need a lookup per day per employee —
-      // a read amplification the feature does not justify. The admin, who owns
-      // the attendance policy, sees everyone.
+      allow read: if isAdmin() || resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Leave requests (§6, §7). An employee reads their own; a manager reads
+    // their team's, by the denormalised `subAdminUid` the request carries — the
+    // same constraint every other scoped query in this file uses, so the client
+    // query can be proved safe. HR reach goes through the Server Actions, which
+    // can check the manager kind; a rule cannot.
+    match /leaveRequests/{requestId} {
       allow read: if isAdmin()
-        || ((isEmployee() || isSubAdmin()) && resource.data.uid == request.auth.uid);
+        || resource.data.uid == request.auth.uid
+        || ownsTeam();
+      allow write: if false;
+    }
+
+    // Payroll. The period document holds every employee's pay, so it is the
+    // admin's and HR's alone — Firestore grants a whole document or none of
+    // it, which is exactly why the per-person slips are a separate collection.
+    // Written only by the server: a payroll a browser could edit is not a
+    // payroll.
+    match /payrollPeriods/{monthKey} {
+      allow read: if isAdmin() || isSubAdmin();
+      allow write: if false;
+    }
+
+    // One slip per person per month. An employee reads their own and nothing
+    // else — the `uid ==` clause is what makes their list query provable.
+    match /payslips/{slipId} {
+      allow read: if isAdmin() || resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // A closed month's frozen deductions (§12). Every manager reads it — a
+    // Sales manager needs to know their team's month is closed — but only the
+    // server writes it, so a period cannot be re-cut from a browser.
+    match /attendancePeriods/{monthKey} {
+      allow read: if isAdmin() || isSubAdmin();
+      allow write: if false;
+    }
+
+    // The record of who changed a setting, and to what (§11, §12). Admin-only:
+    // it holds the whole policy including deduction figures.
+    match /configHistory/{entryId} {
+      allow read: if isAdmin();
       allow write: if false;
     }
 
@@ -193,8 +251,11 @@ service cloud.firestore {
     }
 
     // Office expenses are admin-only in both directions (BR-20).
+    // Office expenses — admin and HR only, by the brief. A Sales manager and
+    // every employee are refused the read outright rather than shown a
+    // filtered ledger.
     match /expenses/{expenseId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() || isHr();
       allow write: if false;
     }
 
@@ -246,6 +307,28 @@ service cloud.firestore {
 
     match /receivables/{recordId} {
       allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Client folders (§15–§20) — a curated view over leads that already exist.
+    //
+    // **The folder holds no lead data**, only references, so nothing here
+    // widens what anybody can read: opening a lead from a folder still goes
+    // through the `leads` rule above and is refused if that rule refuses it.
+    //
+    // An admin reads every folder, a manager's included — §20 says so. A
+    // manager reads their own, by the same `subAdminUid` constraint every
+    // other scoped query in this file uses.
+    match /clientFolders/{folderId} {
+      allow read: if isAdmin() || ownsTeam();
+      allow write: if false;
+    }
+
+    // One row per lead in a folder. Scoped by the folder's owner, denormalised
+    // onto the row at write time — a rule cannot follow a reference, and a
+    // lookup per row would make listing a folder cost twice its size.
+    match /clientFolderLeads/{membershipId} {
+      allow read: if isAdmin() || ownsTeam();
       allow write: if false;
     }
 

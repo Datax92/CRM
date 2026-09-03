@@ -28,6 +28,7 @@ import { useMyPayouts } from "@/hooks/useDistributions";
 import { resolveRange } from "@/lib/dates";
 import { formatCompactMoney } from "@/lib/money";
 import { M, MobileHeader, MobileCard } from "./mobileChrome";
+import { AccountButton } from "./MobileAccount";
 
 const ALL_TIME = resolveRange("ALL");
 
@@ -89,6 +90,18 @@ export function MoneyHub() {
           d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM8.5 12l2.5 2.5 4.5-5",
         },
         {
+          label: "Salary / Payroll",
+          detail: "Monthly payroll, salary profiles and payslips",
+          href: "/admin/financials/payroll",
+          d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M12 15a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
+        },
+        {
+          label: "Salary Deductions",
+          detail: "Late arrivals and what each one costs",
+          href: "/admin/attendance/records",
+          d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3 2",
+        },
+        {
           label: "Office Expenses",
           detail: "What the business spent",
           href: "/admin/financials/expenses",
@@ -136,6 +149,18 @@ export function MoneyHub() {
             d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4",
           },
           {
+            label: "My Salary",
+            detail: "Your own payslips and salary history",
+            href: "/subadmin/salary",
+            d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M12 15a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
+          },
+          {
+            label: "Salary Deductions",
+            detail: "Your team's late arrivals and their cost",
+            href: "/subadmin/attendance/records",
+            d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3 2",
+          },
+          {
             label: "Team Performance",
             detail: "Leads, deals and revenue per employee",
             href: "/subadmin/team",
@@ -151,6 +176,18 @@ export function MoneyHub() {
             d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M16 13h2",
           },
           {
+            label: "My Salary",
+            detail: "Payslips, salary history and deductions",
+            href: "/employee/salary",
+            d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M12 15a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
+          },
+          {
+            label: "My Attendance",
+            detail: "Days, leave and any late deductions",
+            href: "/employee/attendance",
+            d: "M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1ZM8.5 14.5l2.5 2.5 4.5-5",
+          },
+          {
             label: "My Deals & Stats",
             detail: "What you have closed, and your KPI",
             href: "/employee/performance/stats",
@@ -161,15 +198,25 @@ export function MoneyHub() {
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100%" }}>
       <MobileHeader>
-        <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.1px", opacity: 0.78 }}>
-          {isAdmin ? "FINANCIALS" : "YOUR MONEY"}
+        {/* The account control belongs on every screen, this one included —
+            it is the only way to reach the sections the five-slot tab bar has
+            no room for, and its absence here stranded people on Money. */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.1px", opacity: 0.78 }}>
+              {isAdmin ? "FINANCIALS" : "YOUR MONEY"}
+            </div>
+            <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: "-0.3px", marginTop: 2 }}>
+              Money
+            </h1>
+            <p style={{ fontSize: 12.5, fontWeight: 500, opacity: 0.85, marginTop: 4 }}>
+              {isAdmin
+                ? "Settle deals, split profit, and read the books."
+                : "Your share of what the team has closed."}
+            </p>
+          </div>
+          <AccountButton />
         </div>
-        <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: "-0.3px", marginTop: 2 }}>Money</h1>
-        <p style={{ fontSize: 12.5, fontWeight: 500, opacity: 0.85, marginTop: 4 }}>
-          {isAdmin
-            ? "Settle deals, split profit, and read the books."
-            : "Your share of what the team has closed."}
-        </p>
       </MobileHeader>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "16px 16px 24px" }}>

@@ -88,7 +88,7 @@ export default function SettingsPage() {
     setSavingIps(true);
     setBanner(null);
     try {
-      const res = await setAttendanceConfig(await getIdToken(), officeIps.filter(Boolean));
+      const res = await setAttendanceConfig(await getIdToken(), { officeIps: officeIps.filter(Boolean) });
       if (res.ok) {
         setOfficeIps(res.data.officeIps);
         setSavedIps(res.data.officeIps);

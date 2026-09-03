@@ -496,7 +496,7 @@ export async function promoteDataBankRecord(
   token: string,
   recordId: string,
   assignedUserId: string
-): Promise<ActionResult<{ leadId: string }>> {
+): Promise<ActionResult<{ leadId: string; clientFolderId: string | null }>> {
   return runAction("promoteDataBankRecord", async () => {
     const recordRef = adminDb.collection(RECORDS).doc(recordId);
 
@@ -516,12 +516,7 @@ export async function promoteDataBankRecord(
     // Sequentially — as they were — this is three full round trips before any
     // work begins, on top of the auth check's own network call, and that was
     // most of why promoting felt slow and sometimes timed out.
-    const [admin, snap, employee] = await Promise.all([
-      requireManager(token),
-      recordRef.get(),
-      adminDb.collection("users").doc(assignedUserId).get(),
-    ]);
-
+    const [admin, snap] = await Promise.all([requireManager(token), recordRef.get()]);
     const authAndReadsMs = mark();
 
     if (!snap.exists) throw new UserFacingError("That record no longer exists.");
@@ -535,18 +530,7 @@ export async function promoteDataBankRecord(
       throw new UserFacingError("That record has already been promoted to a lead.");
     }
 
-    if (!employee.exists || employee.data()?.role !== "employee") {
-      throw new UserFacingError("Choose a team member to assign this to.");
-    }
-    if (employee.data()?.status === "DISABLED") {
-      throw new UserFacingError("That employee is paused — resume them or choose someone else.");
-    }
-    // A sub admin promotes out of their own folders, to their own team. Both
-    // halves are checked: either one alone would let them route a lead across
-    // the hierarchy.
-    if (admin.role === "subadmin" && employee.data()?.subAdminUid !== admin.uid) {
-      throw new UserFacingError("That team member is not on your team.");
-    }
+    const target = await resolveAssignee(admin, assignedUserId);
 
     const folder = await loadFolder(record.folderId as string);
     assertFolderAccess(admin, folder);
@@ -582,7 +566,7 @@ export async function promoteDataBankRecord(
       dataBankFolderId: record.folderId,
       dataBankFolderName: folder.name,
       assignedUserId,
-      assigneeName: employee.data()?.name ?? employee.data()?.email ?? null,
+      assigneeName: target.name,
       attemptedAssignees: [assignedUserId],
       distributionMethod: "MANUAL",
       // Who handed this out, and whose team it landed on (§8, §9). Read off the
@@ -591,7 +575,7 @@ export async function promoteDataBankRecord(
       assignedByUid: admin.uid,
       assignedByRole: admin.role,
       assignedByName: admin.name ?? admin.email ?? null,
-      subAdminUid: (employee.data()?.subAdminUid as string | undefined) ?? null,
+      subAdminUid: target.subAdminUid,
       campaignId: null,
       campaignName: null,
       followUpCount: 0,
@@ -619,12 +603,45 @@ export async function promoteDataBankRecord(
     batch.set(adminDb.collection("notifications").doc(), {
       type: "NEW_LEAD_ASSIGNED",
       leadId: leadRef.id,
-      targetRole: "employee",
+      targetRole: target.role,
       targetUid: assignedUserId,
-      payload: { message: `${record.name} has been assigned to you.` },
+      payload: {
+        message:
+          target.role === "employee"
+            ? `${record.name} has been assigned to you.`
+            : `${record.name} was added to your ${folder.name} client folder.`,
+      },
       createdAt: now,
       readAt: null,
     });
+
+    // §5 — a manager or the admin taking a lead gets it in their **Client
+    // section**, in a folder mirroring the one it came from, rather than in
+    // the employee lead area. The lead itself is the same record either way:
+    // same id, same source, same history.
+    let clientFolderId: string | null = null;
+    if (target.role !== "employee") {
+      const { ref: clientFolder } = await ensureClientFolder(
+        target,
+        { id: record.folderId as string, name: folder.name ?? 'Data Bank' },
+        admin
+      );
+      clientFolderId = clientFolder.id;
+
+      batch.set(clientMemberRef(clientFolder.id, leadRef.id), {
+        folderId: clientFolder.id,
+        leadId: leadRef.id,
+        leadName: record.name,
+        subAdminUid: target.role === "subadmin" ? target.uid : null,
+        dataBankFolderId: record.folderId,
+        addedByUid: admin.uid,
+        addedAt: now,
+      });
+      batch.update(clientFolder, {
+        leadCount: FieldValue.increment(1),
+        updatedAt: now,
+      });
+    }
 
     // **A write, not a delete.** See `PROMOTED_FOLDER_ID`: deletes are a
     // separate daily allowance from writes, and when it is spent Firestore
@@ -666,6 +683,347 @@ export async function promoteDataBankRecord(
       );
     }
 
-    return { leadId: leadRef.id };
+    return { leadId: leadRef.id, clientFolderId };
+  });
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Data Bank -> Clients                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Who a record may be handed to, and what happens to it afterwards. */
+export interface AssigneeTarget {
+  uid: string;
+  name: string;
+  role: "admin" | "subadmin" | "employee";
+  /** The team the resulting lead belongs to. Null means the admin, directly. */
+  subAdminUid: string | null;
+}
+
+/**
+ * Reads and checks whoever a record is being assigned to.
+ *
+ * Three kinds of recipient now, not one:
+ *
+ * | recipient | where the lead lands |
+ * |---|---|
+ * | Employee | their pipeline, exactly as before |
+ * | Sub Admin / Manager | **their Client section**, not the employee lead area |
+ * | Admin / Myself | the admin's own Client section |
+ *
+ * A manager or the admin taking a lead is not a distribution decision — nobody
+ * is being given work off a rotation — so it does not belong in the employee
+ * lead flow at all. It belongs in the Client folder that mirrors the Data Bank
+ * folder it came from, which is what `ensureClientFolder` builds.
+ */
+async function resolveAssignee(
+  actor: DecodedAuth,
+  assignedUserId: string
+): Promise<AssigneeTarget> {
+  const snap = await adminDb.collection("users").doc(assignedUserId).get();
+  if (!snap.exists) throw new UserFacingError("That account no longer exists.");
+
+  const data = snap.data()!;
+  const role = (data.role as AssigneeTarget["role"]) ?? "employee";
+  const name = (data.name as string) ?? (data.email as string) ?? "Unnamed";
+
+  if (data.status === "DISABLED") {
+    throw new UserFacingError(`${name} is paused — resume them or choose someone else.`);
+  }
+
+  // A sub admin hands out inside their own team, or takes the lead themselves.
+  // Both halves matter: either one alone would let them route a lead across
+  // the hierarchy.
+  if (actor.role === "subadmin") {
+    const ownTeam = role === "employee" && data.subAdminUid === actor.uid;
+    const themselves = assignedUserId === actor.uid;
+    if (!ownTeam && !themselves) {
+      throw new UserFacingError("You can assign to your own team, or to yourself.");
+    }
+  }
+
+  return {
+    uid: assignedUserId,
+    name,
+    role,
+    // A manager taking a lead owns it themselves; an employee's team is on
+    // their profile; the admin's leads belong to no team.
+    subAdminUid:
+      role === "subadmin"
+        ? assignedUserId
+        : role === "admin"
+          ? null
+          : ((data.subAdminUid as string | undefined) ?? null),
+  };
+}
+
+/**
+ * The Client folder that mirrors a Data Bank folder, for one owner.
+ *
+ * **Deterministic id**, so importing the same source folder again — a week
+ * later, one lead at a time — lands in the folder that already exists rather
+ * than creating "Facile Town 2" three times. That is the whole of §5's "add
+ * them to the existing Client folder".
+ *
+ * The folder records where it came from (`dataBankFolderId`), so the link back
+ * to the source survives a rename on either side.
+ */
+function clientFolderRefFor(ownerUid: string, sourceFolderId: string) {
+  return adminDb.collection("clientFolders").doc(`db_${ownerUid}_${sourceFolderId}`);
+}
+
+/**
+ * Creates the mirrored folder if it is not there yet, and returns its ref.
+ *
+ * Called before the batch so the create and the membership writes can go in
+ * one commit — a folder created in a batch cannot be read back in the same
+ * batch to find out whether it already existed.
+ */
+async function ensureClientFolder(
+  owner: AssigneeTarget,
+  source: { id: string; name: string },
+  actor: DecodedAuth
+): Promise<{ ref: FirebaseFirestore.DocumentReference; created: boolean }> {
+  const ref = clientFolderRefFor(owner.uid, source.id);
+  const snap = await ref.get();
+  if (snap.exists) return { ref, created: false };
+
+  await ref.set({
+    name: source.name,
+    description: `Imported from the ${source.name} data bank folder.`,
+    color: null,
+    // Ownership is the same shape every other scoped collection uses: a
+    // manager's folder carries their uid, the admin's carries nothing.
+    ...(owner.role === "subadmin" ? { subAdminUid: owner.uid } : {}),
+    ownerUid: owner.uid,
+    ownerRole: owner.role,
+    dataBankFolderId: source.id,
+    dataBankFolderName: source.name,
+    leadCount: 0,
+    createdByUid: actor.uid,
+    createdByName: actor.name ?? actor.email ?? null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  return { ref, created: true };
+}
+
+/** The membership row that puts a lead in a Client folder. Ids are stable. */
+function clientMemberRef(folderId: string, leadId: string) {
+  return adminDb.collection("clientFolderLeads").doc(`${folderId}__${leadId}`);
+}
+
+/**
+ * Promotes many records at once (§9, §10).
+ *
+ * The single-record path is the reference — same lead shape, same provenance,
+ * same tombstone-then-delete — so the two cannot produce different leads. What
+ * differs is only the scale: records are read and written in chunks, and one
+ * notification is sent for the batch rather than one per lead, because fifty
+ * separate alerts would bury everything else in the employee's bell.
+ *
+ * **Partial success is reported, not hidden.** A record somebody promoted
+ * while this ran is skipped and counted; the caller is told how many of each.
+ * Silently returning "done" for 43 of 50 is how a calling list quietly ends up
+ * short.
+ */
+export async function promoteDataBankRecords(
+  token: string,
+  recordIds: string[],
+  assignedUserId: string
+): Promise<ActionResult<{ promoted: number; skipped: number; leadIds: string[] }>> {
+  return runAction("promoteDataBankRecords", async () => {
+    const ids = [...new Set((recordIds ?? []).filter(Boolean))];
+    if (ids.length === 0) throw new UserFacingError("Select at least one record.");
+    if (ids.length > 500) throw new UserFacingError("Promote at most 500 records at a time.");
+
+    const admin = await requireManager(token);
+    // Employee, manager or admin — the same three the single path takes, and
+    // the same rule about where the leads end up (§2, §5).
+    const target = await resolveAssignee(admin, assignedUserId);
+
+    /**
+     * The mirrored Client folder per source folder, created at most once each.
+     * A bulk promotion usually spans one folder, but a selection can cross
+     * several, and creating the same folder per record would be a read and a
+     * write per lead for no reason.
+     */
+    const clientFolders = new Map<string, FirebaseFirestore.DocumentReference>();
+    const clientAdds = new Map<string, number>();
+
+    let promoted = 0;
+    let skipped = 0;
+    const leadIds: string[] = [];
+    // One folder read per folder, not per record: a bulk promotion is normally
+    // one folder, and re-reading it 50 times would be 50 wasted reads.
+    const folders = new Map<string, Awaited<ReturnType<typeof loadFolder>>>();
+
+    for (let i = 0; i < ids.length; i += 100) {
+      const slice = ids.slice(i, i + 100);
+      const snaps = await adminDb.getAll(...slice.map((id) => adminDb.collection(RECORDS).doc(id)));
+
+      const batch = adminDb.batch();
+      const now = FieldValue.serverTimestamp();
+      const perFolder = new Map<string, number>();
+
+      for (const snap of snaps) {
+        if (!snap.exists) {
+          skipped += 1;
+          continue;
+        }
+        const record = snap.data()!;
+        // Already a lead — see PROMOTED_FOLDER_ID on the single-record path.
+        if (record.promotedLeadId) {
+          skipped += 1;
+          continue;
+        }
+
+        const folderId = record.folderId as string;
+        let folder = folders.get(folderId);
+        if (!folder) {
+          folder = await loadFolder(folderId);
+          assertFolderAccess(admin, folder);
+          folders.set(folderId, folder);
+        }
+
+        const labels = new Map(folder.fields.map((field) => [field.key, field.label]));
+        const customFields: Record<string, string> = {};
+        for (const [key, value] of Object.entries((record.values ?? {}) as Record<string, string>)) {
+          if (key === folder.roles.name || key === folder.roles.phone) continue;
+          const label = labels.get(key);
+          if (label && value) customFields[label] = value;
+        }
+
+        const leadRef = adminDb.collection("leads").doc();
+        leadIds.push(leadRef.id);
+
+        batch.set(leadRef, {
+          name: record.name,
+          phone: record.phone ?? null,
+          email: null,
+          city: null,
+          status: "ACCEPTED",
+          source: "DATA_BANK",
+          dataBankFolderId: folderId,
+          dataBankFolderName: folder.name,
+          assignedUserId,
+          assigneeName: target.name,
+          attemptedAssignees: [assignedUserId],
+          distributionMethod: "MANUAL",
+          assignedByUid: admin.uid,
+          assignedByRole: admin.role,
+          assignedByName: admin.name ?? admin.email ?? null,
+          subAdminUid: target.subAdminUid,
+          campaignId: null,
+          campaignName: null,
+          followUpCount: 0,
+          callCount: 0,
+          customFields,
+          createdAt: now,
+          assignedAt: now,
+          acceptedAt: now,
+          lastActivityAt: now,
+        });
+
+        batch.set(leadRef.collection("events").doc(), {
+          type: "FORCE_ACCEPTED",
+          actorUid: admin.uid,
+          at: now,
+          meta: {
+            assignedTo: assignedUserId,
+            promotedFrom: folderId,
+            promotedFromName: folder.name,
+            assignedByRole: admin.role,
+            bulk: ids.length,
+          },
+        });
+
+        // A write, not a delete — deletes are a separate daily allowance and
+        // are the first thing Firestore refuses. See PROMOTED_FOLDER_ID.
+        batch.update(snap.ref, {
+          folderId: PROMOTED_FOLDER_ID,
+          promotedFromFolderId: folderId,
+          promotedLeadId: leadRef.id,
+          promotedToUid: assignedUserId,
+          promotedAt: now,
+        });
+
+        // §5 — a manager or the admin gets these in their Client section, in
+        // a folder mirroring the source, rather than in the employee lead
+        // area. Same lead, same id, same history either way.
+        if (target.role !== "employee") {
+          let clientFolder = clientFolders.get(folderId);
+          if (!clientFolder) {
+            clientFolder = (
+              await ensureClientFolder(
+                target,
+                { id: folderId, name: folder.name ?? "Data Bank" },
+                admin
+              )
+            ).ref;
+            clientFolders.set(folderId, clientFolder);
+          }
+
+          batch.set(clientMemberRef(clientFolder.id, leadRef.id), {
+            folderId: clientFolder.id,
+            leadId: leadRef.id,
+            leadName: record.name,
+            subAdminUid: target.role === "subadmin" ? target.uid : null,
+            dataBankFolderId: folderId,
+            addedByUid: admin.uid,
+            addedAt: now,
+          });
+          clientAdds.set(clientFolder.id, (clientAdds.get(clientFolder.id) ?? 0) + 1);
+        }
+
+        perFolder.set(folderId, (perFolder.get(folderId) ?? 0) + 1);
+        promoted += 1;
+      }
+
+      for (const [folderId, count] of perFolder) {
+        batch.update(adminDb.collection(FOLDERS).doc(folderId), {
+          recordCount: FieldValue.increment(-count),
+          promotedCount: FieldValue.increment(count),
+        });
+      }
+
+      // The mirrored folders' counts, in the same commit as the memberships.
+      for (const [clientFolderId, count] of clientAdds) {
+        batch.update(adminDb.collection("clientFolders").doc(clientFolderId), {
+          leadCount: FieldValue.increment(count),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      clientAdds.clear();
+
+      await batch.commit();
+    }
+
+    if (promoted > 0) {
+      await adminDb.collection("notifications").add({
+        type: "NEW_LEAD_ASSIGNED",
+        leadId: leadIds[0],
+        targetRole: target.role,
+        targetUid: assignedUserId,
+        payload: {
+          message:
+            target.role === "employee"
+              ? `${promoted} new lead${promoted === 1 ? "" : "s"} assigned to you from the Data Bank.`
+              : `${promoted} lead${promoted === 1 ? "" : "s"} added to your client folders.`,
+          count: promoted,
+        },
+        createdAt: FieldValue.serverTimestamp(),
+        readAt: null,
+      });
+
+      // Best-effort cleanup of the tombstones, exactly as the single path does.
+      // Failing here changes nothing the user can see.
+      await Promise.all(
+        ids.slice(0, promoted).map((id) => adminDb.collection(RECORDS).doc(id).delete().catch(() => {}))
+      );
+    }
+
+    return { promoted, skipped, leadIds };
   });
 }

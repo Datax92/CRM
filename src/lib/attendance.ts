@@ -20,7 +20,21 @@
 
 export type AttendanceNetwork = 'OFFICE' | 'REMOTE' | 'UNKNOWN';
 
-export type AttendanceStatus = 'PRESENT' | 'HALF_DAY' | 'ABSENT' | 'LEAVE' | 'OFF' | 'UNRECORDED';
+/**
+ * `LATE` is a *present* day, not a separate kind of absence — the employee
+ * turned up, after the configured time. It is its own status because the
+ * calendar colours it differently (§3), the reports count it separately (§9)
+ * and the deduction rule counts occurrences of it (§5); folding it into
+ * PRESENT would make all three impossible.
+ */
+export type AttendanceStatus =
+  | 'PRESENT'
+  | 'LATE'
+  | 'HALF_DAY'
+  | 'ABSENT'
+  | 'LEAVE'
+  | 'OFF'
+  | 'UNRECORDED';
 
 /** A full day, below which the day is a half day. Minutes. */
 export const FULL_DAY_MINUTES = 6 * 60;
@@ -150,6 +164,7 @@ export function deriveStatus(minutes: number, hadActivity: boolean): AttendanceS
 
 export const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
   PRESENT: 'Present',
+  LATE: 'Late',
   HALF_DAY: 'Half day',
   ABSENT: 'Absent',
   LEAVE: 'Leave',
@@ -167,11 +182,17 @@ export const NETWORK_LABELS: Record<AttendanceNetwork, string> = {
 export function attendanceRate(
   statuses: AttendanceStatus[]
 ): { present: number; workingDays: number; percent: number } {
-  const workingDays = statuses.filter((s) => s !== 'OFF' && s !== 'UNRECORDED').length;
+  // Approved leave is not a working day the employee failed to attend, so it
+  // leaves the denominator entirely rather than counting as an absence.
+  const workingDays = statuses.filter(
+    (s) => s !== 'OFF' && s !== 'UNRECORDED' && s !== 'LEAVE'
+  ).length;
   // A half day is half a day, not a whole one — counting it as present would
-  // let a month of two-hour appearances read as perfect attendance.
+  // let a month of two-hour appearances read as perfect attendance. A late day
+  // is a full day attended: the penalty for it is the deduction rule, not a
+  // second punishment hidden in the attendance percentage.
   const present = statuses.reduce(
-    (total, s) => total + (s === 'PRESENT' ? 1 : s === 'HALF_DAY' ? 0.5 : 0),
+    (total, s) => total + (s === 'PRESENT' || s === 'LATE' ? 1 : s === 'HALF_DAY' ? 0.5 : 0),
     0
   );
 

@@ -72,3 +72,37 @@ export function isManagerRole(role: unknown): boolean {
 export function outranks(role: UserRole, subject: UserRole): boolean {
   return ROLE_RANK[role] < ROLE_RANK[subject];
 }
+
+/* -------------------------------------------------------------------------- */
+/* What kind of manager                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A sub admin is either an **HR Manager** or a **Sales Manager**.
+ *
+ * Not a fourth role: they share every permission the hierarchy already grants a
+ * manager, and differ in exactly one dimension — attendance reach. HR runs
+ * attendance for the whole company (§13); Sales sees only their own team's, and
+ * none of the company-wide settings. Adding a role would have meant re-deciding
+ * every existing rule for it; a flag on the manager decides only the new thing.
+ *
+ * Absent means `SALES`, so every manager who existed before this module keeps
+ * exactly the reach they had.
+ */
+export const MANAGER_KINDS = ['SALES', 'HR'] as const;
+
+export type ManagerKind = (typeof MANAGER_KINDS)[number];
+
+export const MANAGER_KIND_LABELS: Record<ManagerKind, string> = {
+  SALES: 'Sales Manager',
+  HR: 'HR Manager',
+};
+
+export function normalizeManagerKind(value: unknown): ManagerKind {
+  return value === 'HR' ? 'HR' : 'SALES';
+}
+
+/** Whether this person may run attendance for everybody, not just their team. */
+export function isHrManager(role: unknown, managerKind: unknown): boolean {
+  return role === 'admin' || (role === 'subadmin' && normalizeManagerKind(managerKind) === 'HR');
+}

@@ -56,8 +56,23 @@ export interface Lead {
   kyc?: KycValues | null;
   kycUpdatedAt?: FirestoreTimestamp;
   kycUpdatedByUid?: string | null;
-  /** True once any follow-up recorded a held meeting — lifts the lead to P2. */
+  /** True once any entry recorded a held meeting. */
   meetingHeld?: boolean;
+  /** True once any entry recorded a site visit. Counted in Reports (§4). */
+  siteVisit?: boolean;
+  /**
+   * The entry that is still editable (§2). Writing a new one locks whatever
+   * came before by simply no longer naming it — so "is this row editable" is a
+   * field comparison rather than an ordering read.
+   */
+  latestFollowUpId?: string | null;
+  /**
+   * Set when the lead met the Cold rule and a review was raised (§3). Cleared
+   * when an admin or the manager rules on it, either way.
+   */
+  coldReviewRequestedAt?: FirestoreTimestamp;
+  coldReviewedAt?: FirestoreTimestamp;
+  coldReviewedByUid?: string | null;
   attemptedAssignees?: string[];
   createdAt?: FirestoreTimestamp;
   assignedAt?: FirestoreTimestamp;
@@ -67,6 +82,9 @@ export interface Lead {
   lastFollowUpAt?: FirestoreTimestamp;
   followUpCount?: number;
   callCount?: number;
+  connectCount?: number;
+  meetingCount?: number;
+  siteVisitCount?: number;
   adminAssignDeadlineAt?: FirestoreTimestamp;
   acceptDeadlineAt?: FirestoreTimestamp;
   distributionMethod?: 'MANUAL' | 'AUTO' | 'AUTO_REASSIGN';
@@ -89,8 +107,29 @@ export interface FirestoreTimestamp {
   seconds?: number;
 }
 
+/** One revision of an entry, kept when the latest one is edited (§2). */
+export interface FollowUpRevision {
+  message: string | null;
+  callMade: boolean;
+  callCount: number;
+  durationSeconds: number;
+  connect: boolean;
+  meetingHeld: boolean;
+  siteVisit: boolean;
+  whatsappNote: string | null;
+  editedByUid: string;
+  editedByEmail?: string | null;
+  editedAt?: FirestoreTimestamp;
+}
+
 export interface FollowUpRecord {
   id: string;
+  /**
+   * Remark or Follow-Up, stored from the day the §1 rule landed. Entries
+   * written before that have none, and `entryKindAt` derives it from position
+   * for them — see `lib/followUpKind`.
+   */
+  kind?: 'REMARK' | 'FOLLOW_UP';
   message: string;
   callMade: boolean;
   callCount?: number;
@@ -99,8 +138,16 @@ export interface FollowUpRecord {
   /** Computed server-side from the duration; never trusted from a client. */
   connect?: boolean;
   meetingHeld?: boolean;
-  /** `YYYY-MM-DD` in Karachi — backs the one-per-lead-per-day rule. */
+  /** Whether the client visited the site. Counted separately in Reports. */
+  siteVisit?: boolean;
+  /** `YYYY-MM-DD` in Karachi — backs the day rule and the report date range. */
   dayKey?: string;
+  /** Who the activity counts for: the lead's employee, not always the author. */
+  creditUid?: string | null;
+  /** Previous values, oldest first. Empty unless this entry has been edited. */
+  revisions?: FollowUpRevision[];
+  editedAt?: FirestoreTimestamp;
+  editedByUid?: string | null;
   whatsappNote?: string | null;
   occurredAt?: FirestoreTimestamp;
   createdAt?: FirestoreTimestamp;

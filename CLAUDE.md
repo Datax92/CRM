@@ -2379,3 +2379,669 @@ The settled list and Reopen are unchanged below it.
   `eslint src` at the 7 pre-existing errors and 34 warnings. Four routes
   smoke-tested. Not driven in a browser — no automation in this session — so
   the sub admin folder fix in particular is worth one click to confirm.
+
+### 2026-09-02 — Status bands, editable entries, Cold review, Reports, Clients
+
+Twenty-one items. The two that changed the shape of everything else:
+
+**Pipeline Status now decides Pipeline Stage (§13, §14).** `STATUS_STAGE` in
+`leadStatus.ts` is the whole mapping — P3 talking (Accepted → No Response), P2
+they showed up (Meeting Done, Site Visit Done), P1 closing (Document Received,
+Token Received, Deal Closed) — and `pipelineStage.ts` reads it rather than
+restating it. Five statuses are new; "Interested" is relabelled *Seems
+Interested*; **Negotiation moved from P1 to P3**, because it is still only
+talking. The stage control is gone from both surfaces: it is a read-out now, and
+the status select is grouped by band so choosing one shows what it does before
+it is chosen. That removes a state this app could genuinely reach — a lead
+marked Negotiation and pinned Cold at the same time, both displayed as true.
+
+**Cold no longer happens to a lead; somebody decides it (§3).** Meeting the rule
+and *being* Cold are now separate facts. `meetsColdRule` raises
+`coldPending`, the follow-up transaction notifies the admin **and the lead's
+manager** once (`coldReviewRequestedAt` is the guard, so a fifteenth follow-up
+does not notify five more times), and `reviewColdLead` writes the decision.
+Dismissing clears the flag so the rule can raise it again rather than exempting
+the lead forever. The employee is told either way — a lead vanishing from their
+filters with no explanation is how people stop trusting a pipeline.
+
+**Entries: one Remark, then Follow-Ups (§1, §2).** `entryAllowance` is the rule
+— day one takes a Remark *and* a Follow-Up, every later day takes one Follow-Up
+— and `kind` is now **stored**, because the day rule has to know whether the
+Remark exists *before* writing, and an ordering read at write time is slower and
+racier than a field. Position still labels entries written before this.
+
+The newest entry is editable; everything older is locked, **for every role,
+admin included**. Editing appends the previous values to `revisions` with who
+and when, so §2's history is kept rather than destroyed, and the KPI counters
+move by the delta — a call that turns out to have been a Connect has to reach
+the same counters the original write touched, or editing becomes a way to log
+work no report can see.
+
+**Reports (§4–§6)** — `buildTeamReport`, a Server Action. Connects, Follow-Up
+Connects (the same, minus the opening Remark), Meetings, Site Visits from the
+entries in the range; P3/P2/P1 from where each person's leads stand. A
+collection-group query on `dayKey`, whose `YYYY-MM-DD` Karachi string makes
+string comparison *be* date comparison. It runs server-side because a
+collection-group read is the one shape these Security Rules cannot scope: a rule
+cannot tell which lead a follow-up belongs to without a lookup per document. The
+scope comes from the verified token — an employee has no uid to pass.
+`Site Visit` is a new tick on the follow-up form, counted separately from a
+meeting because they are usually different days.
+
+**Clients (§15–§20)** — `clientFolders` plus a `clientFolderLeads` membership
+row per lead. **A folder holds references, never copies**: a copied lead would
+have its own follow-ups, its own status, its own deal, and within a week the two
+would disagree about the same customer with nothing to say which was right.
+Opening a lead from a folder opens the same `LeadDetailPane` on the same
+document. Membership ids are `folderId__leadId`, so adding twice is a no-op
+rather than a duplicate row. Deleting a folder deletes an *organisation* of the
+pipeline, never a part of it, and the confirmation says so.
+
+**Bulk assignment (§9, §10)** — 25 / 50 / 75 / 100 quick picks that take from
+the top of what is on screen, in the order shown, and say so when the filter
+holds fewer than asked. `promoteDataBankRecords` and `assignLeadsBulk` write in
+chunks with one notification for the batch; neither copies a lead — §10's "the
+employee receives those exact leads" is satisfied by there being one record.
+
+**Also:** Assigned To on every lead row, web and mobile, in the position the
+phone number held (§7, §8) — the number is untouched in the detail; the exact
+Data Bank folder in the Team and Employee screens (§11); and a lead opened from
+an employee's dossier now opens the complete record rather than a summary (§12).
+
+- **Validation**: `typecheck` 0 errors, `test` **227/227** (219 → 227; the stage
+  suite was rewritten around the bands and the Cold split, plus the day-rule
+  allowance), `build` compiles, `eslint src` at the 7 pre-existing errors and 34
+  warnings. Seven routes smoke-tested against the dev server.
+
+  **Two things need deploying**: `npm run deploy:rules` — the Clients
+  collections have new rules, and Reports needs the new
+  `followUps.dayKey` **collection-group** field override, which Firestore's
+  automatic single-field indexes do not cover. Not driven in a browser; no
+  automation in this session.
+
+### 2026-09-03 — The Attendance module
+
+Built on the existing employee, manager, notification, auth and money
+structures rather than beside them: no second roster, no second notification
+system, no second idea of who manages whom.
+
+**Presence is declared, location is not.** Check In / Check Out are the
+employee's, so the times are whatever they say. What still cannot be faked from
+a browser is *where* the punch came from — the network is classified
+**server-side** from the request's own address. §2's restriction is off by
+default and, when on, still **records** an out-of-office punch rather than
+refusing it: the allow-list starts empty, so blocking would lock the whole
+company out of attendance until Settings is filled in, and field staff really
+do work elsewhere. Per-person exemptions cover the rest.
+
+**Late is now a status, not a flag.** `LATE` joins `AttendanceStatus`, so §3's
+four colours are four states rather than three states and an asterisk — green
+present, brown late, red absent, yellow leave, each carrying a letter as well
+as a colour because a calendar that distinguishes late from absent by hue alone
+is unreadable to a good number of the people using it. An override still wins:
+a late HR has excused stops being a late everywhere, including in the
+deduction.
+
+**The rules are all configurable and all stated in the words they are enforced
+in** (`lib/attendancePolicy`): start time, grace, the absence cutoff, the lates
+allowed each month, a flat or percentage deduction, and the yearly leave
+allowance. Settings restates each as a sentence — "a check-in at or before
+09:15 is on time" — because a parameter list nobody can read is a parameter
+list nobody dares change.
+
+**A month can be closed, and that is the whole of §12.** While a month is open
+its deductions are recomputed from the live policy on every read, which is
+right. The moment it has been paid it is wrong: raising the deduction in
+October must not change what September cost. `finalizeAttendanceDeductions`
+therefore **copies** the lines into `attendancePeriods/{YYYY-MM}` — the
+amounts, the salaries behind them and **the rule each charge was made under, in
+words** — and every later read of a closed month returns that copy. Reopening
+is its own action, so undoing a payroll decision is deliberate rather than a
+second press of Finalise. A month still running cannot be closed.
+
+**Reads are split by what a rule can prove.** The admin and a person's own days
+go through Security Rules directly. A Sales manager's team is a property of
+each *employee's* profile, not of the attendance row, so a rule for it would
+cost a document read per day per employee — `getTeamAttendance` checks the
+roster once in a Server Action instead. That is also the right shape for the
+screens: a report with a From/To and filters is a query somebody runs, not a
+feed that should stream.
+
+**HR is a kind of manager, not a fourth role.** `managerKind` (SALES / HR) is
+set on the Add Manager form and **rides in the auth claim**, because the
+sidebar has to know before it can draw itself and a profile read for that would
+be a round trip on every navigation. Moving somebody between kinds re-issues
+the claim and revokes their token — an ex-HR manager keeping the settings until
+their token happened to expire is not acceptable. An older manager account with
+no claim reads as SALES, which grants nothing.
+
+| | |
+|---|---|
+| `lib/attendancePolicy.ts` | every rule, the late verdict, the deduction maths, leave balances |
+| `lib/attendanceCalendar.ts` | month arithmetic, pure and tested — three screens needed a month's bounds and each could have got December wrong on its own |
+| `app/actions/attendance.ts` | punch, adjust, the team read, one person's month, the absence sweep, the period close |
+| `app/actions/leave.ts` | request, decide, cancel, balances, adjustments |
+| `components/attendance/` | the palette and calendar, the seven screens, the day panel, the leave sheet |
+| `app/{admin,subadmin,employee}/attendance/` | 17 routes, one layout per role |
+
+**Deliberate decisions worth keeping:**
+- **A leave request over balance is allowed to be sent.** Somebody out of casual
+  leave who needs a day for a funeral still has to be able to ask; refusing at
+  the form only moves that conversation off the system. The form says how far
+  over it is and the approver decides.
+- **Approved leave leaves the attendance denominator** rather than counting
+  against the employee, and a half day counts as half. Counting either the
+  other way would make an honest month read as a bad one.
+- **A day checked in but not out is never graded absent** — `deriveStatus(0,
+  true)` is `HALF_DAY`. With nothing writing in the background, worked minutes
+  stay at 0 all morning.
+- **The employee is told when their attendance is corrected**, and when a
+  deduction is recorded. A figure somebody discovers on payday is how a payroll
+  dispute starts.
+- **Both punch buttons stay on screen all day.** One that swapped for the other
+  would leave no way to see which state you are in.
+
+**Found and fixed while building:** the demo seed called `now()`, a `const`
+declared *after* `seed()` runs — a temporal dead zone error that only appears
+in a production build, where the seed is evaluated during prerender. It was
+failing `npm run build` on three pages.
+
+**Also:** `monthlySalary` is now on the employee and manager forms — it is the
+base for a percentage deduction and the payroll figures, and the module cannot
+work without it. `useEmployees` reads it and `managerKind` out of the snapshot,
+which is the same class of gap fixed on 2026-08-31.
+
+- **Validation**: `typecheck` 0 errors, `test` **257/257** (250 → 257; the new
+  ones cover the month arithmetic — leap February, December stepping into
+  January, a range that would otherwise drop the 31st, and the leading blanks),
+  `build` compiles with all 17 new routes, `eslint src` unchanged at the 7
+  pre-existing errors and 34 warnings. All 17 routes smoke-tested against the
+  dev server (200 each). Not driven in a browser — no automation in this
+  session — so the screens are reasoned from the tokens, not observed.
+
+  **Deploy before use**: `npm run deploy:rules`. The new `leaveRequests`,
+  `configHistory` and `attendancePeriods` rules and the 9 attendance/leave
+  indexes are not live until then, and neither is the `followUps.dayKey`
+  collection-group field override still owed from the previous round.
+  `/api/cron/mark-absentees` runs at 12:05 PKT and needs `CRON_SECRET` set.
+
+### 2026-09-03 — Salary / Payroll and Office Expenses
+
+Two modules, both built on what already exists. No second roster, no second
+commission record, no second attendance figure, no second expense ledger.
+
+**Where each number comes from, and why none of it is recomputed here:**
+
+| Figure | Owned by | How payroll gets it |
+|---|---|---|
+| Basic salary | `users/{uid}.monthlySalary` | the same field attendance uses for percentage deductions — one salary, not two |
+| Commission | `dealPayouts` (Profit Distribution) | summed by the month the split was **finalised**, not the month the deal closed |
+| Attendance deduction | `attendancePeriods`, else `monthDeductions` | a **closed** attendance month wins; only an open one is calculated fresh |
+| Late / absent / leave counts | `attendance` | copied onto the line so a slip can explain its own deduction |
+
+Commission is dated by finalisation rather than by the deal, because that is
+when it becomes payable — dating it by the deal would mean reopening a paid
+payroll every time a late split landed.
+
+**The payroll state machine is the whole of "finalised records must not be
+recalculated".** `DRAFT → REVIEWED → APPROVED → PAID`, one step at a time in
+either direction, and **`PAID` is terminal**: money has left the building, and
+the way to fix a paid month is an adjustment on the next one. `isEditable()` is
+the single predicate every write path asks first — regenerating, editing a line
+and re-pulling commission are all refused once a month is approved.
+
+Approving **copies** each line into `payslips/{uid}_{YYYY-MM}`. That is what an
+employee reads, and it is why a March slip still says what March said after
+somebody changes a salary in June. Reopening marks slips `current: false`
+rather than deleting them — the record of what was approved is not something a
+correction should destroy.
+
+**Two collections, for the reason the deal split already has two.** Firestore
+grants a whole document or none of it, so a period document holding everybody's
+pay cannot be shown to one person. `payrollPeriods` is admin/HR; `payslips` is
+one row each, and `uid ==` is what makes an employee's query provable.
+
+**A manager sees no salary figures by default**, per the brief. HR does; anyone
+else needs `salaryAccess: true` set on their profile by the admin, one person at
+a time — an opt-in, not a role. Marking a payroll **paid** is the admin's alone;
+HR prepares, reviews and approves.
+
+**Office Expenses extends the `expenses` collection rather than starting a
+second one.** What is new is the approval state, who paid, how, the receipt and
+a change history. **A record written before this module reads as approved** —
+re-opening a year of history as "Pending" would be a fiction, and would move
+every total that has ever been reported.
+
+Decisions worth keeping:
+- **Total and spend are both shown.** `total` is everything invoiced, `spend` is
+  the approved half. "We were invoiced 1.4M and approved 1.1M" is two facts, and
+  one number hides whichever half the reader needed.
+- **Charts count approved spend only.** A pending invoice is not yet a cost and
+  a rejected one never will be; a category chart including them overstates
+  every line on it, and that is the chart somebody takes to a budget meeting.
+- **The dashboard describes the range, not the filter.** A total that fell when
+  somebody clicked "Pending" would read as the company having spent less.
+- **Renaming a category moves its records**, in batches; **removing one does
+  not.** Leaving records pointing at a name that no longer exists splits one
+  category into two on every report; rewriting history to tidy a dropdown is a
+  worse trade. Built-in categories cannot be edited at all.
+- **An approved expense cannot be deleted** — reject it, which keeps the record
+  and the reason. Deleting at all is admin-only, narrower than the rest of the
+  module.
+- **The receipt is a link, not an upload.** There is no file storage wired up
+  for financial documents, and half-building one on the screen that most needs
+  to be trustworthy is worse than pointing at where the document actually lives.
+- **Admin and HR only, in three places**: the route guard, every Server Action,
+  and the Security Rule. `isHr()` reads the **auth claim**, so it costs no
+  document lookup — which is why `managerKind` was put in the claim in the
+  first place.
+
+| | |
+|---|---|
+| `lib/payroll.ts` | the arithmetic, the state machine, the profile |
+| `lib/officeExpenses.ts` | statuses, categories, summaries, category and period breakdowns, trend |
+| `app/actions/payroll.ts` | profiles, generate, adjust, the status workflow, payslips, access grants |
+| `app/actions/officeExpenses.ts` | create, edit, approve/reject, delete, categories |
+| `components/finance/` | payroll, salary profiles, the line editor, the payslip, the expense ledger and its two modals |
+| routes | `/admin/financials/payroll`, `/{admin,subadmin,employee}/salary`, `/subadmin/financials/{payroll,expenses}` |
+
+**Found and fixed:** `useEmployees` typed `monthlySalary` but the payroll
+fields it now needs (`salaryProfile`, `salaryHistory`, `salaryAccess`) had no
+home on `EmployeeData`, and `ExpenseRecord` had none of the office-expense
+fields — the same "typed but never read" gap caught on 2026-08-31.
+
+**Deliberately not built:** salary revision *scheduling* (a raise that starts
+next month). It needs an effective-date model on the profile, and guessing at
+one would put a date on every payslip that nobody asked for. Set the profile
+when the raise takes effect; the history records who changed it and when.
+
+- **Validation**: `typecheck` 0 errors, `test` **287/287** (257 → 287; 30 new —
+  the net-never-negative floor, whole-rupee rounding, the two per-person
+  switches, standing plus one-off deductions, every state transition including
+  `PAID` being terminal and `DRAFT` not reaching `APPROVED`, legacy expenses
+  reading as approved, spend excluding pending and rejected, category shares,
+  day/month/year grouping, and a trend against a zero month being `null` rather
+  than infinity), `build` compiles, `eslint src` unchanged at the 7 pre-existing
+  errors and 34 warnings. Twelve routes smoke-tested against the dev server
+  (200 each), including the older financial screens to confirm nothing
+  regressed. Not driven in a browser — no automation in this session.
+
+  **Deploy before use**: `npm run deploy:rules`. New rules for `payrollPeriods`,
+  `payslips` and the widened `expenses` read, plus five new indexes.
+
+### 2026-09-03 — Chronological history, three-way assignment, Clients from the Data Bank, Reports fixed
+
+Eleven changes. Existing components reused throughout; two new files only where
+there was genuinely nothing to reuse.
+
+**1 · History reads in the order it happened.** A Follow-Up added after a
+Remark now appears directly after it, not above. The reversal is
+`toChronological` at the **point of display** — the query, `latestFollowUpId`
+and the edit-the-newest rule all still work newest-first, and changing that
+would have touched a dozen call sites for a presentational reason. Three
+surfaces (lead pane, phone detail, closed-deal record) call it and pass
+`newestFirst: false` to `entryLabelAt`, or the Remark badge would land on the
+newest entry.
+
+**2 · Data Bank assigns to Employee, Manager or Admin / Myself.**
+`lib/assignTargets` builds one grouped option list — Me first, then Managers,
+then Employees, each with a hint saying *where the lead actually goes*. Both
+Data Bank surfaces and both the single and bulk controls read it, so desktop
+and phone cannot offer different options. Paused accounts are never offered:
+the server refuses them, and a choice that will be refused is worse than none.
+
+**5 · A lead handed to a manager or the admin goes to Clients, not the
+employee lead area.** `resolveAssignee` decides which of the three a recipient
+is, and for a manager or the admin `ensureClientFolder` mirrors the source
+folder into their Client section and files the lead there. **The folder id is
+deterministic** (`db_{uid}_{sourceFolderId}`), which is the whole of "add them
+to the existing Client folder": importing more of Facile Town 2 next week lands
+in the folder that already exists rather than making a second one with the same
+name. Single and bulk both do it; the bulk path creates each mirrored folder at
+most once per commit rather than per record.
+
+**3 · Clients imports from the Data Bank — and is not a second system.**
+`ImportFromDataBankModal` calls the same `promoteDataBankRecords` the Data
+Bank's own bulk bar calls, with the importer as assignee, so §5's flow does the
+work. Whole folder or ticked selection. Nothing is duplicated: the lead keeps
+its id, source, Data Bank folder name and history.
+
+**4 · Already true, and left alone.** `ClientFolderView` opens
+`LeadDetailPane` — the same component the pipeline uses, on the same document,
+with Follow-Ups, Remark, KYC, Deal Entry and the audit trail. There was nothing
+to rebuild.
+
+**9 · Reports: the bug was an index, not the code.** The activity query is a
+**collection group** over `followUps`, and Firestore's automatic single-field
+indexes are collection-scoped only — so it needs the `followUps.dayKey` field
+override, which has never been deployed. Until it is, the query throws
+`failed-precondition`. That now surfaces as a sentence naming the fix instead
+of a generic failure.
+
+Two real changes went in alongside it:
+
+- **Connect and Follow-Up Connect are now disjoint.** Connect is the *first*
+  connected contact on a lead (its Remark); Follow-Up Connect is every later
+  one. Counting the opening call in both made the columns sum to more than the
+  work that happened, and made "Connect" a synonym for total contact. Read from
+  the entry's stored `kind`; entries predating that field count as follow-ups,
+  which is what all but the first of them were.
+- **The stage query was one round trip per employee.** Twenty people meant
+  twenty sequential-ish queries before a single figure could be drawn. Now
+  batched thirty at a time on `assignedUserId in […]`.
+
+**10 · HR sees everyone's report.** It previously scoped every manager to their
+own team regardless of kind. One profile read, and only for a manager — an
+admin and an employee never pay for it.
+
+**6 · Salary performance: the fix was a lifted fetch.** `SalaryProfilesPanel`
+read the **whole `users` collection on mount**, and it unmounts on every tab
+change — so Payroll → Profiles → Payroll → Profiles read the roster twice. The
+state moved to `useSalaryProfiles` in the parent, loaded once, the first time
+the tab is opened. The server side was already parallel and is unchanged.
+
+**6, 8, 11 · Mobile.** The payroll table and the salary-profile table become
+**cards** below 820px, carrying every figure and both actions — a nine-column
+money table at 390px is unreadable, and a reduced version was not acceptable.
+Office Expenses' header actions go full width and every filter control stacks
+rather than collapsing to 60px. The expense ledger was already cards.
+
+**7 · Duplicate salary navigation removed.** The admin's top-level "My Salary"
+is gone: Salary / Payroll under Money already shows every line including their
+own, and opening a row is the payslip. Same for an HR manager. A **Sales
+manager keeps it** — they have no payroll screen, so for them it is the only
+route to their own payslips, not a duplicate.
+
+- **Validation**: `typecheck` 0 errors, `test` **298/298** (290 → 298; 8 new —
+  the display order and that reversing does not disturb the source array, plus
+  the assign-target groups, the paused account never offered, the viewer
+  appearing once, and a manager seeing themselves by name rather than as
+  Admin), `build` compiles, `eslint src` unchanged at the 7 pre-existing errors
+  and 34 warnings. Nine routes smoke-tested (200 each), including the ones this
+  round did not touch. Not driven in a browser — no automation in this session.
+
+  **Reports stay broken until the indexes are deployed.** The service account
+  can write rules but not create indexes (`datastore.indexes.create` denied),
+  so 16 composite indexes and the `followUps.dayKey` override are still
+  missing — `npm run check:indexes` lists them.
+
+### 2026-09-03 — Clients is the Data Bank screen; a Client folder is the leads screen
+
+Two reports, both "the UI is not the one I asked for". Both are now the same
+components, not lookalikes.
+
+**A Client folder *is* `LeadsWorkspace`.** Not a copy, not a table styled to
+match — the same component, given a `scope` of the folder's lead ids. So the
+list, the chips, search, pagination, the row shading, `LeadDetailPane` with
+Follow-Ups / Remark / KYC / Deal Entry / audit, and every action are the same
+because there is one implementation of all of it. `MobileLeads` takes the same
+`scope`, so the phone gets its own leads screen restricted to the folder rather
+than a second list with a second detail view.
+
+`LeadScope` carries the ids, a title and a `backHref`. The scope is applied
+**before** search, so every chip count describes the folder rather than the
+pipeline behind it, and the selected lead resolves against the scope — closing
+a deal inside a folder keeps the pane open instead of blanking.
+
+Two small header rules: the panel heading becomes the folder's name, clamped to
+two lines rather than truncated ("ALL LEADS" always fits; a folder name is the
+one thing on that bar that has to be readable), and the Data Bank shortcut is
+replaced by a way back to the folder list.
+
+**The Clients folder list is the Data Bank folder screen**, to the pixel: same
+full-bleed ground, same header block, same `auto-fill minmax(300px)` grid, same
+two-figure card, same footer actions, same empty state. What differs is what a
+folder holds — Leads and Source rather than Records and Promoted, because these
+rows are leads that already exist rather than cold rows that are not leads yet.
+
+On the phone, `MobileClients` **imports** `EYEBROW`, `TITLE`, `LIST_BODY`,
+`HeaderStat`, `Note`, `Empty`, `SkeletonCards`, `Figure` and `MiniAction` from
+`MobileDataBank` rather than restating them. A second copy of a card would
+drift the first time either was touched. `MobileShell.hasOwnChrome` now covers
+both client routes, or the shell would draw a header over the one the screen
+already has.
+
+**Also:** `ClientFolder` gained `dataBankFolderId` / `dataBankFolderName` /
+`ownerUid` / `ownerRole` and `ClientFolderMember` gained `dataBankFolderId` —
+the promotion path has been writing all of them since the assignment change,
+and the hook was typed without them.
+
+- **Validation**: `typecheck` 0 errors, `test` 298/298, `build` compiles,
+  `eslint src` unchanged at the 7 pre-existing errors and 34 warnings. Five
+  routes smoke-tested (200 each). Not driven in a browser — no automation in
+  this session.
+
+### 2026-09-03 — Reports: the error found by measurement, and the screen rebuilt
+
+**The error was real and my previous guard was wrong.** I probed the live
+project with the service account rather than reasoning about it, and the
+collection-group query fails like this:
+
+```
+code: 400            (not the gRPC 9 / 'failed-precondition' I had guarded for)
+message: "The query requires a COLLECTION_GROUP_ASC index for collection
+          followUps and field dayKey."
+```
+
+"requires **a** … index", not "requires an index". My regex tested for the
+wrong wording *and* the wrong error code — over the REST transport this is an
+HTTP 400 — so it caught neither and the screen fell through to the generic
+"Something went wrong on our side."
+
+**Fixed twice over.** The detection now matches on the message shape
+(`/requires a[n]?\b[^.]*index/i`) as well as the codes; and, more usefully,
+**the report no longer fails at all when the index is missing.** It falls back
+to querying each lead's own `followUps` subcollection — a *collection* query,
+which Firestore's automatic single-field index already covers — in parallel
+batches of 25, bounded by the leads the reader can already see. One round trip
+per lead instead of one in total, which is why it is a fallback and not the
+plan; but a slower report beats a screen that says something went wrong, and
+the P3/P2/P1 columns never needed the index anyway. A `warning` on the result
+says the report ran the slow way and how to fix it, rather than pretending
+nothing happened.
+
+The lead read moved above the activity read, because the fallback needs the
+lead ids.
+
+**The screen is now the Employee Directory's screen**: the same
+`directoryChrome` tokens, the gradient hero with `HeroRings`, the
+`minmax(252px,1fr)` stat cards with their 3px accent stripe and `Bar`, the same
+card radius, borders, Manrope face and row hover. They sit beside each other in
+the sidebar and describe the same people; looking like different products was
+the only thing wrong with them being different screens.
+
+- Columns are the ones asked for: Name, Assigned To, Connect, Follow-Up
+  Connect, Meeting Done, Site Visit, P3, P2, P1 — plus a totals row.
+- **Mobile is a card per person**, not the table scrolled sideways: name,
+  who runs them, then the seven figures in an `auto-fit minmax(74px)` grid. The
+  hero, the range controls and the presets all stack; every control and the CSV
+  export stay present.
+- Four stat cards summarise the activity columns only. The P-bands are a
+  distribution of a fixed set of leads, not a total, so summing them into a
+  headline would invite reading them as throughput.
+- A zero renders in `E.hair` rather than the column's accent, so a row of real
+  work stands out from a row of nothing at a glance.
+
+- **Validation**: `typecheck` 0 errors, `test` 298/298, `build` compiles,
+  `eslint src` unchanged at the 7 pre-existing errors and 34 warnings. Five
+  routes smoke-tested. The failing query was reproduced and its exact error
+  captured against the live project before anything was changed.
+
+### 2026-09-03 — Attendance: IP enforced on check-in only, one punch control, rebuilt in the Team language
+
+**Check In is now refused off the office network; Check Out never is.** They
+are not symmetric acts, and treating them the same was the mistake: arriving is
+the claim the restriction exists to police, while leaving is somebody closing a
+day they have already been recorded as working. Blocking a check-out would
+strand an open day whenever a person finished at a client site — and an open
+day is graded as a half day, so the block would actively cost them.
+
+The refusal names the address it saw, says it is not one of the approved ones,
+and says the check-out is still available from anywhere. Two cases are still
+exempt on purpose: an **empty allow-list** polices nothing (turning the
+restriction on with no address recorded would lock the whole company out), and
+so does a uid on the exemption list. Four unit tests pin the asymmetry, because
+it is exactly the kind of rule that gets "simplified" back into a bug.
+
+**Exactly one punch control per role.** `MyAttendanceView` gained `canPunch`,
+defaulting to **false**: an admin and a manager punch on the Attendance
+dashboard, an employee on their own attendance screen, which is their
+dashboard. Two screens able to open the same day was a loophole — the record is
+one document either way, so the second control only ever created doubt about
+which had been pressed. Where the control is absent the screen says where it
+lives, so its absence is an answer rather than a gap.
+
+**The dashboard is rebuilt in the Employee Directory's design language** —
+`directoryChrome` tokens, the gradient hero with `HeroRings`, the
+`minmax(252px,1fr)` stat cards with their 3px accent stripe and `Bar`, the same
+radius, borders, Manrope face and row hover. Your own day and the punch buttons
+sit inside the hero; the roster becomes **cards on a phone**, not the table
+scrolled sideways, with In / Out / Hours in a three-column strip.
+
+**The sidebar scrolls.** The scroll moved off the `<aside>` and onto the nav
+area with `min-h-0` — a flex child defaults to `min-height:auto` and refuses to
+shrink below its content, so an expanded Attendance section simply overflowed
+the viewport with no way to reach the last items. The footer's Collapse and
+Sign out stay pinned; the collapsed rail keeps `overflow-visible` on desktop
+because its flyout has to escape the 96px rail and a scroll container clips on
+both axes. **Search removed** from the sidebar at the owner's request (the
+topbar search is untouched).
+
+**The phone account sheet is now two levels**, mirroring the sidebar's
+accordions: Attendance, Money, Team, Leads, Clients, Settings — tap one to
+drill in, a back arrow to come out. Twenty-odd links in a single column was a
+scroll nobody read to the end of, and it threw away the grouping the sidebar
+already teaches. A section holding one destination is flattened to a plain row,
+because drilling into a single item is a tap that buys nothing.
+
+**Nothing on a phone is a dead end any more.** `MobileSubHeader` — back, the
+screen's own name, the account button — is on every attendance and money
+sub-screen, and the account button is now on **Money**, where its absence had
+stranded people. Back is `router.back()` with a `home` fallback, because these
+screens are reached from several places and a hard-coded parent would send
+people somewhere they never came from.
+
+- **Validation**: `typecheck` 0 errors, `test` **302/302** (298 → 302),
+  `build` compiles, `eslint src` unchanged at the 7 pre-existing errors and 34
+  warnings. Thirteen routes smoke-tested (200 each).
+
+### 2026-09-03 — The tab strip was underneath the hero; punch consolidated onto /home
+
+**The overlap, and what caused it.** The attendance dashboard cancelled the
+`<main>` padding with its own `margin: -24px -28px` — which pulled it *up over
+the tab strip the layout renders above it*. The strip was never missing; it was
+behind the hero card. Any attendance page setting its own bleed would have done
+the same.
+
+**Fixed by moving the frame up.** `AttendanceShell` now owns the bleed, the
+ground, the padding, the phone header and the strip; pages render in normal
+flow inside it and cannot climb over their own navigation. The strip also gets
+`position: relative; z-index: 1`, so a card with a shadow cannot paint across
+it either. A new attendance screen inherits the right frame without knowing any
+of this.
+
+**One punch control, and it is the main dashboard.** At the owner's direction
+Check In / Check Out is now only the `/home` strip — the screen every role
+lands on. The attendance dashboard shows the same day read-only with a link to
+it. The rule underneath is unchanged and still enforced server-side: **check-in
+is refused off the office network, check-out works from anywhere**, so a day
+never stays open because somebody finished at a client site.
+
+Consolidating rather than duplicating matters here because both controls wrote
+one document. Two ways to open the same day only ever produced doubt about
+which had been pressed.
+
+**The calendar is rebuilt** in the Team language: aliased onto
+`directoryChrome`'s tokens rather than restating them (so the two cannot drift
+by a hex digit), 58px cells at radius 14, full weekday names on desktop and
+single letters at 390px, a staggered scale-in, hover lift, and a selected day
+that lifts with a teal ring and shadow.
+
+Two rules worth keeping:
+- **Today is ringed, not filled.** A fill would need a fifth colour competing
+  with the four that carry meaning; a dashed ring says "you are here" without
+  claiming to be a status.
+- **The legend carries the month's counts**, so it answers the question
+  somebody actually has when they open a calendar instead of being a key they
+  have to translate — and it replaces a second strip of figures above it.
+
+`Figure` picked up the directory's 3px accent stripe, so a figure here and a
+stat card there read as the same object.
+
+- **Validation**: `typecheck` 0 errors, `test` 302/302, `build` compiles,
+  `eslint src` unchanged at the 7 pre-existing errors and 34 warnings. Nine
+  routes smoke-tested (200 each).
+
+### 2026-09-03 — The collapsed rail's flyout ran off the bottom of the screen
+
+Reported with a screenshot: opening **Time** on the collapsed rail showed
+Dashboard, My Attendance, Calendar and Leave Management, then the panel was cut
+off by the bottom of the window. The remaining three — Attendance Reports,
+Late / Absence, Settings — could not be reached at all.
+
+**Two causes, both in one element.** The panel was `absolute left-full top-0`,
+anchored to its rail item, so a menu with seven entries simply extended past
+the viewport; and it carried `overflow-hidden`, so the part that did not fit
+was clipped rather than scrolled. Attendance is the first menu long enough to
+show it — every other one fits in four.
+
+**Fixed by measuring.** The flyout state now carries where to draw the panel,
+not just which one is open: the button's `getBoundingClientRect()` on click,
+with the top clamped into the viewport (never above 12px, never so low that the
+panel gets less than `MIN_FLYOUT_HEIGHT`), and whatever room is left becomes
+its `maxHeight`. The panel is `position: fixed`, which also frees it from every
+clipping ancestor between it and the rail — the reason the `<aside>` had to
+keep `overflow-visible` in the first place. The heading stays pinned and only
+the list scrolls, so a scrolled menu still says what it is.
+
+A measured position goes stale the moment anything moves, so a resize or a
+scroll closes it — a menu hanging in the wrong place is worse than one that has
+closed. The listener is registered from a `useCallback` defined outside the
+effect, because this project's lint rule rejects a `setState` written in an
+effect body and cannot see that this one only ever runs from a browser event.
+
+- **Validation**: `typecheck` 0 errors, `test` 302/302, `build` compiles,
+  `eslint src` unchanged at the 7 pre-existing errors and 34 warnings (the one
+  reported in this file is the older `setSidebarOpen` effect, not this change).
+
+### 2026-09-03 — Check-in was accepted off the office network: the flag was never set
+
+**Reported:** checking in from a different IP succeeded. Read the live config
+rather than guessed at it:
+
+```json
+config/attendance = { "officeIps": ["119.73.100.106", "154.192.107.175"] }
+```
+
+**No `ipRestriction` field at all.** The document predates it, so
+`normalizePolicy` filled it from `DEFAULT_ATTENDANCE_POLICY` — which is
+`false` — and the enforcement in `punchAttendance` was correct and simply never
+ran. Today's two rows confirmed it: both `network=REMOTE`, both accepted.
+
+**Fixed at the source of the default.** An absent flag with addresses
+configured now reads as **on**. Somebody typing their office IP into Settings
+means "only let people in from here"; there is nothing else it can mean, and
+leaving those addresses sitting there doing nothing was the actual bug.
+
+The rule, kept deliberately small:
+
+| stored | result |
+|---|---|
+| `ipRestriction` explicitly `true`/`false` | that, always — Settings sends the field, so an admin's choice sticks |
+| absent, `officeIps` non-empty | **enforced** |
+| absent, `officeIps` empty | not enforced — nothing to enforce against, and refusing everybody would lock the company out |
+
+`punchAttendance` is unchanged and still refuses **check-in only**; check-out
+works from anywhere, so nobody is left with a day they cannot close. The
+refusal names the address it saw, which is what makes a wrong or stale office
+IP diagnosable instead of mysterious.
+
+**Worth knowing for local testing:** on a dev server every request arrives as
+`::1`, which matches no office address, so check-in is now refused locally too.
+That is the rule working. Untick the restriction in Settings, or add the
+address the error names.
+
+- **Validation**: `typecheck` 0 errors, `test` **306/306** (302 → 306; four new
+  covering each row of the table above), `build` compiles, `eslint src`
+  unchanged at the 7 pre-existing errors and 34 warnings. The live config was
+  read before and the fix reasoned from what it actually contained.

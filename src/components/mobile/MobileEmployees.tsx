@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { describeLeadSource } from "@/lib/leadSource";
 import type { Lead } from "@/hooks/useLeads";
 import type { DealRecord } from "@/hooks/useFinancials";
 import type { EmployeeMetrics } from "@/lib/metrics";
@@ -1228,7 +1229,9 @@ function MobileAssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {leads.map((lead) => {
         const accent = leadAccent(lead.status);
-        const source = lead.source === "MANUAL_ENTRY" ? "Manual Intake" : lead.source;
+        // §11 — the folder the lead actually came out of, not just "Data Bank".
+        // Same helper the leads list and the deal record use.
+        const source = describeLeadSource(lead);
         return (
           <div
             key={lead.id}

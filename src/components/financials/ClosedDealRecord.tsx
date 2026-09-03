@@ -53,7 +53,7 @@ import { formatPhone } from "@/lib/phone";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
 import { describeLeadSource } from "@/lib/leadSource";
 import { KYC_FIELDS } from "@/lib/kyc";
-import { entryLabelAt } from "@/lib/followUpKind";
+import { entryLabelAt, toChronological } from "@/lib/followUpKind";
 import { LEAD_STATUS_LABELS } from "@/lib/leadStatus";
 import { useLeadById, useLeadHistory } from "@/hooks/useLeads";
 import { useDealDistribution } from "@/hooks/useDistributions";
@@ -259,7 +259,7 @@ export function ClosedDealRecord({
           <Empty>Nothing was logged against this lead.</Empty>
         ) : (
           <ol style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {followUps.map((entry, index) => (
+            {toChronological(followUps).map((entry, index) => (
               <li key={entry.id} style={{ borderLeft: `2px solid ${T.tealSoft}`, paddingLeft: 12 }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
                   <span
@@ -268,12 +268,12 @@ export function ClosedDealRecord({
                       fontWeight: 700,
                       borderRadius: 999,
                       padding: "2px 8px",
-                      ...(entryLabelAt(index, followUps.length) === "Remark"
+                      ...(entryLabelAt(index, followUps.length, false) === "Remark"
                         ? { background: T.amberSoft, color: T.amber }
                         : { background: T.tealSoft, color: T.teal }),
                     }}
                   >
-                    {entryLabelAt(index, followUps.length)}
+                    {entryLabelAt(index, followUps.length, false)}
                   </span>
                   <span style={{ fontSize: 11.5, color: T.faint }}>
                     {formatBusinessDateTime(entry.occurredAt ?? entry.createdAt)}

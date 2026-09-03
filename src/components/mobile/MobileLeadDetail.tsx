@@ -22,7 +22,7 @@
  */
 
 import { useMemo, useState } from "react";
-import type { Lead } from "@/hooks/useLeads";
+import type { Lead, FollowUpRecord } from "@/hooks/useLeads";
 import { useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
 import {
@@ -30,7 +30,8 @@ import {
   addFollowUp,
   closeDeal,
   setLeadStatus,
-  setLeadPipelineStage,
+  updateFollowUp,
+  reviewColdLead,
   PAYMENT_METHODS,
 } from "@/lib/clientActions";
 import { USER_SETTABLE_STATUSES, LEAD_STATUS_LABELS, isTerminal, type LeadStatus } from "@/lib/leadStatus";
@@ -41,23 +42,19 @@ import { formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
 import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
 import { initialsOf } from "@/lib/leadDisplay";
-import {
-  pipelineStage,
-  explainPipelineStage,
-  PIPELINE_STAGES,
-  PIPELINE_STAGE_LABELS,
-  type PipelineStage,
-} from "@/lib/pipelineStage";
+import { pipelineStage, explainPipelineStage, PIPELINE_STAGE_LABELS } from "@/lib/pipelineStage";
 import { STAGE_TONES, StageIcon } from "@/components/leads/StageChrome";
 import { KycPanel } from "@/components/leads/KycPanel";
 import { describeLeadSource } from "@/lib/leadSource";
 import { dealCustomerFromKyc } from "@/lib/kyc";
 import {
   entryLabelAt,
+  toChronological,
   nextEntryLabel,
   historyTabLabel,
   FOLLOW_UP_KIND_LABELS,
 } from "@/lib/followUpKind";
+import { STAGE_STATUSES, statusLabel } from "@/lib/leadStatus";
 import { M, MobileCard, MobileHeader, Segmented } from "./mobileChrome";
 
 type Tab = "notes" | "kyc" | "audit" | "deal";
@@ -131,6 +128,8 @@ export function MobileLeadDetail({
   const [tab, setTab] = useState<Tab>("notes");
   const [banner, setBanner] = useState<Banner>(null);
   const [formOpen, setFormOpen] = useState(false);
+  /** The entry the sheet is editing, or null when it is adding a new one. */
+  const [editingEntry, setEditingEntry] = useState<FollowUpRecord | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
   const closed = isTerminal(lead.status);
@@ -544,75 +543,117 @@ export function MobileLeadDetail({
                 }
                 style={{ ...FIELD, cursor: "pointer" }}
               >
-                {(USER_SETTABLE_STATUSES.includes(lead.status)
-                  ? USER_SETTABLE_STATUSES
-                  : [lead.status, ...USER_SETTABLE_STATUSES]
-                ).map((status) => (
-                  <option key={status} value={status}>
-                    {LEAD_STATUS_LABELS[status] ?? status}
-                  </option>
+                {/* Grouped by band, so choosing a status shows what it does
+                    to the stage before it is chosen (§14). */}
+                {!USER_SETTABLE_STATUSES.includes(lead.status) && (
+                  <option value={lead.status}>{statusLabel(lead.status)}</option>
+                )}
+                {(["P3", "P2", "P1"] as const).map((band) => (
+                  <optgroup
+                    key={band}
+                    label={`${band} — ${band === "P3" ? "talking" : band === "P2" ? "met or visited" : "closing"}`}
+                  >
+                    {STAGE_STATUSES[band].map((status) => (
+                      <option key={status} value={status}>
+                        {LEAD_STATUS_LABELS[status]}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
+                <optgroup label="Closed">
+                  <option value="CLOSED_LOST">{LEAD_STATUS_LABELS.CLOSED_LOST}</option>
+                </optgroup>
               </select>
             </label>
 
+            {/* §14 — the stage is read off the status, so this is a
+                read-out rather than a second control that could contradict it.
+                The one decision still open to a person is the Cold review. */}
             <div style={{ ...FIELD_LABEL, gap: 8 }}>
               <span>Pipeline Stage</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                {([
-                  // No "Auto" button: automation is not a stage, it is the
-                  // absence of a pin, and it keeps running either way. Pressing
-                  // the lit stage clears the pin. See the desktop control.
-                  ...PIPELINE_STAGES.map((value) => ({
-                    key: value as PipelineStage | null,
-                    label: PIPELINE_STAGE_LABELS[value],
-                  })),
-                ] as Array<{ key: PipelineStage; label: string }>).map((option) => {
-                  // Lit for the stage the lead is at, however it got there.
-                  const selected = stage.value === option.key;
-                  const tone = STAGE_TONES[option.key];
-                  return (
-                    <button
-                      key={option.label}
-                      type="button"
-                      className="mob-press"
-                      onClick={() =>
-                        void run(async () =>
-                          setLeadPipelineStage(
-                            await getIdToken(),
-                            lead.id,
-                            // Pressing the lit stage clears the pin and hands
-                            // the lead back to the rule.
-                            selected && stage.manual ? null : option.key
-                          )
-                        )
-                      }
-                      style={{
-                        flex: 1,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 5,
-                        padding: "10px 6px",
-                        borderRadius: 999,
-                        fontSize: 12.5,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        WebkitTapHighlightColor: "transparent",
-                        border: `1px solid ${selected ? tone.solid : M.cardBorder}`,
-                        background: selected ? tone.solid : "#f7fbfa",
-                        color: selected ? tone.onSolid : tone.softText,
-                      }}
-                    >
-                      <StageIcon stage={option.key} size={11} />
-                      {option.label}
-                      {/* A pinned stage carries a dot, so "a person decided
-                          this" stays distinguishable from "the rule did". */}
-                      {selected && stage.manual && <span aria-hidden>·</span>}
-                    </button>
-                  );
-                })}
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                {stage.value && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      borderRadius: 999,
+                      padding: "8px 13px",
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      background: STAGE_TONES[stage.value].soft,
+                      color: STAGE_TONES[stage.value].softText,
+                    }}
+                  >
+                    <StageIcon stage={stage.value} size={12} />
+                    {PIPELINE_STAGE_LABELS[stage.value]}
+                    {stage.manual && <span aria-hidden>·</span>}
+                  </span>
+                )}
+
+                {stage.coldPending && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      gap: 8,
+                      borderRadius: 14,
+                      border: `1px solid ${M.amberBorder}`,
+                      background: M.amberBg,
+                      color: M.amberInk,
+                      padding: "9px 12px",
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      flex: "1 1 100%",
+                    }}
+                  >
+                    Requires verification before being moved to Cold
+                    {userRole !== "employee" && (
+                      <>
+                        <button
+                          type="button"
+                          className="mob-press"
+                          onClick={() =>
+                            void run(async () => reviewColdLead(await getIdToken(), lead.id, true))
+                          }
+                          style={{
+                            borderRadius: 999,
+                            background: "#4d7590",
+                            color: "#fff",
+                            padding: "6px 12px",
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Verify Cold
+                        </button>
+                        <button
+                          type="button"
+                          className="mob-press"
+                          onClick={() =>
+                            void run(async () => reviewColdLead(await getIdToken(), lead.id, false))
+                          }
+                          style={{
+                            borderRadius: 999,
+                            border: `1px solid ${M.amberBorder}`,
+                            padding: "6px 12px",
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            color: M.amberInk,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Keep working
+                        </button>
+                      </>
+                    )}
+                  </span>
+                )}
               </div>
-              <span style={{ fontSize: 11.5, fontWeight: 500, color: M.faint, lineHeight: 1.4 }}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
                 {explainPipelineStage(lead)}
               </span>
             </div>
@@ -620,7 +661,14 @@ export function MobileLeadDetail({
         )}
 
         {tab === "notes" && (
-          <FollowUpList followUps={followUps} />
+          <FollowUpList
+            followUps={followUps}
+            // The lead names its editable entry; the newest in the list is the
+            // fallback for leads whose entries predate that field.
+            latestId={lead.latestFollowUpId ?? followUps[0]?.id ?? null}
+            canEdit={!closed && !isManagerView}
+            onEdit={(entry) => setEditingEntry(entry)}
+          />
         )}
 
         {/* The same component the desktop pane renders, one column wide. A
@@ -715,12 +763,16 @@ export function MobileLeadDetail({
         </div>
       )}
 
-      {formOpen && (
+      {(formOpen || editingEntry) && (
         <FollowUpSheet
           lead={lead}
           entryCount={followUps.length}
+          editing={editingEntry}
           getIdToken={getIdToken}
-          onClose={() => setFormOpen(false)}
+          onClose={() => {
+            setFormOpen(false);
+            setEditingEntry(null);
+          }}
           onResult={setBanner}
         />
       )}
@@ -796,7 +848,18 @@ function ActionPill({
   );
 }
 
-function FollowUpList({ followUps }: { followUps: ReturnType<typeof useLeadHistory>["followUps"] }) {
+function FollowUpList({
+  followUps,
+  latestId,
+  canEdit,
+  onEdit,
+}: {
+  followUps: ReturnType<typeof useLeadHistory>["followUps"];
+  /** The one entry still open for editing (§2). */
+  latestId: string | null;
+  canEdit: boolean;
+  onEdit: (entry: FollowUpRecord) => void;
+}) {
   if (followUps.length === 0) {
     return (
       <div
@@ -818,23 +881,26 @@ function FollowUpList({ followUps }: { followUps: ReturnType<typeof useLeadHisto
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {followUps.map((note, index) => (
+      {/* Chronological: the Remark first, then each Follow-Up after it. */}
+      {toChronological(followUps).map((note, index) => (
         <MobileCard key={note.id} radius={M.rowRadius} style={{ padding: "14px 15px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {/* The oldest entry is the Remark; this list is newest-first. */}
+              {/* The stored kind when there is one; position for entries
+                  written before it was recorded. */}
               <span
                 style={{
                   fontSize: 11,
                   fontWeight: 700,
                   borderRadius: 999,
                   padding: "2px 8px",
-                  ...(entryLabelAt(index, followUps.length) === FOLLOW_UP_KIND_LABELS.REMARK
+                  ...((note.kind ? FOLLOW_UP_KIND_LABELS[note.kind] : entryLabelAt(index, followUps.length, false)) ===
+                  FOLLOW_UP_KIND_LABELS.REMARK
                     ? { background: "#fdf1e3", color: "#a4682a" }
                     : { background: "#e2f0ee", color: M.tealDeep }),
                 }}
               >
-                {entryLabelAt(index, followUps.length)}
+                {note.kind ? FOLLOW_UP_KIND_LABELS[note.kind] : entryLabelAt(index, followUps.length, false)}
               </span>
               {followUps.length - index > 1 && (
                 <span style={{ fontSize: 11.5, fontWeight: 600, color: M.fainter }}>
@@ -842,8 +908,39 @@ function FollowUpList({ followUps }: { followUps: ReturnType<typeof useLeadHisto
                 </span>
               )}
             </span>
-            <span style={{ fontSize: 11.5, fontWeight: 500, color: M.fainter, fontVariantNumeric: "tabular-nums" }}>
-              {formatBusinessDateTime(note.occurredAt ?? note.createdAt)}
+            <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 500, color: M.fainter, fontVariantNumeric: "tabular-nums" }}>
+                {formatBusinessDateTime(note.occurredAt ?? note.createdAt)}
+              </span>
+              {/* §2 — the newest entry stays editable, the rest are locked, and
+                  the lock is shown rather than the button silently missing. */}
+              {canEdit &&
+                (note.id === latestId ? (
+                  <button
+                    type="button"
+                    className="mob-press"
+                    onClick={() => onEdit(note)}
+                    style={{
+                      borderRadius: 999,
+                      border: `1px solid ${M.cardBorder}`,
+                      background: "#fff",
+                      color: M.tealDeep,
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Edit
+                  </button>
+                ) : (
+                  <span
+                    title="Only the latest entry can be edited."
+                    style={{ fontSize: 10.5, fontWeight: 700, color: "#b3c4c2" }}
+                  >
+                    Locked
+                  </span>
+                ))}
             </span>
           </div>
           <p
@@ -858,7 +955,31 @@ function FollowUpList({ followUps }: { followUps: ReturnType<typeof useLeadHisto
           >
             {note.message}
           </p>
-          {(note.callMade || note.meetingHeld || note.whatsappNote || note.connect) && (
+          {(note.revisions?.length ?? 0) > 0 && (
+            <details style={{ marginTop: 9 }}>
+              <summary style={{ fontSize: 11, fontWeight: 600, color: M.fainter, cursor: "pointer" }}>
+                Previous versions ({note.revisions!.length})
+              </summary>
+              <ol style={{ marginTop: 7, display: "flex", flexDirection: "column", gap: 7 }}>
+                {note.revisions!.map((revision, revisionIndex) => (
+                  <li
+                    key={revisionIndex}
+                    style={{ borderLeft: `2px solid ${M.cardBorder}`, paddingLeft: 9 }}
+                  >
+                    <div style={{ fontSize: 10.5, fontWeight: 600, color: M.ghost }}>
+                      {revision.editedByEmail ?? "Team member"}
+                      {revision.editedAt ? ` · ${formatBusinessDateTime(revision.editedAt)}` : ""}
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: M.muted, whiteSpace: "pre-wrap" }}>
+                      {revision.message ?? "(empty)"}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+
+          {(note.callMade || note.meetingHeld || note.siteVisit || note.whatsappNote || note.connect) && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
               {note.callMade && (
                 <Chip>
@@ -869,6 +990,7 @@ function FollowUpList({ followUps }: { followUps: ReturnType<typeof useLeadHisto
               )}
               {note.connect && <Chip solid>Connect</Chip>}
               {note.meetingHeld && <Chip>Meeting</Chip>}
+              {note.siteVisit && <Chip>Site visit</Chip>}
               {note.whatsappNote && <Chip>{note.whatsappNote}</Chip>}
             </div>
           )}
@@ -962,6 +1084,7 @@ function AuditTrail({ events }: { events: ReturnType<typeof useLeadHistory>["eve
 function FollowUpSheet({
   lead,
   entryCount,
+  editing,
   getIdToken,
   onClose,
   onResult,
@@ -969,21 +1092,33 @@ function FollowUpSheet({
   lead: Lead;
   /** How many entries the lead already has — decides Remark vs Follow-Up. */
   entryCount: number;
+  /** The entry being edited, when the sheet was opened from a row (§2). */
+  editing?: FollowUpRecord | null;
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onResult: (b: Banner) => void;
 }) {
-  const [message, setMessage] = useState("");
-  const [callMade, setCallMade] = useState(false);
-  const [callCount, setCallCount] = useState("1");
-  const [minutes, setMinutes] = useState("");
-  const [seconds, setSeconds] = useState("");
-  const [meetingHeld, setMeetingHeld] = useState(false);
+  // Pre-filled when editing, blank when adding. One sheet does both jobs; a
+  // second editor is where the two would drift on the connect rule.
+  const [message, setMessage] = useState(editing?.message ?? "");
+  const [callMade, setCallMade] = useState(Boolean(editing?.callMade));
+  const [callCount, setCallCount] = useState(String(editing?.callCount ?? 1));
+  const [minutes, setMinutes] = useState(
+    editing?.durationSeconds ? String(Math.floor(editing.durationSeconds / 60)) : ""
+  );
+  const [seconds, setSeconds] = useState(
+    editing?.durationSeconds ? String(editing.durationSeconds % 60) : ""
+  );
+  const [meetingHeld, setMeetingHeld] = useState(Boolean(editing?.meetingHeld));
+  const [siteVisit, setSiteVisit] = useState(Boolean(editing?.siteVisit));
   const [whatsappNote, setWhatsappNote] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Remark for the first entry on a lead, Follow-Up thereafter.
-  const entryWord = nextEntryLabel(entryCount);
+  // Remark for the first entry on a lead, Follow-Up thereafter — or the kind
+  // of the entry being edited.
+  const entryWord = editing
+    ? FOLLOW_UP_KIND_LABELS[editing.kind ?? "FOLLOW_UP"]
+    : nextEntryLabel(entryCount);
 
   const durationSeconds = (Number(minutes) || 0) * 60 + (Number(seconds) || 0);
   const willCount = callMade && isConnect(durationSeconds);
@@ -992,22 +1127,33 @@ function FollowUpSheet({
     if (!message.trim()) return;
     setBusy(true);
     try {
-      const result = await addFollowUp(await getIdToken(), lead.id, {
-        message: message.trim(),
-        callMade,
-        callCount: Number(callCount) || 1,
-        durationSeconds,
-        meetingHeld,
-        whatsappNote: whatsappNote.trim(),
-      });
+      const result = editing
+        ? await updateFollowUp(await getIdToken(), lead.id, editing.id, {
+            message: message.trim(),
+            callMade,
+            callCount: Number(callCount) || 1,
+            durationSeconds,
+            meetingHeld,
+            siteVisit,
+            whatsappNote: whatsappNote.trim(),
+          })
+        : await addFollowUp(await getIdToken(), lead.id, {
+            message: message.trim(),
+            callMade,
+            callCount: Number(callCount) || 1,
+            durationSeconds,
+            meetingHeld,
+            siteVisit,
+            whatsappNote: whatsappNote.trim(),
+          });
       if (result.ok) {
         onResult({
           tone: "success",
           text: result.data?.connect
-            ? `${entryWord} logged. Counted as a connect.`
+            ? `${entryWord} ${editing ? "updated" : "logged"}. Counted as a connect.`
             : callMade
-              ? `${entryWord} logged. Under ${formatDuration(CONNECT_MIN_SECONDS)}, so it is not a connect.`
-              : `${entryWord} logged.`,
+              ? `${entryWord} ${editing ? "updated" : "logged"}. Under ${formatDuration(CONNECT_MIN_SECONDS)}, so it is not a connect.`
+              : `${entryWord} ${editing ? "updated" : "logged"}.`,
         });
         onClose();
       } else {
@@ -1022,7 +1168,7 @@ function FollowUpSheet({
 
   return (
     <Sheet
-      title={entryCount === 0 ? "Opening remark" : "Log a follow-up"}
+      title={editing ? `Edit this ${entryWord.toLowerCase()}` : entryCount === 0 ? "Opening remark" : "Log a follow-up"}
       subtitle="Every call and note, kept permanently."
       onClose={onClose}
     >
@@ -1040,6 +1186,9 @@ function FollowUpSheet({
       <div style={{ display: "flex", gap: 10 }}>
         <Toggle checked={callMade} onChange={setCallMade} label="Phone call" />
         <Toggle checked={meetingHeld} onChange={setMeetingHeld} label="Meeting held" />
+        {/* Counted separately from a meeting in Reports (§4) — a client who
+            came to the site is a different signal, and often a different day. */}
+        <Toggle checked={siteVisit} onChange={setSiteVisit} label="Site visit" />
       </div>
 
       {callMade && (

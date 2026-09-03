@@ -2,7 +2,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { Bell, Check, AlertTriangle, Clock, UserX, PieChart, Wallet } from "lucide-react";
+import {
+  Bell, Check, AlertTriangle, Clock, UserX, PieChart, Wallet,
+  CalendarClock, CalendarCheck, CalendarX, Snowflake, PencilLine,
+} from "lucide-react";
 import { useNotifications } from "@/hooks/useFinancials";
 import { markNotificationRead, markAllNotificationsRead } from "@/lib/clientActions";
 import { formatBusinessDateTime } from "@/lib/dates";
@@ -14,6 +17,20 @@ const ALERT_META: Record<string, { label: string; icon: typeof AlertTriangle; to
   NEW_LEAD_ASSIGNED: { label: "New lead assigned", icon: Bell, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   DEAL_CLOSED_REVIEW: { label: "Deal closed — profit to distribute", icon: PieChart, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   PROFIT_SHARE_ASSIGNED: { label: "Your share of a closed deal", icon: Wallet, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+  COLD_REVIEW_REQUIRED: { label: "Lead may be cold — needs a decision", icon: Snowflake, tone: "text-sky-700 bg-sky-50 border-sky-200" },
+
+  // Attendance (§8). Late and absent are the admin's and HR's; the four
+  // leave alerts and the adjustment go to the employee they are about.
+  ATTENDANCE_LATE: { label: "Late arrival", icon: Clock, tone: "text-amber-800 bg-amber-50 border-amber-200" },
+  ATTENDANCE_ABSENT: { label: "Marked absent", icon: CalendarX, tone: "text-red-700 bg-red-50 border-red-200" },
+  ATTENDANCE_ADJUSTED: { label: "Your attendance was corrected", icon: PencilLine, tone: "text-sky-700 bg-sky-50 border-sky-200" },
+  LEAVE_REQUESTED: { label: "Leave requested", icon: CalendarClock, tone: "text-amber-700 bg-amber-50 border-amber-200" },
+  LEAVE_APPROVED: { label: "Leave approved", icon: CalendarCheck, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+  LEAVE_REJECTED: { label: "Leave rejected", icon: CalendarX, tone: "text-red-700 bg-red-50 border-red-200" },
+  LEAVE_BALANCE_ADJUSTED: { label: "Your leave balance changed", icon: CalendarClock, tone: "text-sky-700 bg-sky-50 border-sky-200" },
+  ATTENDANCE_DEDUCTION_FINALIZED: { label: "Late deduction recorded", icon: Clock, tone: "text-red-700 bg-red-50 border-red-200" },
+  SALARY_APPROVED: { label: "Your salary slip is ready", icon: Wallet, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+  SALARY_PAID: { label: "Salary paid", icon: Wallet, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
 };
 
 /**
@@ -34,6 +51,50 @@ function alertAction(type: string, role: string | undefined): { href: string; la
       label: "View my earnings",
     };
   }
+
+  // Attendance. A leave request is a decision waiting on somebody, so it links
+  // to the queue that decides it; everything else is about one person's own
+  // record, so it links there.
+  if (type === "LEAVE_REQUESTED") {
+    if (role === "admin") return { href: "/admin/attendance/leave", label: "Review leave" };
+    if (role === "subadmin") return { href: "/subadmin/attendance/leave", label: "Review leave" };
+    return null;
+  }
+  if (type === "ATTENDANCE_LATE" || type === "ATTENDANCE_ABSENT") {
+    if (role === "admin") return { href: "/admin/attendance/records", label: "Late / absence records" };
+    if (role === "subadmin") return { href: "/subadmin/attendance/records", label: "Late / absence records" };
+    return null;
+  }
+  if (type === "SALARY_APPROVED" || type === "SALARY_PAID") {
+    return {
+      href:
+        role === "admin"
+          ? "/admin/salary"
+          : role === "subadmin"
+            ? "/subadmin/salary"
+            : "/employee/salary",
+      label: "View my payslip",
+    };
+  }
+
+  if (
+    type === "ATTENDANCE_ADJUSTED" ||
+    type === "ATTENDANCE_DEDUCTION_FINALIZED" ||
+    type === "LEAVE_APPROVED" ||
+    type === "LEAVE_REJECTED" ||
+    type === "LEAVE_BALANCE_ADJUSTED"
+  ) {
+    return {
+      href:
+        role === "admin"
+          ? "/admin/attendance/me"
+          : role === "subadmin"
+            ? "/subadmin/attendance/me"
+            : "/employee/attendance",
+      label: "Open my attendance",
+    };
+  }
+
   return null;
 }
 

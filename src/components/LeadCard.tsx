@@ -29,9 +29,16 @@ const STATUS_STYLES: Record<LeadStatus, string> = {
   ASSIGNED: "bg-status-amber-bg text-status-amber border-status-amber/30",
   ACCEPTED: "bg-status-blue-bg text-status-blue border-status-blue/30",
   CONTACTED: "bg-status-blue-bg text-status-blue border-status-blue/30",
+  DETAILS_SENT: "bg-status-blue-bg text-status-blue border-status-blue/30",
   FOLLOW_UP: "bg-status-amber-bg text-status-amber border-status-amber/30",
   INTERESTED: "bg-status-blue-bg text-status-blue border-status-blue/30",
   NEGOTIATION: "bg-amber-600 text-white border-amber-600/30",
+  // The P2 band — they turned up, which is the first real signal.
+  MEETING_DONE: "bg-status-blue-bg text-status-blue border-status-blue/30",
+  SITE_VISIT_DONE: "bg-status-blue-bg text-status-blue border-status-blue/30",
+  // The P1 band reads as progress toward the green of a closed deal.
+  DOCUMENT_RECEIVED: "bg-profit-green-light text-profit-green border-profit-green/30",
+  TOKEN_RECEIVED: "bg-profit-green-light text-profit-green border-profit-green/30",
   CLOSED_WON: "bg-profit-green-light text-profit-green border-profit-green/30",
   CLOSED_LOST: "bg-alert-red-light text-alert-red border-alert-red/30",
   NOT_INTERESTED: "bg-status-amber-bg text-status-amber border-status-amber/30",

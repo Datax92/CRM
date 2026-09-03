@@ -48,6 +48,7 @@ import { usePagination } from "@/hooks/usePagination";
 import { useMobileCentre } from "./MobileShell";
 import { MobileLeadDetail } from "./MobileLeadDetail";
 import type { CentreAction } from "./MobileTabBar";
+import type { LeadScope } from "@/components/leads/LeadsWorkspace";
 
 /**
  * `30 Aug, 4:30 pm` — and the year only when it is not the current one.
@@ -90,17 +91,43 @@ const ROW_TONES = {
   opened: { background: M.cardBg, border: M.cardBorder },
 } as const;
 
-export function MobileLeads({ workspaceRole, basePath }: { workspaceRole: WorkspaceRole; basePath: string }) {
+/**
+ * The phone leads screen.
+ *
+ * Takes the same optional `scope` the desktop workspace does, so a Client
+ * folder on a phone is this screen restricted to the folder — not a
+ * separate list with a separate detail view.
+ */
+export function MobileLeads({
+  workspaceRole,
+  basePath,
+  scope,
+}: {
+  workspaceRole: WorkspaceRole;
+  basePath: string;
+  scope?: LeadScope;
+}) {
   const { user, role, getIdToken } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAdmin = workspaceRole === "admin";
+  // The employee's name for a row. `assigneeName` is denormalised onto the lead
+  // at assignment; the roster is the fallback for leads assigned before it was.
+  const assigneeName = (lead: Lead) =>
+    lead.assigneeName ??
+    employees.find((employee) => employee.uid === lead.assignedUserId)?.name ??
+    null;
   // Both managing roles get the roster and the reassign control; a sub admin's
   // copy is scoped to their own team by the hook, not trimmed afterwards.
   const isManager = workspaceRole === "admin" || workspaceRole === "subadmin";
   const roleReady = role === workspaceRole;
 
-  const { leads, loading, error } = useLeads(roleReady ? workspaceRole : null, user?.uid);
+  const { leads: allLeads, loading, error } = useLeads(roleReady ? workspaceRole : null, user?.uid);
+  // Scoped to the folder when there is one, before anything else reads it.
+  const leads = useMemo(
+    () => (scope ? allLeads.filter((lead) => scope.leadIds.has(lead.id)) : allLeads),
+    [allLeads, scope]
+  );
   const { employees } = useEmployees(isManager && roleReady, {
     role: workspaceRole,
     uid: user?.uid,
@@ -466,7 +493,11 @@ export function MobileLeads({ workspaceRole, basePath }: { workspaceRole: Worksp
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {lead.phone ?? "No phone"}
+                      {/* §8 — the assignee takes the number's place. Knowing
+                          who is on a lead is the question asked while scanning
+                          a list; the number is one tap away in the detail, and
+                          is still there in full. */}
+                      {assigneeName(lead) ?? "Unassigned"}
                     </span>
                   </span>
                 </span>

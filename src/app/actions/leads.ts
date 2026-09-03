@@ -347,6 +347,196 @@ export async function setLeadPipelineStage(
 }
 
 /**
+ * The Cold review (§3).
+ *
+ * A lead that has met the Cold rule is not moved by the rule itself — it is
+ * flagged, the admin and the lead's manager are notified, and one of them
+ * decides here. `verified: true` writes the Cold stage; `false` dismisses the
+ * review and lets the lead keep being worked, with the flag cleared so a later
+ * run of the rule can raise it again.
+ *
+ * **Only a manager or the admin.** The employee holding the lead is the person
+ * whose work is being reviewed; letting them write off their own lead would
+ * make the review a formality.
+ */
+export async function reviewColdLead(
+  token: string,
+  leadId: string,
+  verified: boolean
+): Promise<ActionResult> {
+  return runAction("reviewColdLead", async () => {
+    const actor = await requireManager(token);
+
+    await adminDb.runTransaction(async (t: Transaction) => {
+      const leadRef = adminDb.collection("leads").doc(leadId);
+      const leadSnap = await t.get(leadRef);
+
+      if (!leadSnap.exists) throw new UserFacingError("That lead no longer exists.");
+      const lead = leadSnap.data()!;
+
+      if (actor.role === "subadmin" && lead.subAdminUid !== actor.uid) {
+        throw new UserFacingError("That lead is not on your team.");
+      }
+      if (isTerminal(lead.status)) {
+        throw new UserFacingError("This lead is already closed.");
+      }
+
+      t.update(leadRef, {
+        // Verified: the stage is pinned Cold. Dismissed: the flag is cleared so
+        // the rule can raise it again after more fruitless follow-ups, rather
+        // than the lead being quietly exempt forever.
+        ...(verified
+          ? { pipelineStageOverride: "COLD" }
+          : { pipelineStageOverride: FieldValue.delete() }),
+        coldReviewRequestedAt: FieldValue.delete(),
+        coldReviewedAt: FieldValue.serverTimestamp(),
+        coldReviewedByUid: actor.uid,
+        lastActivityAt: FieldValue.serverTimestamp(),
+      });
+
+      t.create(leadRef.collection("events").doc(), {
+        type: verified ? "COLD_VERIFIED" : "COLD_REVIEW_DISMISSED",
+        actorUid: actor.uid,
+        at: FieldValue.serverTimestamp(),
+        meta: { followUpCount: lead.followUpCount ?? 0, byRole: actor.role },
+      });
+
+      // Tell the employee either way. A lead disappearing from their working
+      // filters with no explanation is how people stop trusting the pipeline.
+      if (lead.assignedUserId) {
+        t.create(adminDb.collection("notifications").doc(), {
+          type: verified ? "LEAD_MARKED_COLD" : "COLD_REVIEW_DISMISSED",
+          leadId,
+          targetRole: "employee",
+          targetUid: lead.assignedUserId,
+          payload: {
+            message: verified
+              ? `${lead.name ?? "A lead"} has been verified as Cold.`
+              : `${lead.name ?? "A lead"} stays in play — the Cold review was dismissed.`,
+          },
+          createdAt: FieldValue.serverTimestamp(),
+          readAt: null,
+        });
+      }
+    });
+  });
+}
+
+/**
+ * Assigns many leads to one employee in a single call (§9, §10).
+ *
+ * **The leads are not copied.** Each one keeps its id, its source, its Data
+ * Bank folder and its whole history; only the assignment moves. That is what
+ * §10 means by the employee "receiving those exact leads" — a bulk *copy*
+ * would double every figure the reports read.
+ *
+ * Written in batches of 400 rather than one transaction: a transaction caps
+ * out well below the 100 leads this is built for, and a partial run leaves some
+ * leads assigned rather than corrupting anything. Re-running finishes the job.
+ */
+export async function assignLeadsBulk(
+  token: string,
+  leadIds: string[],
+  userId: string
+): Promise<ActionResult<{ assigned: number; skipped: number }>> {
+  return runAction("assignLeadsBulk", async () => {
+    const actor = await requireManager(token);
+
+    const ids = [...new Set((leadIds ?? []).filter(Boolean))];
+    if (ids.length === 0) throw new UserFacingError("Select at least one lead.");
+    if (ids.length > 500) throw new UserFacingError("Assign at most 500 leads at a time.");
+
+    const employeeSnap = await adminDb.collection("users").doc(userId).get();
+    if (!employeeSnap.exists || employeeSnap.data()?.role !== "employee") {
+      throw new UserFacingError("Choose a team member to assign these to.");
+    }
+    const employee = employeeSnap.data()!;
+    if (employee.status === "DISABLED") {
+      throw new UserFacingError("That employee is paused — resume them or choose someone else.");
+    }
+    if (actor.role === "subadmin" && employee.subAdminUid !== actor.uid) {
+      throw new UserFacingError("That team member is not on your team.");
+    }
+
+    let assigned = 0;
+    let skipped = 0;
+
+    // 400 leads per batch: each one costs two writes (the lead and its audit
+    // event) plus a notification, and Firestore caps a batch at 500 operations.
+    for (let i = 0; i < ids.length; i += 100) {
+      const slice = ids.slice(i, i + 100);
+      const snaps = await adminDb.getAll(...slice.map((id) => adminDb.collection("leads").doc(id)));
+      const batch = adminDb.batch();
+      const now = FieldValue.serverTimestamp();
+
+      for (const snap of snaps) {
+        if (!snap.exists) {
+          skipped += 1;
+          continue;
+        }
+        const lead = snap.data()!;
+        // A closed lead is history (BR-22) and a lead already with this person
+        // needs no write.
+        if (isTerminal(lead.status) || lead.assignedUserId === userId) {
+          skipped += 1;
+          continue;
+        }
+
+        batch.update(snap.ref, {
+          assignedUserId: userId,
+          assignedAt: now,
+          acceptedAt: now,
+          lastActivityAt: now,
+          distributionMethod: "MANUAL",
+          // A hand-out is a decision, not an offer — the same force-accept
+          // every other admin assignment does.
+          status: "ACCEPTED",
+          acceptDeadlineAt: FieldValue.delete(),
+          adminAssignDeadlineAt: FieldValue.delete(),
+          attemptedAssignees: [userId],
+          ...assignmentStamp(actor, employee),
+        });
+
+        batch.create(snap.ref.collection("events").doc(), {
+          type: "BULK_ASSIGNED",
+          actorUid: actor.uid,
+          at: now,
+          meta: {
+            previousAssignee: lead.assignedUserId ?? null,
+            newAssignee: userId,
+            batchSize: ids.length,
+            assignedByRole: actor.role,
+          },
+        });
+
+        assigned += 1;
+      }
+
+      await batch.commit();
+    }
+
+    // One notification for the batch, not one per lead. Fifty separate alerts
+    // would bury everything else in the employee's bell.
+    if (assigned > 0) {
+      await adminDb.collection("notifications").add({
+        type: "NEW_LEAD_ASSIGNED",
+        leadId: ids[0],
+        targetRole: "employee",
+        targetUid: userId,
+        payload: {
+          message: `${assigned} lead${assigned === 1 ? "" : "s"} assigned to you by ${actor.name ?? actor.email ?? "an admin"}.`,
+          count: assigned,
+        },
+        createdAt: FieldValue.serverTimestamp(),
+        readAt: null,
+      });
+    }
+
+    return { assigned, skipped };
+  });
+}
+
+/**
  * Whether this caller may work this lead.
  *
  * An admin may touch anything. A sub admin may touch a lead held by one of

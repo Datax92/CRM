@@ -75,3 +75,61 @@ export function historyTabLabel(total: number): string {
   if (total === 1) return 'Remark';
   return `Remark + Follow-Ups`;
 }
+
+/**
+ * What a lead's contact log allows right now.
+ *
+ * The rule (§1) is a shape, not a count: **day one takes a Remark and a
+ * Follow-Up; every later day takes one Follow-Up.** A Remark is the opening
+ * note on a lead nobody has spoken to yet, so there is exactly one of them
+ * ever, and it can only be written on the day the log starts.
+ *
+ * Derived from what is already stored — the number of entries and today's
+ * entries — rather than from a counter that could drift.
+ */
+export interface EntryAllowance {
+  kind: "REMARK" | "FOLLOW_UP";
+  allowed: boolean;
+  reason: string | null;
+}
+
+export function entryAllowance(totalEntries: number, entriesToday: number, hasRemark: boolean): EntryAllowance {
+  // Nothing logged yet: this is the Remark.
+  if (totalEntries === 0) {
+    return { kind: "REMARK", allowed: true, reason: null };
+  }
+
+  // Day one, remark written, follow-up not yet: the second half of §1.
+  if (hasRemark && totalEntries === 1 && entriesToday === 1) {
+    return { kind: "FOLLOW_UP", allowed: true, reason: null };
+  }
+
+  if (entriesToday > 0) {
+    return {
+      kind: "FOLLOW_UP",
+      allowed: false,
+      reason: "This lead already has today's entry. Add the next follow-up tomorrow.",
+    };
+  }
+
+  return { kind: "FOLLOW_UP", allowed: true, reason: null };
+}
+
+/**
+ * The history in the order it happened: Remark first, then each Follow-Up.
+ *
+ * Everything upstream — the query, `latestFollowUpId`, the edit-the-newest
+ * rule — works newest-first, and changing that would touch a dozen call sites
+ * for a presentational reason. So the reversal happens **here, at the point of
+ * display**, and the array the rest of the app reasons about is untouched.
+ *
+ * A plain reverse rather than a re-sort: the source is `orderBy('occurredAt',
+ * 'desc')`, so it is already ordered and re-sorting would only add a way for
+ * this to disagree with the query.
+ *
+ * Callers must pass `newestFirst: false` to `entryLabelAt` for the reversed
+ * array, or the Remark badge lands on the newest entry instead of the oldest.
+ */
+export function toChronological<T>(entries: T[]): T[] {
+  return [...entries].reverse();
+}

@@ -1,44 +1,44 @@
 /**
  * Pipeline Stage — Cold / P3 / P2 / P1.
  *
- * This replaces the old Hot/Cold "temperature". Two colours could only say
- * *whether* a lead was worth chasing; the sales team needs to know **how far
- * along it is**, because that is what decides who gets called this afternoon.
- * The four stages are the owner's own scale:
+ * **The stage is now read off the status** (`STATUS_STAGE` in `leadStatus.ts`,
+ * §14). Picking "Meeting Done" makes a lead P2; picking "Token Received" makes
+ * it P1. Nobody selects a stage by hand any more, which removes the state this
+ * app could previously reach where a lead was marked Negotiation and pinned
+ * Cold at once and both were shown as true.
  *
- * | stage | meaning | rough completion |
+ * Cold is the exception, and deliberately so: it is not something a rep chooses
+ * but something that becomes true when a lead has been chased and has not moved
+ * — ten follow-ups with the status still in the P3 band. And since a lead going
+ * Cold is a write-off, **the rule no longer applies it on its own** (§3). It
+ * raises a review instead: `coldPending` here, a notification to the admin and
+ * the lead's manager from the follow-up transaction, and a person deciding.
+ * `pipelineStageOverride: 'COLD'` is what that decision writes.
+ *
+ * So there are three states a lead can be in with respect to Cold:
+ *
+ * | | `stage.value` | `coldPending` |
  * |---|---|---|
- * | **Cold** | chased repeatedly, no response | — |
- * | **P3** | responded, little real interest | 20–40% |
- * | **P2** | clearly interested, may have met | 40–70% |
- * | **P1** | almost done, final steps only | 70–100% |
+ * | being worked | P3 / P2 / P1 | false |
+ * | has met the cold rule, nobody has ruled on it | its status band | **true** |
+ * | verified cold | COLD | false |
  *
- * **Stage is not Status.** The pipeline *status* (`leadStatus.ts`) is the
- * formal state machine — Assigned, Contacted, Negotiation, Closed / Won — and
- * the system owns most of it. The *stage* is the commercial read on the same
- * lead. Keeping them apart is deliberate: a lead can sit in Follow-Up for three
- * weeks and be either a P3 or a P1 depending on how the calls actually went.
- *
- * Like the temperature it replaces, the stage is **derived on read** from facts
- * the lead already carries, so it can never go stale and needs no backfill:
- * every lead that exists today is classified the moment this ships. A person
- * can overrule the rule from the detail pane — a rep who has just had a
- * promising call knows something the follow-up count does not — and that choice
- * is stored as `pipelineStageOverride` until they clear it.
- *
- * Dependency-free apart from the status list, so the unit tests can run it
+ * Dependency-free apart from the status table, so the unit tests can run it
  * under raw `node --experimental-strip-types`.
  */
 
-import type { LeadStatus } from './leadStatus';
+// Explicit .ts extension: this module is exercised directly by the unit tests
+// under `node --experimental-strip-types`, whose ESM loader needs the real
+// specifier. `allowImportingTsExtensions` is already on for exactly this.
+import { stageForStatus, type LeadStatus } from './leadStatus.ts';
 
 export type PipelineStage = 'COLD' | 'P3' | 'P2' | 'P1';
 
 /**
- * Cold → P3 → P2 → P1, the order the owner specified.
+ * Cold → P3 → P2 → P1, the owner's own progression.
  *
- * Used for the chip row, the stage selector and any sort that wants worst-first,
- * so the progression is defined once and cannot be written backwards somewhere.
+ * Used for the chip row and any sort that wants worst-first, so the order is
+ * defined once and cannot be written backwards somewhere.
  */
 export const PIPELINE_STAGES: PipelineStage[] = ['COLD', 'P3', 'P2', 'P1'];
 
@@ -49,79 +49,52 @@ export const PIPELINE_STAGE_LABELS: Record<PipelineStage, string> = {
   P1: 'P1',
 };
 
-/** The full name, for the selector and the detail pane where there is room. */
+/** The full name, for the detail pane and anywhere there is room. */
 export const PIPELINE_STAGE_NAMES: Record<PipelineStage, string> = {
   COLD: 'Cold Lead',
-  P3: 'P3 — Low Interest',
-  P2: 'P2 — Hot Lead',
-  P1: 'P1 — Near Completion',
+  P3: 'P3 — In Conversation',
+  P2: 'P2 — Met or Visited',
+  P1: 'P1 — Closing',
 };
 
 export const PIPELINE_STAGE_DESCRIPTIONS: Record<PipelineStage, string> = {
-  COLD: 'Chased repeatedly with no response.',
-  P3: 'Responded, but not showing serious interest yet (20–40%).',
-  P2: 'Clearly interested — a meeting may have happened (40–70%).',
-  P1: 'Almost done. Only the final steps remain (70–100%).',
-};
-
-/** The completion band each stage stands for, for the pane's progress read. */
-export const PIPELINE_STAGE_RANGE: Record<PipelineStage, { from: number; to: number }> = {
-  COLD: { from: 0, to: 20 },
-  P3: { from: 20, to: 40 },
-  P2: { from: 40, to: 70 },
-  P1: { from: 70, to: 100 },
+  COLD: 'Chased repeatedly with no progress, and written off after review.',
+  P3: 'Talking: contacted, sent details, following up, negotiating.',
+  P2: 'They turned up — a meeting or a site visit has happened.',
+  P1: 'Closing: documents, token money, the deal itself.',
 };
 
 /**
- * Follow-ups after which a lead that has not progressed is written off as cold.
+ * Follow-ups after which a lead that has not progressed is put up for review.
  *
  * Ten was the owner's figure. A constant rather than a literal in the
- * predicate, so the chip counts, the row pills and the explanatory copy all
- * move together when it changes.
+ * predicate, so the chip counts, the row pills and the copy all move together
+ * when it changes.
  *
- * **What "no response" means here.** There is no telephony or inbox
+ * **What "no progress" means here.** There is no telephony or inbox
  * integration, so nothing can observe whether a client picked up. The only
- * response signal is the one the rep already gives: moving the pipeline status.
- * Ten follow-ups with the status still parked below Interested means ten
- * attempts that produced nothing worth advancing for.
+ * signal is the one the rep already gives: moving the status. Ten follow-ups
+ * with the status still in the P3 band means ten attempts that produced nothing
+ * worth advancing for.
  */
 export const COLD_FOLLOW_UP_THRESHOLD = 10;
 
-/** Final steps only — terms are agreed and the paperwork is what is left. */
-const P1_STATUSES: LeadStatus[] = ['NEGOTIATION'];
-
-/** Clearly interested. A held meeting also lands here, whatever the status. */
-const P2_STATUSES: LeadStatus[] = ['INTERESTED'];
-
-/** Responded, being worked, nothing decided yet. */
-const P3_STATUSES: LeadStatus[] = ['CONTACTED', 'FOLLOW_UP', 'NO_RESPONSE', 'ACCEPTED', 'ASSIGNED'];
-
-/**
- * Statuses that prove the lead *did* engage, so no number of follow-ups makes
- * them cold. Someone called fifteen times who is now negotiating is the
- * opposite of a dead lead.
- */
-const PROGRESSED_STATUSES: LeadStatus[] = ['INTERESTED', 'NEGOTIATION', 'CLOSED_WON'];
-
-/** Finished. A closed lead is history and carries no stage either way. */
-const CLOSED_STATUSES: LeadStatus[] = ['CLOSED_WON', 'CLOSED_LOST', 'NOT_INTERESTED'];
+/** Finished. A lost lead is history and carries no stage. */
+const CLOSED_STATUSES: LeadStatus[] = ['CLOSED_LOST', 'NOT_INTERESTED'];
 
 /** Nobody has worked these yet, so there is no progress to describe. */
-const INTAKE_STATUSES: LeadStatus[] = ['NEW', 'UNASSIGNED_NO_CAPACITY'];
+const INTAKE_STATUSES: LeadStatus[] = ['NEW', 'ASSIGNED', 'UNASSIGNED_NO_CAPACITY'];
 
 export interface PipelineStageInput {
   status: string;
   followUpCount?: number | null;
-  /** Set by hand from the detail pane; overrules the rule below. */
-  pipelineStageOverride?: PipelineStage | null;
   /**
-   * The previous field name, kept readable so leads pinned Hot or Cold before
-   * this module existed still resolve. HOT was the closing stages, which is
-   * P2 here; COLD is COLD.
+   * The verified Cold decision, or a stage pinned before §14 made the status
+   * decide. Written only by the Cold review; nothing else sets it any more.
    */
+  pipelineStageOverride?: PipelineStage | null;
+  /** The retired field name, still read so pins made before the rename resolve. */
   temperatureOverride?: string | null;
-  /** True once any follow-up recorded a held meeting — lifts a lead to P2. */
-  meetingHeld?: boolean | null;
 }
 
 function has(list: LeadStatus[], status: string): boolean {
@@ -138,46 +111,59 @@ export function readStageOverride(lead: PipelineStageInput): PipelineStage | nul
 }
 
 /**
- * The rule, with nothing stored: what stage the lead is at on the facts alone.
+ * Whether this lead has met the Cold rule.
  *
- * `null` means the question does not apply — intake that nobody has touched,
- * or a lead that is already closed. Giving those a stage would put finished
- * business back into the working filters.
+ * Separate from the stage on purpose: meeting the rule is a fact about the
+ * lead, while *being* Cold is a decision somebody made about it (§3).
  */
-export function autoPipelineStage(lead: PipelineStageInput): PipelineStage | null {
-  if (has(CLOSED_STATUSES, lead.status) || has(INTAKE_STATUSES, lead.status)) return null;
+export function meetsColdRule(lead: PipelineStageInput): boolean {
+  if (has(CLOSED_STATUSES, lead.status) || has(INTAKE_STATUSES, lead.status)) return false;
 
-  if (has(P1_STATUSES, lead.status)) return 'P1';
-  if (has(P2_STATUSES, lead.status) || lead.meetingHeld) return 'P2';
+  // Only a lead still in the talking band can go cold. One that has had a
+  // meeting or taken token money is not cold however many calls it took.
+  if (stageForStatus(lead.status) !== 'P3') return false;
 
-  const followUps = lead.followUpCount ?? 0;
-  if (followUps >= COLD_FOLLOW_UP_THRESHOLD && !has(PROGRESSED_STATUSES, lead.status)) {
-    return 'COLD';
-  }
-
-  return has(P3_STATUSES, lead.status) ? 'P3' : null;
+  return (lead.followUpCount ?? 0) >= COLD_FOLLOW_UP_THRESHOLD;
 }
 
 /**
- * The stage actually shown, and whether a person put it there.
+ * The stage the status implies, before any Cold decision.
  *
- * The `manual` flag is what lets the pane offer "Auto" as a way back. Without
- * it, a lead pinned P1 in March would look identical to one the rule called P1
- * this morning and nobody could tell which.
+ * `null` means the question does not apply — intake nobody has touched, or a
+ * lead that is closed. Giving those a stage would put finished business back
+ * into the working filters.
+ */
+export function autoPipelineStage(lead: PipelineStageInput): PipelineStage | null {
+  if (has(CLOSED_STATUSES, lead.status) || has(INTAKE_STATUSES, lead.status)) return null;
+  return stageForStatus(lead.status);
+}
+
+/**
+ * The stage actually shown, whether a person decided it, and whether it is
+ * waiting on a Cold review.
  *
- * A closed lead ignores its override, otherwise a lead pinned P1 and then lost
- * would sit in the P1 filter forever.
+ * A closed lead ignores its override — otherwise a lead verified Cold and then
+ * marked Not Interested would sit in the Cold filter forever.
  */
 export function pipelineStage(lead: PipelineStageInput): {
   value: PipelineStage | null;
   manual: boolean;
+  coldPending: boolean;
 } {
-  if (has(CLOSED_STATUSES, lead.status)) return { value: null, manual: false };
+  if (has(CLOSED_STATUSES, lead.status)) {
+    return { value: null, manual: false, coldPending: false };
+  }
 
   const override = readStageOverride(lead);
-  if (override) return { value: override, manual: true };
+  if (override) return { value: override, manual: true, coldPending: false };
 
-  return { value: autoPipelineStage(lead), manual: false };
+  return {
+    value: autoPipelineStage(lead),
+    manual: false,
+    // Pending only while nobody has ruled: a verified lead has the override
+    // above and never reaches here.
+    coldPending: meetsColdRule(lead),
+  };
 }
 
 /** Convenience for the filter chips and counts. */
@@ -190,28 +176,26 @@ export function isStage(lead: PipelineStageInput, stage: PipelineStage): boolean
  * A rule the user cannot see is a rule they will not trust.
  */
 export function explainPipelineStage(lead: PipelineStageInput): string {
-  const { value, manual } = pipelineStage(lead);
+  const { value, manual, coldPending } = pipelineStage(lead);
 
   if (has(CLOSED_STATUSES, lead.status)) return 'Closed leads carry no pipeline stage.';
-  if (manual) {
-    return `Set to ${PIPELINE_STAGE_NAMES[value!]} by hand. Choose Auto to follow the rule again.`;
+  if (manual && value === 'COLD') {
+    return 'Verified Cold. Change the pipeline status to bring it back into play.';
   }
+  if (manual) return `Set to ${PIPELINE_STAGE_NAMES[value!]} by hand.`;
   if (has(INTAKE_STATUSES, lead.status)) {
     return 'Not worked yet — the stage starts once someone takes the lead.';
   }
 
-  if (value === 'P1') return 'Automatically P1 — the lead is at the negotiation stage.';
-  if (value === 'P2') {
-    return lead.meetingHeld && !has(P2_STATUSES, lead.status)
-      ? 'Automatically P2 — a meeting has been held.'
-      : 'Automatically P2 — the lead is marked interested.';
+  if (coldPending) {
+    return `${lead.followUpCount ?? 0} follow-ups with no progress. Waiting on an admin or manager to verify moving it to Cold.`;
   }
-  if (value === 'COLD') {
-    return `Automatically Cold — ${lead.followUpCount ?? 0} follow-ups and the status never reached Interested.`;
-  }
+
+  if (value === 'P1') return 'P1 — the status puts this lead at the closing stage.';
+  if (value === 'P2') return 'P2 — a meeting or a site visit has happened.';
 
   const remaining = COLD_FOLLOW_UP_THRESHOLD - (lead.followUpCount ?? 0);
   return remaining > 0
-    ? `P3 — being worked. Goes Cold after ${remaining} more follow-up${remaining === 1 ? '' : 's'} unless the status moves up.`
+    ? `P3 — being worked. Goes up for Cold review after ${remaining} more follow-up${remaining === 1 ? '' : 's'} unless the status moves up.`
     : 'P3 — being worked.';
 }

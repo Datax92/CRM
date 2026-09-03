@@ -4,7 +4,7 @@ import { adminDb, adminAuth } from "@/lib/firebase/server";
 import { requireAdmin, requireManager } from "@/lib/firebase/serverAuth";
 import { MIN_PRIORITY, MAX_PRIORITY } from "@/lib/constants/distribution";
 import { normalizeJobTitle } from "@/lib/constants/roles";
-import type { UserRole } from "@/lib/constants/hierarchy";
+import { normalizeManagerKind, type ManagerKind, type UserRole } from "@/lib/constants/hierarchy";
 import type { KpiTargets } from "@/lib/kpi";
 import {
   normalizeTargets,
@@ -51,6 +51,18 @@ export interface CreateEmployeeInput {
   joinedAt?: string | null;
   /** `false` takes them out of automatic distribution. See `lib/distribution`. */
   autoAssign?: boolean;
+  /**
+   * Which kind of manager (§13). `SALES` runs a team's pipeline; `HR` runs
+   * attendance and leave for the whole company. Meaningless on an employee
+   * record, so it is written only when `accessRole` is `subadmin`.
+   */
+  managerKind?: ManagerKind;
+  /**
+   * Monthly salary, used as the base for a percentage late deduction (§5) and
+   * for the payroll figures in the Money hub (§12). Zero means "not recorded",
+   * and a percentage rule then charges nothing rather than guessing.
+   */
+  monthlySalary?: number;
 }
 
 /**
@@ -90,6 +102,8 @@ export async function createEmployee(
     const status = input.status === "DISABLED" ? "DISABLED" : "ACTIVE";
     const targets = normalizeTargets(input.targets);
     const { phone, notes, joinedAt, autoAssign } = normalizeDirectoryFields(input);
+    const monthlySalary = Math.max(0, Math.round(Number(input.monthlySalary) || 0));
+    const managerKind = normalizeManagerKind(input.managerKind);
 
     if (!name) {
       throw new UserFacingError("Enter the employee's name.");
@@ -116,7 +130,15 @@ export async function createEmployee(
     }
 
     try {
-      await adminAuth.setCustomUserClaims(userRecord.uid, { role: accessRole });
+      // The manager kind rides in the token rather than being read from the
+      // profile on every page load: the sidebar has to know whether this is an
+      // HR manager before it can draw itself, and a document read for that
+      // would be one round trip on every navigation. An older manager account
+      // with no claim falls back to SALES, which grants nothing.
+      await adminAuth.setCustomUserClaims(userRecord.uid, {
+        role: accessRole,
+        ...(isManager ? { managerKind } : {}),
+      });
 
       await adminDb.collection("users").doc(userRecord.uid).create({
         name,
@@ -133,8 +155,9 @@ export async function createEmployee(
         joinedAt,
         // Everything below belongs to the distribution lane and the KPI
         // module, neither of which a manager takes part in.
+        monthlySalary,
         ...(isManager
-          ? { autoAssign: false, autoPriority: false }
+          ? { autoAssign: false, autoPriority: false, managerKind }
           : {
               targets,
               // Absent means "in the lane" everywhere else, so only write the
@@ -285,6 +308,10 @@ export async function updateEmployee(
     accessRole?: "employee" | "subadmin";
     /** `null` moves them under the admin directly. */
     subAdminUid?: string | null;
+    /** Sales or HR (§13). Ignored unless the account is a manager. */
+    managerKind?: ManagerKind;
+    /** Base for percentage late deductions and the payroll figures (§5, §12). */
+    monthlySalary?: number;
   }
 ): Promise<ActionResult> {
   return runAction("updateEmployee", async () => {
@@ -340,6 +367,15 @@ export async function updateEmployee(
     if (input.joinedAt !== undefined) dbUpdates.joinedAt = directory.joinedAt;
     if (directory.autoAssign !== undefined) dbUpdates.autoAssign = directory.autoAssign;
     if (input.targets !== undefined) dbUpdates.targets = normalizeTargets(input.targets);
+    if (input.monthlySalary !== undefined) {
+      dbUpdates.monthlySalary = Math.max(0, Math.round(Number(input.monthlySalary) || 0));
+    }
+    // Only meaningful on a manager. It is written whenever the caller sends it
+    // and the account is (or is becoming) a manager — the branch below handles
+    // the promotion case, where `current.role` is still `employee`.
+    if (input.managerKind !== undefined) {
+      dbUpdates.managerKind = normalizeManagerKind(input.managerKind);
+    }
 
     const userRef = adminDb.collection("users").doc(uid);
     const snap = await userRef.get();
@@ -357,9 +393,17 @@ export async function updateEmployee(
     // document, or the person keeps their old screens until the claim happens
     // to be re-issued. Revoking the refresh token forces that refresh rather
     // than leaving them with the wrong menu until their token expires.
+    const nextManagerKind =
+      input.managerKind !== undefined
+        ? normalizeManagerKind(input.managerKind)
+        : normalizeManagerKind(current.managerKind);
+
     if (input.accessRole && input.accessRole !== current.role) {
       const nextRole: UserRole = input.accessRole;
-      await adminAuth.setCustomUserClaims(uid, { role: nextRole });
+      await adminAuth.setCustomUserClaims(uid, {
+        role: nextRole,
+        ...(nextRole === "subadmin" ? { managerKind: nextManagerKind } : {}),
+      });
       await adminAuth.revokeRefreshTokens(uid).catch(() => {});
       dbUpdates.role = nextRole;
 
@@ -371,6 +415,17 @@ export async function updateEmployee(
         nextSubAdmin = null;
         dbUpdates.subAdminUid = FieldValue.delete();
       }
+    } else if (
+      current.role === "subadmin" &&
+      input.managerKind !== undefined &&
+      nextManagerKind !== normalizeManagerKind(current.managerKind)
+    ) {
+      // Moving a manager between Sales and HR changes what they may reach, so
+      // the claim has to move with the document and the old token has to go.
+      // Leaving it would let an ex-HR manager keep the attendance settings
+      // until their token happened to expire.
+      await adminAuth.setCustomUserClaims(uid, { role: "subadmin", managerKind: nextManagerKind });
+      await adminAuth.revokeRefreshTokens(uid).catch(() => {});
     }
 
     if (input.subAdminUid !== undefined && nextSubAdmin === undefined) {

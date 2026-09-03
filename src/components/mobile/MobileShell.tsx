@@ -91,7 +91,14 @@ function hasOwnChrome(pathname: string): boolean {
     pathname === "/admin/data-bank" ||
     pathname.startsWith("/admin/data-bank/") ||
     pathname === "/subadmin/data-bank" ||
-    pathname.startsWith("/subadmin/data-bank/")
+    pathname.startsWith("/subadmin/data-bank/") ||
+    // Clients draws its own header on both surfaces — the folder list has the
+    // Data Bank's header, and a folder *is* the leads screen, which has its
+    // own. Either way the shell must not add a second one.
+    pathname === "/admin/clients" ||
+    pathname.startsWith("/admin/clients/") ||
+    pathname === "/subadmin/clients" ||
+    pathname.startsWith("/subadmin/clients/")
   );
 }
 

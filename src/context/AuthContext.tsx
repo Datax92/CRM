@@ -10,9 +10,23 @@ import { IS_DEMO, useDemoSession, signInDemo, signOutDemo, DEMO_ACCOUNTS, DEMO_P
  */
 type Role = "admin" | "subadmin" | "employee";
 
+/**
+ * Which kind of manager a `subadmin` is (§13).
+ *
+ * Carried in the token rather than read from the profile, because the sidebar
+ * has to know before it can draw itself and a document read for that would be
+ * a round trip on every navigation. It is `null` for anyone who is not a
+ * manager, and an older manager account with no claim reads as `SALES` — which
+ * grants nothing extra, so the fallback cannot widen anybody's reach.
+ */
+type ManagerKind = "SALES" | "HR";
+
 interface AuthContextType {
   user: { uid: string; email: string | null } | null;
   role: Role | null;
+  managerKind: ManagerKind | null;
+  /** Admin, or an HR manager: the two who run attendance for everybody. */
+  isHr: boolean;
   loading: boolean;
   /** Set when the account is authenticated but unusable — no role, or disabled. */
   roleError: string | null;
@@ -24,6 +38,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null,
   role: null,
+  managerKind: null,
+  isHr: false,
   loading: true,
   roleError: null,
   signIn: async () => {},
@@ -50,6 +66,7 @@ const AuthContext = createContext<AuthContextType>({
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<{ uid: string; email: string | null } | null>(null);
   const [role, setRole] = useState<Role | null>(null);
+  const [managerKind, setManagerKind] = useState<ManagerKind | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -71,6 +88,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (!currentUser) {
           setUser(null);
           setRole(null);
+          setManagerKind(null);
           setRoleError(null);
           setLoading(false);
           return;
@@ -90,9 +108,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           const claimedRole = claims.role;
           if (claimedRole === "admin" || claimedRole === "subadmin" || claimedRole === "employee") {
             setRole(claimedRole);
+            setManagerKind(
+              claimedRole === "subadmin" ? (claims.managerKind === "HR" ? "HR" : "SALES") : null
+            );
             setRoleError(null);
           } else {
             setRole(null);
+            setManagerKind(null);
             setRoleError(
               "This account has no role assigned yet. Ask your administrator to set one, then sign in again."
             );
@@ -173,17 +195,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return current.getIdToken();
   }, []);
 
+  const demoManagerKind: ManagerKind | null =
+    demoSession?.role === "subadmin" ? (demoSession.managerKind === "HR" ? "HR" : "SALES") : null;
+
   const value = IS_DEMO
     ? {
         user: demoSession ? { uid: demoSession.uid, email: demoSession.email } : null,
         role: demoSession?.role ?? null,
+        managerKind: demoManagerKind,
+        isHr: demoSession?.role === "admin" || demoManagerKind === "HR",
         loading: false,
         roleError: null,
         signIn,
         logout,
         getIdToken,
       }
-    : { user, role, loading, roleError, signIn, logout, getIdToken };
+    : {
+        user,
+        role,
+        managerKind,
+        isHr: role === "admin" || managerKind === "HR",
+        loading,
+        roleError,
+        signIn,
+        logout,
+        getIdToken,
+      };
 
   return (
     <AuthContext.Provider value={value}>

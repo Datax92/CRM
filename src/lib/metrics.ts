@@ -35,6 +35,10 @@ export interface EmployeeMetrics {
   accessRole?: EmployeeData['accessRole'];
   /** The sub admin who manages them. Absent means the admin directly. */
   subAdminUid?: string | null;
+  /** Sales or HR (§13). Only meaningful on a manager account. */
+  managerKind?: EmployeeData['managerKind'];
+  /** Base for percentage late deductions and payroll (§5, §12). */
+  monthlySalary?: number;
   createdAt?: EmployeeData['createdAt'];
 
   assigned: number;
@@ -116,6 +120,8 @@ export function buildEmployeeMetrics(
       kpiScore: employee.kpiScore,
       accessRole: employee.accessRole,
       subAdminUid: employee.subAdminUid ?? null,
+      managerKind: employee.managerKind,
+      monthlySalary: employee.monthlySalary ?? 0,
       createdAt: employee.createdAt,
 
       assigned: own.length,

@@ -17,14 +17,11 @@ import { useMemo, useState } from "react";
 import type { Lead } from "@/hooks/useLeads";
 import { useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
-import { addFollowUp, setLeadStatus, setLeadPipelineStage, closeDeal, acceptLead, PAYMENT_METHODS } from "@/lib/clientActions";
+import { addFollowUp, updateFollowUp, setLeadStatus, reviewColdLead, closeDeal, acceptLead, PAYMENT_METHODS } from "@/lib/clientActions";
 import {
   explainPipelineStage,
   pipelineStage,
-  PIPELINE_STAGES,
   PIPELINE_STAGE_LABELS,
-  PIPELINE_STAGE_NAMES,
-  type PipelineStage,
 } from "@/lib/pipelineStage";
 import { STAGE_TONES, StageIcon } from "./StageChrome";
 import { KycPanel } from "./KycPanel";
@@ -32,12 +29,20 @@ import { describeLeadSource } from "@/lib/leadSource";
 import { dealCustomerFromKyc, kycCompleteness } from "@/lib/kyc";
 import {
   entryLabelAt,
+  toChronological,
   nextEntryLabel,
   historyTabLabel,
   FOLLOW_UP_KIND_LABELS,
 } from "@/lib/followUpKind";
 import { ROLE_LABELS, normalizeRole } from "@/lib/constants/hierarchy";
-import { USER_SETTABLE_STATUSES, LEAD_STATUS_LABELS, isTerminal, type LeadStatus } from "@/lib/leadStatus";
+import {
+  USER_SETTABLE_STATUSES,
+  STAGE_STATUSES,
+  LEAD_STATUS_LABELS,
+  isTerminal,
+  statusLabel,
+  type LeadStatus,
+} from "@/lib/leadStatus";
 import { whatsAppUrl, telUrl, formatPhone } from "@/lib/phone";
 import { formatMoney } from "@/lib/money";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
@@ -47,7 +52,7 @@ import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
 import { initialsOf } from "@/lib/leadDisplay";
 import {
   Phone, Mail, MapPin, UserCheck, Clock, X, Plus, MessageCircle,
-  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users,
+  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users, Lock,
 } from "lucide-react";
 
 type Tab = "FOLLOW_UPS" | "KYC" | "AUDIT_TRAIL" | "DEAL_ENTRY";
@@ -288,7 +293,7 @@ export function LeadDetailPane({
             Stage {stageIndex + 1} of {PIPELINE_ORDER.length}
           </span>
 
-          <PipelineStageControl lead={lead} disabled={closed} getIdToken={getIdToken} onResult={setBanner} />
+          <PipelineStageControl lead={lead} userRole={userRole} getIdToken={getIdToken} onResult={setBanner} />
         </div>
 
         <div className="flex items-center gap-1.5 text-[12.5px] text-[#5b6d6b]">
@@ -477,73 +482,88 @@ function StageSelect({
     }
   };
 
-  // The lead's own status may be a system state (NEW / ACCEPTED) that users
+  // The lead's own status may be a system state (NEW / ASSIGNED) that users
   // cannot set. It still has to appear, or the select would render blank.
-  const options = useMemo(() => {
-    const list = [...USER_SETTABLE_STATUSES];
-    if (!list.includes(lead.status)) list.unshift(lead.status);
-    return list;
-  }, [lead.status]);
+  const orphan = useMemo(
+    () => (USER_SETTABLE_STATUSES.includes(lead.status) ? null : lead.status),
+    [lead.status]
+  );
 
+  // Grouped by band, so choosing a status shows what it does to the stage
+  // before it is chosen (§14). The groups are the bands themselves — there is
+  // no second list to keep in step with `STAGE_STATUSES`.
   return (
     <select
-      id="pipeline-stage"
+      id="pipeline-status"
       value={lead.status}
       disabled={disabled || busy}
       onChange={(e) => handleChange(e.target.value)}
       className="cursor-pointer rounded-md border border-[#cfe2e0] bg-white px-3 py-1.5 text-[13px] text-[#2b3a39] outline-none transition-colors focus:border-[#4f9c99] focus:ring-2 focus:ring-[#4f9c99]/15 disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {options.map((status) => (
-        <option key={status} value={status}>
-          {LEAD_STATUS_LABELS[status] ?? status}
-        </option>
+      {orphan && <option value={orphan}>{statusLabel(orphan)}</option>}
+
+      {(["P3", "P2", "P1"] as const).map((band) => (
+        <optgroup key={band} label={`${band} — ${band === "P3" ? "talking" : band === "P2" ? "met or visited" : "closing"}`}>
+          {STAGE_STATUSES[band].map((status) => (
+            <option key={status} value={status}>
+              {LEAD_STATUS_LABELS[status]}
+            </option>
+          ))}
+        </optgroup>
       ))}
+
+      <optgroup label="Closed">
+        <option value="CLOSED_LOST">{LEAD_STATUS_LABELS.CLOSED_LOST}</option>
+      </optgroup>
     </select>
   );
 }
 
 /**
- * Cold / P3 / P2 / P1.
+ * The stage, and the Cold review.
  *
- * **The automation is unchanged; only the button is gone.** "Auto" used to be a
- * fifth option, and it confused the control: it looked like a stage a lead
- * could be in. It is not — it is the *absence* of a manual pin, and the rule in
- * `lib/pipelineStage` keeps running underneath either way. A lead nobody has
- * touched still slides to Cold on its tenth fruitless follow-up, still lands on
- * P2 when a meeting is held, still tracks the status.
+ * **Not a control any more (§14).** The pipeline status now decides the stage,
+ * so a second widget for setting it by hand would be a way to contradict the
+ * status — exactly the state this app used to reach, where a lead read
+ * "Negotiation" and "Cold" at the same time and both were shown as true. What
+ * is left is a read-out that says which band the status put the lead in, and
+ * why.
  *
- * So the four real stages are the four buttons, and the way back to automatic
- * is to press the one that is already lit — which clears the pin. That is
- * discoverable (the pressed state is obvious), reversible in one click, and
- * costs no screen space explaining a non-stage.
- *
- * A pinned stage is marked with a dot and named in the hint, so "this was
- * decided by a person" and "this is what the rule says" stay distinguishable.
+ * The one decision still open to a person is Cold (§3). A lead that has met the
+ * rule is *not* moved by it: it is flagged, the admin and the lead's manager
+ * are notified, and one of them rules here. The employee holding the lead sees
+ * the flag but gets no buttons — it is their work being reviewed.
  */
 function PipelineStageControl({
   lead,
-  disabled,
+  userRole,
   getIdToken,
   onResult,
 }: {
   lead: Lead;
-  disabled: boolean;
+  userRole: "admin" | "subadmin" | "employee";
   getIdToken: () => Promise<string>;
   onResult: (b: Banner) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const { value, manual } = pipelineStage(lead);
+  const { value, manual, coldPending } = pipelineStage(lead);
+  const canReview = userRole === "admin" || userRole === "subadmin";
 
-  // A closed lead carries no stage at all, so the control would only offer a
-  // write the server is going to reject.
-  if (disabled) return null;
-
-  const apply = async (next: PipelineStage | null) => {
+  const review = async (verified: boolean) => {
     setBusy(true);
     onResult(null);
     try {
-      const result = await setLeadPipelineStage(await getIdToken(), lead.id, next);
-      if (!result.ok) onResult({ tone: "error", text: result.error });
+      const result = await reviewColdLead(await getIdToken(), lead.id, verified);
+      if (result.ok) {
+        onResult({
+          tone: "success",
+          text: verified
+            ? "Verified. The lead is now Cold."
+            : "Dismissed. The lead stays in play.",
+        });
+      } else {
+        onResult({ tone: "error", text: result.error });
+      }
     } catch {
       onResult({ tone: "error", text: "Could not reach the server. Check your connection." });
     } finally {
@@ -551,65 +571,56 @@ function PipelineStageControl({
     }
   };
 
-  const options = PIPELINE_STAGES.map((stage) => ({
-    key: stage,
-    label: PIPELINE_STAGE_LABELS[stage],
-    title: manual && value === stage
-      ? `${PIPELINE_STAGE_NAMES[stage]} — set by hand. Press again to let the system decide.`
-      : PIPELINE_STAGE_NAMES[stage],
-  }));
+  if (!value && !coldPending) return null;
 
   return (
-    <div
-      className="flex items-center gap-2"
-      role="group"
-      aria-label="Pipeline stage"
-      title={explainPipelineStage(lead)}
-    >
+    <div className="flex flex-wrap items-center gap-2" title={explainPipelineStage(lead)}>
       <span className="text-[12.5px] text-[#5b6d6b]">Pipeline Stage:</span>
-      <div className="flex items-center gap-1 rounded-full border border-[#cfe2e0] bg-white p-[3px]">
-        {options.map((option) => {
-          // Lit for the stage the lead is at, however it got there — pinned by
-          // a person or decided by the rule. The dot below is what tells them
-          // apart; a control that only lit up for manual pins would read as
-          // "no stage" on the majority of leads, which are automatic.
-          const active = value === option.key;
-          const tone = STAGE_TONES[option.key];
-          return (
-            <button
-              key={option.label}
-              type="button"
-              disabled={busy}
-              title={option.title}
-              aria-pressed={active}
-              // Pressing the lit button clears the pin and hands the lead back
-              // to the rule. Pressing any other one pins that stage.
-              onClick={() => apply(active && manual ? null : option.key)}
-              style={
-                active
-                  ? { background: tone.solid, color: tone.onSolid }
-                  : { color: tone.softText }
-              }
-              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
-            >
-              <StageIcon stage={option.key} size={11} />
-              {option.label}
-              {active && manual && (
-                <span aria-hidden title="Set by hand">
-                  ·
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-      {/* The rule, spelled out. "No progress" rather than "no reply": the app
-          cannot see whether a client answered, only whether the rep moved the
-          status. Hidden on narrow panes where the tooltip and the
-          screen-reader text still carry it. */}
-      <span className="hidden text-[11.5px] text-[#9aacaa] xl:inline">
-        {explainPipelineStage(lead)}
-      </span>
+
+      {value && (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold"
+          style={{ background: STAGE_TONES[value].soft, color: STAGE_TONES[value].softText }}
+        >
+          <StageIcon stage={value} size={11} />
+          {PIPELINE_STAGE_LABELS[value]}
+          {manual && (
+            <span aria-hidden title="Set by a review">
+              ·
+            </span>
+          )}
+        </span>
+      )}
+
+      {/* §3 — the warning, and the decision, in the place the stage is read. */}
+      {coldPending && (
+        <span className="inline-flex flex-wrap items-center gap-2 rounded-full border border-[#f0e0c0] bg-[#fdf5e6] px-2.5 py-1 text-[11.5px] text-[#a5762a]">
+          <AlertTriangle size={12} className="shrink-0" />
+          Requires verification before being moved to Cold
+          {canReview && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => review(true)}
+                className="rounded-full bg-[#4d7590] px-2.5 py-0.5 text-[11px] font-semibold text-white disabled:opacity-50"
+              >
+                Verify Cold
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => review(false)}
+                className="rounded-full border border-[#e0d0a8] px-2.5 py-0.5 text-[11px] font-semibold text-[#a5762a] disabled:opacity-50"
+              >
+                Keep working
+              </button>
+            </>
+          )}
+        </span>
+      )}
+
+      <span className="hidden text-[11.5px] text-[#9aacaa] xl:inline">{explainPipelineStage(lead)}</span>
       <span className="sr-only">{explainPipelineStage(lead)}</span>
     </div>
   );
@@ -693,6 +704,13 @@ function FollowUpsPanel({
   const [callMinutes, setCallMinutes] = useState("");
   const [callSeconds, setCallSeconds] = useState("");
   const [meetingHeld, setMeetingHeld] = useState(false);
+  const [siteVisit, setSiteVisit] = useState(false);
+  /**
+   * The entry open for editing, or null when the form is adding a new one.
+   * Only ever the newest — see `lib/followUpKind` and `updateFollowUp`; the
+   * rows below offer Edit on that one and on nothing else.
+   */
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [whatsappNote, setWhatsappNote] = useState("");
   const [busy, setBusy] = useState(false);
   const closed = isTerminal(lead.status);
@@ -700,7 +718,40 @@ function FollowUpsPanel({
   // The first entry on a lead is a Remark, not a follow-up — there is nothing
   // to follow up on yet. Everything the form says follows from this one flag.
   const isFirstEntry = followUps.length === 0;
-  const entryWord = nextEntryLabel(followUps.length);
+  /**
+   * Which entry is still editable.
+   *
+   * The lead names it (`latestFollowUpId`), written by the same transaction
+   * that created it. Falling back to "the newest in this list" covers leads
+   * whose entries predate that field, and gives the same answer.
+   */
+  const latestId = lead.latestFollowUpId ?? followUps[0]?.id ?? null;
+  const isLatest = (id: string) => id === latestId;
+  // While editing, the form speaks about the entry being edited rather than
+  // the one that would come next.
+  const editing = editingId ? followUps.find((entry) => entry.id === editingId) : null;
+  const entryWord = editing
+    ? FOLLOW_UP_KIND_LABELS[editing.kind ?? "FOLLOW_UP"]
+    : nextEntryLabel(followUps.length);
+
+  /**
+   * Opens the edit form on an entry, pre-filled from it.
+   *
+   * The same form does both jobs: a second, near-identical editor is where the
+   * two would drift on the connect rule or the meeting box.
+   */
+  const startEdit = (entry: (typeof followUps)[number]) => {
+    setEditingId(entry.id);
+    setMessage(entry.message ?? "");
+    setCallMade(Boolean(entry.callMade));
+    setCallCount(String(entry.callCount ?? 1));
+    setCallMinutes(String(Math.floor((entry.durationSeconds ?? 0) / 60) || ""));
+    setCallSeconds(String((entry.durationSeconds ?? 0) % 60 || ""));
+    setMeetingHeld(Boolean(entry.meetingHeld));
+    setSiteVisit(Boolean(entry.siteVisit));
+    setWhatsappNote(entry.whatsappNote ?? "");
+    setShowForm(true);
+  };
 
   const durationSeconds =
     (Number(callMinutes) || 0) * 60 + (Number(callSeconds) || 0);
@@ -719,12 +770,23 @@ function FollowUpsPanel({
     setBusy(true);
     onResult(null);
     try {
-      const result = await addFollowUp(await getIdToken(), lead.id, {
+      const result = editingId
+        ? await updateFollowUp(await getIdToken(), lead.id, editingId, {
+            message,
+            callMade,
+            callCount: Number(callCount) || 1,
+            durationSeconds,
+            meetingHeld,
+            siteVisit,
+            whatsappNote: whatsappNote.trim(),
+          })
+        : await addFollowUp(await getIdToken(), lead.id, {
         message: message.trim(),
         callMade,
         callCount: Number(callCount) || 1,
         durationSeconds,
         meetingHeld,
+        siteVisit,
         whatsappNote: whatsappNote.trim(),
       });
 
@@ -735,15 +797,18 @@ function FollowUpsPanel({
         setCallMinutes("");
         setCallSeconds("");
         setMeetingHeld(false);
+        setSiteVisit(false);
         setWhatsappNote("");
         setShowForm(false);
+        setEditingId(null);
+        const verb = editingId ? "updated" : "logged";
         onResult({
           tone: "success",
           text: result.data?.connect
-            ? `${entryWord} logged. Counted as a connect.`
+            ? `${entryWord} ${verb}. Counted as a connect.`
             : callMade
-              ? `${entryWord} logged. Under ${formatDuration(CONNECT_MIN_SECONDS)}, so it does not count as a connect.`
-              : `${entryWord} logged successfully.`,
+              ? `${entryWord} ${verb}. Under ${formatDuration(CONNECT_MIN_SECONDS)}, so it does not count as a connect.`
+              : `${entryWord} ${verb} successfully.`,
         });
       } else {
         onResult({ tone: "error", text: result.error });
@@ -781,7 +846,11 @@ function FollowUpsPanel({
         <form onSubmit={submit} className="mb-4 space-y-3.5 rounded-lg border border-[#e0eeec] bg-white p-4">
           <div className="flex items-center justify-between border-b border-[#f0f6f5] pb-2.5">
             <span className="text-[13.5px] text-[#2b3a39]">
-              {isFirstEntry ? "Opening remark" : "Log new follow-up"}
+              {editingId
+                ? `Editing this ${entryWord.toLowerCase()}`
+                : isFirstEntry
+                  ? "Opening remark"
+                  : "Log new follow-up"}
             </span>
             <span className="flex items-center gap-1.5 text-[11.5px] text-[#9aacaa]">
               <Clock size={12} className="text-[#4f9c99]" />
@@ -823,6 +892,19 @@ function FollowUpsPanel({
                   className="h-4 w-4 accent-[#3f8f8a]"
                 />
                 <span>Meeting Held</span>
+              </label>
+
+              {/* Counted separately from a meeting in Reports (§4): a client
+                  who came to the site is a different signal from one who took
+                  a meeting, and the two are often not the same visit. */}
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#5b6d6b]">
+                <input
+                  type="checkbox"
+                  checked={siteVisit}
+                  onChange={(e) => setSiteVisit(e.target.checked)}
+                  className="h-4 w-4 accent-[#3f8f8a]"
+                />
+                <span>Site Visit</span>
               </label>
 
               {callMade && (
@@ -901,7 +983,10 @@ function FollowUpsPanel({
           <div className="flex justify-end gap-2.5 pt-1">
             <button
               type="button"
-              onClick={() => setShowForm(false)}
+              onClick={() => {
+                setShowForm(false);
+                setEditingId(null);
+              }}
               className="rounded-full border border-[#cfe2e0] bg-white px-5 py-2 text-[13px] text-[#5b6d6b] transition-colors hover:bg-[#f3faf9]"
             >
               Cancel
@@ -928,34 +1013,87 @@ function FollowUpsPanel({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {followUps.map((fu, index) => (
+          {/* Chronological: the Remark first, then each Follow-Up after it. */}
+          {toChronological(followUps).map((fu, index) => (
             <article key={fu.id} className="rounded-lg border border-[#e0eeec] bg-white px-4 py-3.5">
               <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-[#f0f6f5] pb-2.5">
                 <div className="flex flex-wrap items-center gap-2 text-[13.5px] text-[#2b3a39]">
-                  {/* The oldest entry is the Remark; the list is newest-first. */}
+                  {/* The stored kind when there is one; position for entries
+                      written before it was recorded. */}
                   <span
                     className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold"
                     style={
-                      entryLabelAt(index, followUps.length) === FOLLOW_UP_KIND_LABELS.REMARK
+                      (fu.kind ? FOLLOW_UP_KIND_LABELS[fu.kind] : entryLabelAt(index, followUps.length, false)) ===
+                      FOLLOW_UP_KIND_LABELS.REMARK
                         ? { background: "#fdf1e3", color: "#a4682a" }
                         : { background: "#e2f0ee", color: "#2f7d78" }
                     }
                   >
-                    {entryLabelAt(index, followUps.length)}
+                    {fu.kind ? FOLLOW_UP_KIND_LABELS[fu.kind] : entryLabelAt(index, followUps.length, false)}
                   </span>
                   {followUps.length - index > 1 && (
                     <span className="text-[#9aacaa]">#{followUps.length - index - 1}</span>
                   )}
                   <span className="text-[#7e918f]">· {fu.authorEmail ?? "Team Member"}</span>
+                  {(fu.revisions?.length ?? 0) > 0 && (
+                    <span className="rounded-full bg-[#f2f8f7] px-2 py-0.5 text-[10.5px] text-[#5b6d6b]">
+                      edited {fu.revisions!.length}×
+                    </span>
+                  )}
                 </div>
-                <div className="text-xs text-[#9aacaa]">
-                  {formatBusinessDateTime(fu.occurredAt ?? fu.createdAt)}
+
+                <div className="flex items-center gap-2.5 text-xs text-[#9aacaa]">
+                  <span>{formatBusinessDateTime(fu.occurredAt ?? fu.createdAt)}</span>
+                  {/* §2 — the newest entry stays editable; the rest are locked,
+                      and the lock is shown rather than the button silently
+                      missing. */}
+                  {!closed && canLog && (
+                    isLatest(fu.id) ? (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(fu)}
+                        className="rounded-full border border-[#cfe2e0] px-2.5 py-0.5 text-[11px] font-medium text-[#2f7d78] transition-colors hover:bg-[#f3faf9]"
+                      >
+                        Edit
+                      </button>
+                    ) : (
+                      <span
+                        title="Only the latest entry can be edited. Older ones are part of the permanent record."
+                        className="inline-flex items-center gap-1 text-[11px] text-[#b3c4c2]"
+                      >
+                        <Lock size={10} /> Locked
+                      </span>
+                    )
+                  )}
                 </div>
               </div>
 
               <p className="mt-2.5 text-[13.5px] leading-relaxed whitespace-pre-wrap text-[#3c4d4b]">{fu.message}</p>
 
-              {(fu.callMade || fu.meetingHeld || fu.whatsappNote) && (
+              {/* §2 — what it said before, kept rather than destroyed. Oldest
+                  first, so it reads as a trail toward the text above. */}
+              {(fu.revisions?.length ?? 0) > 0 && (
+                <details className="mt-2.5 rounded-lg border border-[#f0f6f5] bg-[#f9fcfc] px-3 py-2">
+                  <summary className="cursor-pointer text-[11.5px] text-[#7e918f]">
+                    Previous versions ({fu.revisions!.length})
+                  </summary>
+                  <ol className="mt-2 space-y-2">
+                    {fu.revisions!.map((revision, revisionIndex) => (
+                      <li key={revisionIndex} className="border-l-2 border-[#dceae8] pl-2.5">
+                        <p className="text-[11px] text-[#9aacaa]">
+                          {revision.editedByEmail ?? "Team Member"}
+                          {revision.editedAt ? ` · ${formatBusinessDateTime(revision.editedAt)}` : ""}
+                        </p>
+                        <p className="text-[12.5px] whitespace-pre-wrap text-[#5b6d6b]">
+                          {revision.message ?? "(empty)"}
+                        </p>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
+
+              {(fu.callMade || fu.meetingHeld || fu.siteVisit || fu.whatsappNote) && (
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   {fu.callMade && (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
@@ -975,6 +1113,12 @@ function FollowUpsPanel({
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
                       <Users size={12} />
                       <span>Meeting</span>
+                    </span>
+                  )}
+                  {fu.siteVisit && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
+                      <MapPin size={12} />
+                      <span>Site visit</span>
                     </span>
                   )}
                   {fu.whatsappNote && (

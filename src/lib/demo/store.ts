@@ -9,13 +9,48 @@ import type { AccountRecord } from '@/hooks/useAccounts';
 import type { DataBankFolder, DataBankRecord } from '@/hooks/useDataBank';
 import { fieldKeyFor, phoneKey, type DataBankStatus } from '@/lib/dataBank';
 import type { CampaignRecord } from '@/hooks/useCampaigns';
+import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
-import { isValidIp, normalizeIp, type AttendanceStatus } from '@/lib/attendance';
-import { isTerminal, type LeadStatus } from '@/lib/leadStatus';
+import { deriveStatus, isValidIp, normalizeIp, type AttendanceStatus } from '@/lib/attendance';
+import {
+  buildPayrollLine,
+  canTransition,
+  isEditable,
+  normalizeSalaryProfile,
+  payrollTotals,
+  repriceLine,
+  type PayrollLine,
+  type PayrollStatus,
+  type SalaryProfile,
+} from '@/lib/payroll';
+import {
+  DEFAULT_EXPENSE_CATEGORIES,
+  LEGACY_EXPENSE_CATEGORIES,
+  EXPENSE_STATUSES,
+  normalizeExpenseStatus,
+  type ExpenseStatus,
+} from '@/lib/officeExpenses';
+import {
+  DEFAULT_ATTENDANCE_POLICY,
+  classifyCheckIn,
+  formatClockValue,
+  monthDeductions,
+  parseClock,
+  leaveBalances,
+  leaveDayCount,
+  leaveDayKeys,
+  normalizePolicy,
+  LEAVE_TYPE_LABELS,
+  type AttendancePolicy,
+  type LeaveStatus,
+  type LeaveType,
+} from '@/lib/attendancePolicy';
+import { isTerminal, stageForStatus, type LeadStatus } from '@/lib/leadStatus';
 import type { DistributionLine } from '@/lib/profitDistribution';
 import { calculateDistribution, type DistributionShare } from '@/lib/profitDistribution';
 import { validateKyc, leadPatchFromKyc, type KycValues } from '@/lib/kyc';
-import { PIPELINE_STAGES, type PipelineStage } from '@/lib/pipelineStage';
+import { PIPELINE_STAGES, meetsColdRule, type PipelineStage } from '@/lib/pipelineStage';
+import { entryAllowance } from '@/lib/followUpKind';
 import { ADMIN_ASSIGN_WINDOW_MS, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
@@ -48,6 +83,8 @@ export interface DemoAccount {
   email: string;
   name: string;
   role: 'admin' | 'subadmin' | 'employee';
+  /** Sales or HR, for the manager accounts (§13). */
+  managerKind?: 'SALES' | 'HR';
 }
 
 export const DEMO_ACCOUNTS: DemoAccount[] = [
@@ -139,8 +176,20 @@ export interface DemoKpiMonth extends KpiCounts {
 interface DemoState {
   employees: EmployeeData[];
   attendance: AttendanceRecord[];
-  /** Mirrors config/attendance.officeIps. */
-  officeIps: string[];
+  /** Mirrors `config/attendance` — the whole policy, not just the IPs. */
+  attendancePolicy: AttendancePolicy;
+  /** Mirrors `leaveRequests`. */
+  leaveRequests: DemoLeaveRequest[];
+  /** Mirrors `attendancePeriods` — a closed month's frozen deductions (§12). */
+  attendancePeriods: Record<string, DemoAttendancePeriod>;
+  /** Mirrors `payrollPeriods` — one generated month each. */
+  payrollPeriods: Record<string, DemoPayrollPeriod>;
+  /** Mirrors `payslips`, keyed `{uid}_{YYYY-MM}`. */
+  payslips: Record<string, DemoPayslip>;
+  /** Mirrors the custom half of `config/expenseCategories`. */
+  expenseCategories: string[];
+  /** Per-employee allowance adjustments, as held on the user document. */
+  leaveAdjustments: Record<string, Partial<Record<LeaveType, number>>>;
   /** uid -> monthKey -> counters. */
   kpiMonths: Record<string, Record<string, DemoKpiMonth>>;
   leads: Lead[];
@@ -161,6 +210,70 @@ interface DemoState {
   distributions: DemoDistribution[];
   /** One row per recipient, the way `dealPayouts` is scoped in production. */
   payouts: DemoPayout[];
+  /** Client folders and their membership rows — never copies of leads. */
+  clientFolders: ClientFolder[];
+  clientFolderLeads: ClientFolderMember[];
+}
+
+/** Mirrors a `payrollPeriods` document. */
+export interface DemoPayrollPeriod {
+  monthKey: string;
+  status: PayrollStatus;
+  lines: PayrollLine[];
+  generatedAt: string | null;
+  generatedByUid: string | null;
+  history: { at: string | null; byUid: string; byName: string | null; action: string; detail: string | null }[];
+}
+
+/** Mirrors a `payslips` document — one person, one month. */
+export interface DemoPayslip {
+  id: string;
+  uid: string;
+  monthKey: string;
+  status: PayrollStatus;
+  line: PayrollLine;
+  current: boolean;
+  approvedAt: string | null;
+  approvedByName: string | null;
+}
+
+/** Mirrors an `attendancePeriods` document — one closed month. */
+export interface DemoAttendancePeriod {
+  monthKey: string;
+  finalized: boolean;
+  finalizedAt: string | null;
+  finalizedByUid: string | null;
+  finalizedByName: string | null;
+  lines: {
+    uid: string;
+    name: string;
+    monthlySalary: number;
+    lateCount: number;
+    amount: number;
+    basis: string[];
+  }[];
+  total: number;
+  policy: AttendancePolicy | null;
+}
+
+/** Mirrors a `leaveRequests` document. */
+export interface DemoLeaveRequest {
+  id: string;
+  uid: string;
+  employeeName: string | null;
+  subAdminUid: string | null;
+  type: LeaveType;
+  from: string;
+  to: string;
+  days: number;
+  reason: string;
+  status: LeaveStatus;
+  requestedByUid: string;
+  requestedAt?: FirestoreTimestamp;
+  decidedByUid?: string | null;
+  decidedByName?: string | null;
+  decidedAt?: FirestoreTimestamp | null;
+  decisionNote?: string | null;
 }
 
 /** Mirrors a `dealDistributions` document closely enough for the screens. */
@@ -309,6 +422,19 @@ function seed(): DemoState {
         workedMinutes: Math.floor((lastAt.getTime() - firstAt.getTime()) / 60_000),
         network: remoteLeaning && day % 3 === 0 ? 'REMOTE' : 'OFFICE',
         lastIp: remoteLeaning && day % 3 === 0 ? '203.0.113.42' : '198.51.100.7',
+        // A check-in after the configured time is a late day (§5). The seed
+        // computes it the same way the server does rather than hard-coding a
+        // flag, so changing the demo start time moves the demo's lates too.
+        ...(() => {
+          const verdict = classifyCheckIn(firstAt, DEFAULT_ATTENDANCE_POLICY);
+          return verdict.late
+            ? {
+                late: true,
+                lateByMinutes: verdict.lateByMinutes,
+                lateAfter: verdict.lateAfter,
+              }
+            : {};
+        })(),
       });
     }
   }
@@ -631,7 +757,56 @@ function seed(): DemoState {
     },
   ];
 
-  return { employees, kpiMonths, attendance, officeIps: ['198.51.100.7'], leads, followUps, events, deals, expenses, notifications, receivables, committee, investments, capitalInvestments, personalExpenses, campaigns, dataBankFolders, dataBankRecords, distributions: [], payouts: [] };
+  // One seeded folder, so the Clients screen demonstrates the reference model
+  // rather than an empty state: these leads are in the folder *and* in the
+  // pipeline — the same records in two places, exactly as §19 requires.
+  const clientFolders: ClientFolder[] = [
+    {
+      id: 'cf_1',
+      name: 'Interested Clients',
+      description: 'Warm ones worth a second call this week.',
+      color: null,
+      subAdminUid: null,
+      leadCount: 2,
+      createdByUid: 'demo-admin',
+      createdByName: 'Usman Sheikh',
+      createdAt: daysAgo(6),
+    },
+  ];
+
+  const clientFolderLeads: ClientFolderMember[] = [
+    { id: 'cf_1__lead_1004', folderId: 'cf_1', leadId: 'lead_1004', leadName: 'Zainab Rashid', addedByUid: 'demo-admin', addedAt: daysAgo(6) },
+    { id: 'cf_1__lead_1005', folderId: 'cf_1', leadId: 'lead_1005', leadName: 'Ahmed Raza', addedByUid: 'demo-admin', addedAt: daysAgo(5) },
+  ];
+
+  return { employees, kpiMonths, attendance, attendancePolicy: { ...DEFAULT_ATTENDANCE_POLICY, officeIps: ['198.51.100.7'] },
+    leaveRequests: [
+      {
+        id: 'lv_1',
+        uid: 'demo-emp-2',
+        employeeName: 'Bilal Ahmed',
+        subAdminUid: 'demo-sub-1',
+        type: 'CASUAL',
+        from: karachiDayKey(new Date()),
+        to: karachiDayKey(new Date()),
+        days: 1,
+        reason: 'Family commitment.',
+        status: 'PENDING',
+        requestedByUid: 'demo-emp-2',
+        // `ts(new Date())`, not `now()` — `now` is a const declared *after*
+        // this function runs, so calling it from the seed is a temporal dead
+        // zone error. It only shows up in a production build, where the seed
+        // is evaluated during prerender.
+        requestedAt: ts(new Date()),
+        decidedByUid: null,
+        decidedAt: null,
+      },
+    ],
+    leaveAdjustments: {},
+    attendancePeriods: {},
+    payrollPeriods: {},
+    payslips: {},
+    expenseCategories: [], leads, followUps, events, deals, expenses, notifications, receivables, committee, investments, capitalInvestments, personalExpenses, campaigns, dataBankFolders, dataBankRecords, distributions: [], payouts: [], clientFolders, clientFolderLeads };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -985,23 +1160,29 @@ export const demo = {
     input: {
       message: string; callMade: boolean; callCount?: number;
       durationSeconds?: number; meetingHeld?: boolean;
-      whatsappNote?: string; occurredAt?: string;
+      whatsappNote?: string; occurredAt?: string; siteVisit?: boolean;
     },
     actorUid: string,
     actorEmail: string
-  ): Result<{ followUpId: string; connect: boolean }> {
+  ): Result<{ followUpId: string; connect: boolean; kind: 'REMARK' | 'FOLLOW_UP' }> {
     const lead = state.leads.find((l) => l.id === leadId);
     if (!lead) return fail('That lead no longer exists.');
-    if (lead.status === 'ASSIGNED') return fail('Accept this lead before logging a follow-up.');
+    if (lead.status === 'ASSIGNED') return fail('Accept this lead before logging a remark.');
 
     const occurred = input.occurredAt ? new Date(input.occurredAt) : new Date();
     const dayKey = karachiDayKey(occurred);
     const isAdmin = getDemoSession()?.role !== 'employee';
 
-    // Mirrors the server rule: one follow-up per lead per day for employees.
-    if (!isAdmin && (state.followUps[leadId] ?? []).some((f) => f.dayKey === dayKey)) {
-      return fail('You have already logged a follow-up for this lead today. Add the next one tomorrow.');
-    }
+    // Mirrors the server rule exactly (§1): day one takes a Remark and a
+    // Follow-Up, every later day takes one Follow-Up. Shared code, so the demo
+    // cannot demonstrate a rule the product does not have.
+    const existing = state.followUps[leadId] ?? [];
+    const allowance = entryAllowance(
+      existing.length,
+      existing.filter((f) => f.dayKey === dayKey).length,
+      existing.length > 0
+    );
+    if (!allowance.allowed && !isAdmin) return fail(allowance.reason!);
 
     const calls = input.callMade ? Math.max(1, Number(input.callCount) || 1) : 0;
     const durationSeconds = input.callMade ? normalizeDurationSeconds(input.durationSeconds) : 0;
@@ -1011,14 +1192,16 @@ export const demo = {
 
     const connect = Boolean(input.callMade) && isConnect(durationSeconds);
     const meetingHeld = Boolean(input.meetingHeld);
+    const siteVisit = Boolean(input.siteVisit);
     const id = nextId('fu');
 
     state.followUps[leadId] = [
-      { id, message: input.message, callMade: input.callMade, callCount: calls,
-        durationSeconds, connect, meetingHeld, dayKey,
+      { id, kind: allowance.kind, message: input.message, callMade: input.callMade, callCount: calls,
+        durationSeconds, connect, meetingHeld, siteVisit, dayKey,
         whatsappNote: input.whatsappNote || null, occurredAt: ts(occurred), createdAt: now(),
-        authorUid: actorUid, authorEmail: actorEmail },
-      ...(state.followUps[leadId] ?? []),
+        authorUid: actorUid, authorEmail: actorEmail, creditUid: lead.assignedUserId ?? actorUid,
+        revisions: [] },
+      ...existing,
     ];
     patchLead(leadId, {
       followUpCount: (lead.followUpCount ?? 0) + 1,
@@ -1027,6 +1210,11 @@ export const demo = {
       // Same one-way flag the real transaction writes: a meeting that happened
       // stays happened, and it lifts the lead to P2.
       ...(meetingHeld ? { meetingHeld: true } : {}),
+      ...(siteVisit ? { siteVisit: true } : {}),
+      siteVisitCount: (lead.siteVisitCount ?? 0) + (siteVisit ? 1 : 0),
+      connectCount: (lead.connectCount ?? 0) + (connect ? 1 : 0),
+      meetingCount: (lead.meetingCount ?? 0) + (meetingHeld ? 1 : 0),
+      latestFollowUpId: id,
     });
     if (lead.assignedUserId) {
       bumpKpi(lead.assignedUserId, karachiMonthKey(occurred), {
@@ -1035,11 +1223,335 @@ export const demo = {
         meetings: meetingHeld ? 1 : 0,
       });
     }
-    addEvent(leadId, 'FOLLOW_UP_ADDED', actorUid, {
-      followUpId: id, callMade: input.callMade, callCount: calls, durationSeconds, connect, meetingHeld,
+    addEvent(leadId, allowance.kind === 'REMARK' ? 'REMARK_ADDED' : 'FOLLOW_UP_ADDED', actorUid, {
+      followUpId: id, kind: allowance.kind, callMade: input.callMade, callCount: calls,
+      durationSeconds, connect, meetingHeld, siteVisit,
+    });
+
+    // §3 — the cold rule raises a review rather than writing off the lead.
+    const nextCount = (lead.followUpCount ?? 0) + 1;
+    if (
+      meetsColdRule({ status: lead.status, followUpCount: nextCount }) &&
+      !lead.coldReviewRequestedAt &&
+      !lead.pipelineStageOverride
+    ) {
+      patchLead(leadId, { coldReviewRequestedAt: now() });
+      const message = `${lead.name} has had ${nextCount} follow-ups with no progress. Lead requires verification before being moved to Cold.`;
+      state.notifications = [
+        { id: nextId('n'), type: 'COLD_REVIEW_REQUIRED', leadId, targetRole: 'admin',
+          payload: { message }, createdAt: now(), readAt: null },
+        ...(lead.subAdminUid
+          ? [{ id: nextId('n'), type: 'COLD_REVIEW_REQUIRED', leadId, targetRole: 'subadmin',
+              targetUid: lead.subAdminUid, payload: { message }, createdAt: now(), readAt: null }]
+          : []),
+        ...state.notifications,
+      ];
+    }
+
+    emit();
+    return ok({ followUpId: id, connect, kind: allowance.kind });
+  },
+
+  /** Mirrors `updateFollowUp`: newest entry only, previous values kept. */
+  updateFollowUp(
+    leadId: string,
+    followUpId: string,
+    input: {
+      message?: string; callMade?: boolean; callCount?: number;
+      durationSeconds?: number; meetingHeld?: boolean; siteVisit?: boolean; whatsappNote?: string;
+    },
+    actorUid: string,
+    actorEmail: string
+  ): Result<{ connect: boolean }> {
+    const lead = state.leads.find((l) => l.id === leadId);
+    if (!lead) return fail('That lead no longer exists.');
+
+    const entries = state.followUps[leadId] ?? [];
+    const entry = entries.find((f) => f.id === followUpId);
+    if (!entry) return fail('That entry no longer exists.');
+
+    if (lead.latestFollowUpId && lead.latestFollowUpId !== followUpId) {
+      return fail('Only the latest entry can be edited. Older ones are part of the permanent record.');
+    }
+
+    const message = input.message === undefined ? entry.message : input.message.trim();
+    if (!message) return fail('Write what happened before saving.');
+
+    const callMade = input.callMade === undefined ? Boolean(entry.callMade) : Boolean(input.callMade);
+    const callCount = callMade
+      ? Math.max(1, Number(input.callCount === undefined ? entry.callCount : input.callCount) || 1)
+      : 0;
+    const durationSeconds = callMade
+      ? normalizeDurationSeconds(
+          input.durationSeconds === undefined ? entry.durationSeconds : input.durationSeconds
+        )
+      : 0;
+    if (callMade && durationSeconds === 0) {
+      return fail('Enter how long the call lasted — it decides whether this counts as a connect.');
+    }
+
+    const connect = callMade && isConnect(durationSeconds);
+    const meetingHeld = input.meetingHeld === undefined ? Boolean(entry.meetingHeld) : Boolean(input.meetingHeld);
+    const siteVisit = input.siteVisit === undefined ? Boolean(entry.siteVisit) : Boolean(input.siteVisit);
+
+    const revision = {
+      message: entry.message, callMade: Boolean(entry.callMade), callCount: entry.callCount ?? 0,
+      durationSeconds: entry.durationSeconds ?? 0, connect: Boolean(entry.connect),
+      meetingHeld: Boolean(entry.meetingHeld), siteVisit: Boolean(entry.siteVisit),
+      whatsappNote: entry.whatsappNote ?? null,
+      editedByUid: actorUid, editedByEmail: actorEmail, editedAt: now(),
+    };
+
+    state.followUps[leadId] = entries.map((f) =>
+      f.id === followUpId
+        ? {
+            ...f, message, callMade, callCount, durationSeconds, connect, meetingHeld, siteVisit,
+            whatsappNote:
+              input.whatsappNote === undefined ? (f.whatsappNote ?? null) : input.whatsappNote.trim() || null,
+            revisions: [...(f.revisions ?? []), revision],
+            editedAt: now(), editedByUid: actorUid,
+          }
+        : f
+    );
+
+    patchLead(leadId, {
+      lastActivityAt: now(),
+      callCount: (lead.callCount ?? 0) + (callCount - (entry.callCount ?? 0)),
+      connectCount: (lead.connectCount ?? 0) + ((connect ? 1 : 0) - (entry.connect ? 1 : 0)),
+      meetingCount: (lead.meetingCount ?? 0) + ((meetingHeld ? 1 : 0) - (entry.meetingHeld ? 1 : 0)),
+      siteVisitCount: (lead.siteVisitCount ?? 0) + ((siteVisit ? 1 : 0) - (entry.siteVisit ? 1 : 0)),
+      ...(meetingHeld ? { meetingHeld: true } : {}),
+      ...(siteVisit ? { siteVisit: true } : {}),
+    });
+
+    addEvent(leadId, 'FOLLOW_UP_EDITED', actorUid, { followUpId, connect, meetingHeld, siteVisit });
+    emit();
+    return ok({ connect });
+  },
+
+  /**
+   * Mirrors `buildTeamReport` (§4–§6) over the in-memory store.
+   *
+   * Same scoping rules as the server: an admin sees everyone, a manager their
+   * own team, an employee only themselves.
+   */
+  buildTeamReport(from: string, to: string, actorUid: string) {
+    const session = getDemoSession();
+    const role = session?.role ?? 'admin';
+
+    const people = state.employees.filter((employee) => {
+      if (employee.accessRole === 'subadmin') return false;
+      if (role === 'admin') return true;
+      if (role === 'subadmin') return employee.subAdminUid === actorUid;
+      return employee.uid === actorUid;
+    });
+
+    const managerName = new Map(
+      state.employees.filter((e) => e.accessRole === 'subadmin').map((e) => [e.uid, e.name])
+    );
+
+    const rows = people.map((person) => {
+      const row = {
+        uid: person.uid,
+        name: person.name,
+        assignedTo: person.subAdminUid ? (managerName.get(person.subAdminUid) ?? 'Manager') : 'Admin',
+        connects: 0,
+        followUpConnects: 0,
+        meetings: 0,
+        siteVisits: 0,
+        p3: 0,
+        p2: 0,
+        p1: 0,
+      };
+
+      for (const [leadId, entries] of Object.entries(state.followUps)) {
+        const lead = state.leads.find((l) => l.id === leadId);
+        if (!lead || lead.assignedUserId !== person.uid) continue;
+
+        for (const entry of entries) {
+          const day = entry.dayKey ?? '';
+          if (!day || day < from || day > to) continue;
+          if (entry.connect) {
+            // Disjoint, exactly as the server counts them: the first connected
+            // contact is a Connect, every later one a Follow-Up Connect.
+            if (entry.kind === 'REMARK') row.connects += 1;
+            else row.followUpConnects += 1;
+          }
+          if (entry.meetingHeld) row.meetings += 1;
+          if (entry.siteVisit) row.siteVisits += 1;
+        }
+      }
+
+      for (const lead of state.leads) {
+        if (lead.assignedUserId !== person.uid) continue;
+        if (lead.pipelineStageOverride === 'COLD') continue;
+        const stage = stageForStatus(lead.status);
+        if (stage === 'P3') row.p3 += 1;
+        else if (stage === 'P2') row.p2 += 1;
+        else if (stage === 'P1') row.p1 += 1;
+      }
+
+      return row;
+    });
+
+    const totals = rows.reduce(
+      (sum, row) => ({
+        connects: sum.connects + row.connects,
+        followUpConnects: sum.followUpConnects + row.followUpConnects,
+        meetings: sum.meetings + row.meetings,
+        siteVisits: sum.siteVisits + row.siteVisits,
+        p3: sum.p3 + row.p3,
+        p2: sum.p2 + row.p2,
+        p1: sum.p1 + row.p1,
+      }),
+      { connects: 0, followUpConnects: 0, meetings: 0, siteVisits: 0, p3: 0, p2: 0, p1: 0 }
+    );
+
+    return ok({ from, to, rows: rows.sort((a, b) => a.name.localeCompare(b.name)), totals });
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Client folders (§15–§20)                                          */
+  /* ---------------------------------------------------------------- */
+
+  createClientFolder(input: { name: string; description?: string | null }, actorUid: string): Result<{ folderId: string }> {
+    const name = input.name.trim();
+    if (!name) return fail('Give the folder a name.');
+
+    const id = nextId('cf');
+    const session = getDemoSession();
+    state.clientFolders = [
+      ...state.clientFolders,
+      {
+        id,
+        name,
+        description: input.description?.trim() || null,
+        color: null,
+        subAdminUid: session?.role === 'subadmin' ? session.uid : null,
+        leadCount: 0,
+        createdByUid: actorUid,
+        createdByName: session?.name ?? null,
+        createdAt: now(),
+      },
+    ];
+    emit();
+    return ok({ folderId: id });
+  },
+
+  updateClientFolder(folderId: string, input: { name?: string; description?: string | null }): Result {
+    state.clientFolders = state.clientFolders.map((folder) =>
+      folder.id === folderId
+        ? {
+            ...folder,
+            ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+            ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
+          }
+        : folder
+    );
+    emit();
+    return ok(undefined);
+  },
+
+  deleteClientFolder(folderId: string): Result<{ removed: number }> {
+    const removed = state.clientFolderLeads.filter((row) => row.folderId === folderId).length;
+    state.clientFolderLeads = state.clientFolderLeads.filter((row) => row.folderId !== folderId);
+    state.clientFolders = state.clientFolders.filter((folder) => folder.id !== folderId);
+    emit();
+    // The leads themselves are untouched — a folder is a view, not a container.
+    return ok({ removed });
+  },
+
+  addLeadsToClientFolder(folderId: string, leadIds: string[]): Result<{ added: number; alreadyThere: number }> {
+    let added = 0;
+    let alreadyThere = 0;
+
+    for (const leadId of [...new Set(leadIds)]) {
+      const id = `${folderId}__${leadId}`;
+      if (state.clientFolderLeads.some((row) => row.id === id)) {
+        alreadyThere += 1;
+        continue;
+      }
+      const lead = state.leads.find((l) => l.id === leadId);
+      if (!lead) continue;
+
+      state.clientFolderLeads = [
+        { id, folderId, leadId, leadName: lead.name, addedByUid: 'demo-admin', addedAt: now() },
+        ...state.clientFolderLeads,
+      ];
+      added += 1;
+    }
+
+    state.clientFolders = state.clientFolders.map((folder) =>
+      folder.id === folderId ? { ...folder, leadCount: folder.leadCount + added } : folder
+    );
+    emit();
+    return ok({ added, alreadyThere });
+  },
+
+  removeLeadFromClientFolder(folderId: string, leadId: string): Result {
+    const id = `${folderId}__${leadId}`;
+    const existed = state.clientFolderLeads.some((row) => row.id === id);
+    state.clientFolderLeads = state.clientFolderLeads.filter((row) => row.id !== id);
+    if (existed) {
+      state.clientFolders = state.clientFolders.map((folder) =>
+        folder.id === folderId ? { ...folder, leadCount: Math.max(0, folder.leadCount - 1) } : folder
+      );
+    }
+    emit();
+    return ok(undefined);
+  },
+
+  /** Mirrors `reviewColdLead` (§3). */
+  reviewColdLead(leadId: string, verified: boolean, actorUid: string): Result {
+    const lead = state.leads.find((l) => l.id === leadId);
+    if (!lead) return fail('That lead no longer exists.');
+    if (isTerminal(lead.status)) return fail('This lead is already closed.');
+
+    patchLead(leadId, {
+      pipelineStageOverride: verified ? 'COLD' : undefined,
+      coldReviewRequestedAt: undefined,
+    });
+    addEvent(leadId, verified ? 'COLD_VERIFIED' : 'COLD_REVIEW_DISMISSED', actorUid, {
+      followUpCount: lead.followUpCount ?? 0,
     });
     emit();
-    return ok({ followUpId: id, connect });
+    return ok(undefined);
+  },
+
+  /** Mirrors `assignLeadsBulk`: moves the assignment, never copies a lead. */
+  assignLeadsBulk(leadIds: string[], userId: string, actorUid: string): Result<{ assigned: number; skipped: number }> {
+    const employee = state.employees.find((e) => e.uid === userId);
+    if (!employee) return fail('Choose a team member to assign these to.');
+
+    let assigned = 0;
+    let skipped = 0;
+
+    state.leads = state.leads.map((lead) => {
+      if (!leadIds.includes(lead.id)) return lead;
+      if (isTerminal(lead.status) || lead.assignedUserId === userId) {
+        skipped += 1;
+        return lead;
+      }
+      assigned += 1;
+      return {
+        ...lead,
+        assignedUserId: userId,
+        assigneeName: employee.name,
+        subAdminUid: employee.subAdminUid ?? null,
+        assignedAt: now(),
+        acceptedAt: now(),
+        lastActivityAt: now(),
+        status: 'ACCEPTED' as const,
+        distributionMethod: 'MANUAL' as const,
+        acceptDeadlineAt: undefined,
+        attemptedAssignees: [userId],
+        assignedByUid: actorUid,
+      };
+    });
+
+    for (const id of leadIds) addEvent(id, 'BULK_ASSIGNED', actorUid, { newAssignee: userId });
+    emit();
+    return ok({ assigned, skipped });
   },
 
   closeDeal(
@@ -1128,7 +1640,7 @@ export const demo = {
     return ok({ expenseId: id });
   },
 
-  createEmployee(input: { name: string; email: string; password: string; priority: number; jobTitle?: string; status?: 'ACTIVE' | 'DISABLED'; targets?: Partial<KpiTargets>; phone?: string | null; notes?: string | null; joinedAt?: string | null; autoAssign?: boolean; accessRole?: 'employee' | 'subadmin'; subAdminUid?: string | null }): Result<{ uid: string }> {
+  createEmployee(input: { name: string; email: string; password: string; priority: number; jobTitle?: string; status?: 'ACTIVE' | 'DISABLED'; targets?: Partial<KpiTargets>; phone?: string | null; notes?: string | null; joinedAt?: string | null; autoAssign?: boolean; accessRole?: 'employee' | 'subadmin'; subAdminUid?: string | null; managerKind?: 'SALES' | 'HR'; monthlySalary?: number }): Result<{ uid: string }> {
     if (!input.name.trim()) return fail("Enter the employee's name.");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) return fail('Enter a valid email address.');
     if (input.password.length < 8) return fail('The password must be at least 8 characters.');
@@ -1148,6 +1660,8 @@ export const demo = {
       notes: input.notes?.trim() || null,
       joinedAt: input.joinedAt ? ts(new Date(input.joinedAt)) : null,
       ...(input.autoAssign === false ? { autoAssign: false } : {}),
+      ...(input.accessRole === 'subadmin' ? { managerKind: input.managerKind ?? 'SALES' } : {}),
+      monthlySalary: Math.max(0, Math.round(input.monthlySalary ?? 0)),
       autoPriority: true,
       createdAt: now(),
     }];
@@ -1155,7 +1669,7 @@ export const demo = {
     return ok({ uid });
   },
 
-  updateEmployee(uid: string, input: { name?: string; email?: string; password?: string; priority?: number; jobTitle?: string; targets?: Partial<KpiTargets>; phone?: string | null; notes?: string | null; joinedAt?: string | null; autoAssign?: boolean; accessRole?: 'employee' | 'subadmin'; subAdminUid?: string | null }): Result {
+  updateEmployee(uid: string, input: { name?: string; email?: string; password?: string; priority?: number; jobTitle?: string; targets?: Partial<KpiTargets>; phone?: string | null; notes?: string | null; joinedAt?: string | null; autoAssign?: boolean; accessRole?: 'employee' | 'subadmin'; subAdminUid?: string | null; managerKind?: 'SALES' | 'HR'; monthlySalary?: number }): Result {
     if (input.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) return fail('Enter a valid email address.');
     if (input.password && input.password.length < 8) return fail('The password must be at least 8 characters.');
     
@@ -1177,6 +1691,10 @@ export const demo = {
           ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
           ...(input.joinedAt !== undefined
             ? { joinedAt: input.joinedAt ? ts(new Date(input.joinedAt)) : null }
+            : {}),
+          ...(input.managerKind !== undefined ? { managerKind: input.managerKind } : {}),
+          ...(input.monthlySalary !== undefined
+            ? { monthlySalary: Math.max(0, Math.round(input.monthlySalary)) }
             : {}),
           ...(input.autoAssign !== undefined ? { autoAssign: input.autoAssign } : {}),
           // The hierarchy, mirroring the server: promoting somebody to sub
@@ -1417,19 +1935,945 @@ export const demo = {
     return ok(undefined);
   },
 
-  getAttendanceConfig(): Result<{ officeIps: string[]; yourIp: string }> {
+  getAttendanceConfig(): Result<AttendancePolicy & { yourIp: string }> {
     // Demo mode has no request to inspect, so this reports the seeded office
     // address rather than inventing one the admin might then trust.
-    return ok({ officeIps: state.officeIps, yourIp: '198.51.100.7' });
+    return ok({ ...state.attendancePolicy, yourIp: '198.51.100.7' });
   },
 
-  setAttendanceConfig(officeIps: string[]): Result<{ officeIps: string[] }> {
-    for (const ip of officeIps) {
+  setAttendanceConfig(input: Partial<AttendancePolicy>): Result<AttendancePolicy> {
+    const ips = (input.officeIps ?? state.attendancePolicy.officeIps).map(normalizeIp).filter(Boolean);
+    for (const ip of ips) {
       if (!isValidIp(ip)) return fail(`"${ip}" is not a valid IP address.`);
     }
-    state.officeIps = Array.from(new Set(officeIps.map(normalizeIp).filter(Boolean)));
+
+    const next = normalizePolicy({ ...input, officeIps: Array.from(new Set(ips)) }, state.attendancePolicy);
+    if (next.ipRestriction && next.officeIps.length === 0) {
+      return fail(
+        'Add at least one office IP before switching the restriction on, or nobody will be able to check in.'
+      );
+    }
+
+    state.attendancePolicy = next;
     emit();
-    return ok({ officeIps: state.officeIps });
+    return ok(next);
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Leave (§6, §7)                                                    */
+  /* ---------------------------------------------------------------- */
+
+  requestLeave(
+    input: { type: LeaveType; from: string; to: string; reason: string; uid?: string },
+    actorUid: string
+  ): Result<{ requestId: string; days: number }> {
+    const days = leaveDayCount(input.from, input.to);
+    if (days <= 0) return fail('The end date is before the start date.');
+    if (!input.reason.trim()) return fail('Say why — an approver has to decide on something.');
+
+    const forUid = input.uid || actorUid;
+    const employee = state.employees.find((e) => e.uid === forUid);
+    const id = nextId('lv');
+
+    state.leaveRequests = [
+      {
+        id,
+        uid: forUid,
+        employeeName: employee?.name ?? null,
+        subAdminUid: employee?.subAdminUid ?? null,
+        type: input.type,
+        from: input.from,
+        to: input.to,
+        days,
+        reason: input.reason.trim(),
+        // §7 — never approved by the act of submitting.
+        status: 'PENDING',
+        requestedByUid: actorUid,
+        requestedAt: now(),
+        decidedByUid: null,
+        decidedAt: null,
+      },
+      ...state.leaveRequests,
+    ];
+
+    state.notifications = [
+      {
+        id: nextId('n'),
+        type: 'LEAVE_REQUESTED',
+        leadId: '',
+        targetRole: 'admin',
+        payload: {
+          message: `${employee?.name ?? 'An employee'} requested ${days} day${days === 1 ? '' : 's'} of ${LEAVE_TYPE_LABELS[input.type]} (${input.from} → ${input.to}).`,
+        },
+        createdAt: now(),
+        readAt: null,
+      },
+      ...state.notifications,
+    ];
+
+    emit();
+    return ok({ requestId: id, days });
+  },
+
+  decideLeave(
+    requestId: string,
+    decision: 'APPROVED' | 'REJECTED',
+    note: string | undefined,
+    actorUid: string
+  ): Result<{ status: LeaveStatus; days: number }> {
+    const request = state.leaveRequests.find((row) => row.id === requestId);
+    if (!request) return fail('That request no longer exists.');
+    if (request.status !== 'PENDING') {
+      return fail(`This request has already been ${request.status.toLowerCase()}.`);
+    }
+
+    const session = getDemoSession();
+    state.leaveRequests = state.leaveRequests.map((row) =>
+      row.id === requestId
+        ? {
+            ...row,
+            status: decision,
+            decidedByUid: actorUid,
+            decidedByName: session?.name ?? null,
+            decidedAt: now(),
+            decisionNote: note?.trim() || null,
+          }
+        : row
+    );
+
+    // Approving writes the leave days onto attendance, exactly as the server
+    // does — that is what turns the calendar yellow and keeps the absence
+    // sweep off those days.
+    if (decision === 'APPROVED') {
+      for (const dayKey of leaveDayKeys(request.from, request.to)) {
+        const id = `${request.uid}_${dayKey}`;
+        const existing = state.attendance.find((row) => row.id === id);
+        const record = {
+          id,
+          uid: request.uid,
+          dayKey,
+          monthKey: dayKey.slice(0, 7),
+          overrideStatus: 'LEAVE' as AttendanceStatus,
+          overrideNote: `${LEAVE_TYPE_LABELS[request.type]} approved`,
+        };
+        state.attendance = existing
+          ? state.attendance.map((row) => (row.id === id ? { ...row, ...record } : row))
+          : [...state.attendance, record];
+      }
+    }
+
+    state.notifications = [
+      {
+        id: nextId('n'),
+        type: decision === 'APPROVED' ? 'LEAVE_APPROVED' : 'LEAVE_REJECTED',
+        leadId: '',
+        targetRole: 'employee',
+        targetUid: request.uid,
+        payload: {
+          message:
+            decision === 'APPROVED'
+              ? `Your ${LEAVE_TYPE_LABELS[request.type]} for ${request.from} → ${request.to} was approved.`
+              : `Your ${LEAVE_TYPE_LABELS[request.type]} for ${request.from} → ${request.to} was rejected.`,
+        },
+        createdAt: now(),
+        readAt: null,
+      },
+      ...state.notifications,
+    ];
+
+    emit();
+    return ok({ status: decision, days: request.days });
+  },
+
+  cancelLeave(requestId: string): Result {
+    const request = state.leaveRequests.find((row) => row.id === requestId);
+    if (!request) return fail('That request no longer exists.');
+    if (request.status !== 'PENDING') {
+      return fail('Only a request still awaiting a decision can be withdrawn.');
+    }
+
+    state.leaveRequests = state.leaveRequests.map((row) =>
+      row.id === requestId ? { ...row, status: 'CANCELLED' as LeaveStatus } : row
+    );
+    emit();
+    return ok(undefined);
+  },
+
+  getLeaveSummary(uid: string | undefined, year: string | undefined, actorUid: string) {
+    const target = uid || actorUid;
+    const yearKey = (year ?? new Date().toISOString().slice(0, 4)).slice(0, 4);
+
+    const used: Partial<Record<LeaveType, number>> = {};
+    let pendingDays = 0;
+
+    for (const request of state.leaveRequests) {
+      if (request.uid !== target || !request.from.startsWith(yearKey)) continue;
+      if (request.status === 'APPROVED') used[request.type] = (used[request.type] ?? 0) + request.days;
+      else if (request.status === 'PENDING') pendingDays += request.days;
+    }
+
+    return ok({
+      uid: target,
+      year: yearKey,
+      balances: leaveBalances(state.attendancePolicy, used, state.leaveAdjustments[target] ?? {}),
+      pendingDays,
+    });
+  },
+
+  adjustLeaveBalance(uid: string, type: LeaveType, delta: number): Result<{ adjustment: number }> {
+    const step = Math.trunc(delta);
+    if (!step) return fail('Enter how many days to add or remove.');
+
+    const current = state.leaveAdjustments[uid] ?? {};
+    const next = (current[type] ?? 0) + step;
+    state.leaveAdjustments = { ...state.leaveAdjustments, [uid]: { ...current, [type]: next } };
+    emit();
+    return ok({ adjustment: next });
+  },
+
+  /**
+   * Mirrors `getTeamAttendance`. Scoping is the same shape as the server's: an
+   * admin or HR manager sees the whole roster, a Sales manager sees their team.
+   */
+  getTeamAttendance(
+    from: string,
+    to: string,
+    uid: string | undefined,
+    actorUid: string,
+    role: string,
+    managerKind: string | undefined
+  ) {
+    const hr = role === 'admin' || managerKind === 'HR';
+    const roster = state.employees.filter((employee) =>
+      hr ? true : employee.subAdminUid === actorUid || employee.uid === actorUid
+    );
+    const wanted = uid ? roster.filter((employee) => employee.uid === uid) : roster;
+    const nameOf = (target: string | null | undefined) =>
+      target ? (state.employees.find((e) => e.uid === target)?.name ?? null) : null;
+
+    const rows = wanted.map((employee) => {
+      const days = state.attendance
+        .filter((row) => row.uid === employee.uid && row.dayKey >= from && row.dayKey <= to)
+        .sort((a, b) => a.dayKey.localeCompare(b.dayKey))
+        .map((row) => {
+          const minutes = row.workedMinutes ?? 0;
+          const status: AttendanceStatus =
+            row.overrideStatus ??
+            (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt)));
+          const clock = (value: FirestoreTimestamp | undefined) => {
+            const date = value?.toDate?.();
+            return date
+              ? new Intl.DateTimeFormat('en-GB', {
+                  timeZone: 'Asia/Karachi',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: false,
+                }).format(date)
+              : null;
+          };
+
+          return {
+            dayKey: row.dayKey,
+            status,
+            late: Boolean(row.late),
+            lateByMinutes: row.lateByMinutes ?? 0,
+            minutes,
+            network: row.network ?? 'UNKNOWN',
+            checkIn: clock(row.firstActionAt),
+            checkOut: clock(row.lastActionAt),
+            leaveType: row.leaveType ?? null,
+            note: row.overrideNote ?? null,
+            adjusted: Boolean(row.adjustments?.length),
+          };
+        });
+
+      const count = (status: AttendanceStatus) => days.filter((d) => d.status === status).length;
+      const present = count('PRESENT');
+      const late = count('LATE');
+      const halfDay = count('HALF_DAY');
+      const absent = count('ABSENT');
+      const considered = present + late + halfDay + absent;
+      const credited = present + late + halfDay * 0.5;
+
+      return {
+        uid: employee.uid,
+        name: employee.name,
+        email: employee.email ?? null,
+        jobTitle: employee.jobTitle ?? null,
+        subAdminUid: employee.subAdminUid ?? null,
+        managerName: nameOf(employee.subAdminUid),
+        monthlySalary: employee.monthlySalary ?? 0,
+        days,
+        present,
+        late,
+        absent,
+        leave: count('LEAVE'),
+        halfDay,
+        off: count('OFF'),
+        workedMinutes: days.reduce((sum, day) => sum + day.minutes, 0),
+        rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
+        deduction: monthDeductions(late, state.attendancePolicy, employee.monthlySalary ?? 0).total,
+      };
+    });
+
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return ok({ from, to, rows, policy: state.attendancePolicy, companyWide: hr });
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Payroll                                                           */
+  /* ---------------------------------------------------------------- */
+
+  listSalaryProfiles() {
+    return ok({
+      profiles: state.employees.map((employee) => ({
+        uid: employee.uid,
+        name: employee.name,
+        email: employee.email ?? null,
+        jobTitle: employee.jobTitle ?? null,
+        role: employee.accessRole ?? 'employee',
+        ...normalizeSalaryProfile({
+          ...(employee.salaryProfile ?? {}),
+          basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
+        }),
+      })),
+    });
+  },
+
+  saveSalaryProfile(uid: string, input: Partial<SalaryProfile>, actorUid: string) {
+    const employee = state.employees.find((row) => row.uid === uid);
+    if (!employee) return fail('That employee no longer exists.');
+
+    const previous = normalizeSalaryProfile({
+      ...(employee.salaryProfile ?? {}),
+      basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
+    });
+    const next = normalizeSalaryProfile({ ...previous, ...input });
+
+    state.employees = state.employees.map((row) =>
+      row.uid === uid
+        ? {
+            ...row,
+            salaryProfile: next,
+            // One salary figure, shared with the attendance deduction.
+            monthlySalary: next.basic,
+            salaryHistory: [
+              ...(row.salaryHistory ?? []),
+              { at: new Date().toISOString(), byUid: actorUid, from: previous, to: next },
+            ],
+          }
+        : row
+    );
+    emit();
+    return ok({ profile: next });
+  },
+
+  generatePayroll(monthKey: string, actorUid: string) {
+    const month = monthKey.slice(0, 7);
+    if (month > karachiMonthKey()) return fail('That month has not started yet.');
+
+    const existing = state.payrollPeriods[month];
+    if (existing && !isEditable(existing.status)) {
+      return fail(
+        `${month} is ${existing.status.toLowerCase()} and cannot be regenerated. Send it back for review first.`
+      );
+    }
+
+    // Commission comes from the payouts the distribution module wrote — never
+    // recalculated here.
+    const commission = new Map<string, number>();
+    for (const payout of state.payouts) {
+      if (payout.current === false) continue;
+      const stamp = payout.finalizedAt?.toDate?.();
+      if (!stamp) continue;
+      const key = karachiMonthKey(stamp);
+      if (key !== month) continue;
+      commission.set(payout.recipientUid, (commission.get(payout.recipientUid) ?? 0) + payout.amount);
+    }
+
+    const closed = state.attendancePeriods[month];
+    const frozen = new Map(
+      closed?.finalized ? closed.lines.map((line) => [line.uid, line.amount]) : []
+    );
+
+    const lines = state.employees.map((employee) => {
+      const days = state.attendance.filter(
+        (row) => row.uid === employee.uid && row.dayKey.startsWith(month)
+      );
+      const statusOf = (row: (typeof days)[number]): AttendanceStatus =>
+        row.overrideStatus ??
+        (row.late ? 'LATE' : deriveStatus(row.workedMinutes ?? 0, Boolean(row.firstActionAt)));
+
+      const late = days.filter((row) => statusOf(row) === 'LATE').length;
+
+      return buildPayrollLine({
+        uid: employee.uid,
+        name: employee.name,
+        email: employee.email ?? null,
+        jobTitle: employee.jobTitle ?? null,
+        profile: normalizeSalaryProfile({
+          ...(employee.salaryProfile ?? {}),
+          basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
+        }),
+        commission: commission.get(employee.uid) ?? 0,
+        attendanceDeduction:
+          frozen.get(employee.uid) ??
+          monthDeductions(late, state.attendancePolicy, employee.monthlySalary ?? 0).total,
+        lateCount: late,
+        absentCount: days.filter((row) => statusOf(row) === 'ABSENT').length,
+        leaveCount: days.filter((row) => statusOf(row) === 'LEAVE').length,
+        presentCount: days.filter((row) => ['PRESENT', 'HALF_DAY', 'LATE'].includes(statusOf(row))).length,
+      });
+    });
+
+    lines.sort((a, b) => a.name.localeCompare(b.name));
+    const totals = payrollTotals(lines);
+
+    state.payrollPeriods = {
+      ...state.payrollPeriods,
+      [month]: {
+        monthKey: month,
+        status: 'DRAFT',
+        lines,
+        generatedAt: new Date().toISOString(),
+        generatedByUid: actorUid,
+        history: [
+          ...(existing?.history ?? []),
+          {
+            at: new Date().toISOString(),
+            byUid: actorUid,
+            byName: getDemoSession()?.name ?? null,
+            action: existing ? 'REGENERATED' : 'GENERATED',
+            detail: `${lines.length} employees, net ${totals.net}`,
+          },
+        ],
+      },
+    };
+    emit();
+    return ok({ monthKey: month, people: lines.length, net: totals.net });
+  },
+
+  getPayroll(monthKey: string) {
+    const month = monthKey.slice(0, 7);
+    const period = state.payrollPeriods[month];
+
+    if (!period) {
+      return ok({
+        monthKey: month,
+        status: 'DRAFT' as PayrollStatus,
+        lines: [],
+        totals: payrollTotals([]),
+        generatedAt: null,
+        generatedByUid: null,
+        history: [],
+        exists: false,
+      });
+    }
+
+    return ok({ ...period, totals: payrollTotals(period.lines), exists: true });
+  },
+
+  adjustPayrollLine(monthKey: string, uid: string, patch: Partial<PayrollLine>, actorUid: string) {
+    const month = monthKey.slice(0, 7);
+    const period = state.payrollPeriods[month];
+    if (!period) return fail('Generate the payroll for this month first.');
+    if (!isEditable(period.status)) {
+      return fail(
+        `${month} is ${period.status.toLowerCase()}. Send it back for review before changing a figure.`
+      );
+    }
+
+    const index = period.lines.findIndex((line) => line.uid === uid);
+    if (index === -1) return fail('That employee is not on this payroll.');
+
+    const before = period.lines[index];
+    const after = repriceLine(before, patch);
+    const lines = [...period.lines];
+    lines[index] = after;
+
+    state.payrollPeriods = {
+      ...state.payrollPeriods,
+      [month]: {
+        ...period,
+        lines,
+        history: [
+          ...period.history,
+          {
+            at: new Date().toISOString(),
+            byUid: actorUid,
+            byName: getDemoSession()?.name ?? null,
+            action: 'LINE_ADJUSTED',
+            detail: `${before.name}: net ${before.net} → ${after.net}`,
+          },
+        ],
+      },
+    };
+    emit();
+    return ok({ net: after.net });
+  },
+
+  setPayrollStatus(monthKey: string, status: PayrollStatus, actorUid: string) {
+    const month = monthKey.slice(0, 7);
+    const period = state.payrollPeriods[month];
+    if (!period) return fail('Generate the payroll for this month first.');
+
+    if (!canTransition(period.status, status)) {
+      return fail(
+        period.status === 'PAID'
+          ? 'This payroll has been paid. Correct it with an adjustment on the next month rather than rewriting a paid one.'
+          : `A ${period.status.toLowerCase()} payroll cannot go straight to ${status.toLowerCase()}.`
+      );
+    }
+
+    const session = getDemoSession();
+    if (status === 'PAID' && session?.role !== 'admin') {
+      return fail('Only an administrator can mark a payroll as paid.');
+    }
+
+    const wasApproved = period.status === 'APPROVED';
+    state.payrollPeriods = {
+      ...state.payrollPeriods,
+      [month]: {
+        ...period,
+        status,
+        history: [
+          ...period.history,
+          {
+            at: new Date().toISOString(),
+            byUid: actorUid,
+            byName: session?.name ?? null,
+            action: `STATUS_${status}`,
+            detail: `${period.status} → ${status}`,
+          },
+        ],
+      },
+    };
+
+    if (status === 'APPROVED' || status === 'PAID') {
+      const slips = { ...state.payslips };
+      for (const line of period.lines) {
+        const id = `${line.uid}_${month}`;
+        slips[id] = {
+          id,
+          uid: line.uid,
+          monthKey: month,
+          status,
+          line,
+          current: true,
+          approvedAt: new Date().toISOString(),
+          approvedByName: session?.name ?? null,
+        };
+      }
+      state.payslips = slips;
+
+      state.notifications = [
+        ...period.lines.map((line) => ({
+          id: nextId('n'),
+          type: status === 'PAID' ? 'SALARY_PAID' : 'SALARY_APPROVED',
+          leadId: '',
+          targetRole: 'employee' as const,
+          targetUid: line.uid,
+          payload: {
+            message:
+              status === 'PAID'
+                ? `Your salary for ${month} has been paid: Rs ${line.net.toLocaleString('en-PK')}.`
+                : `Your salary slip for ${month} is ready: Rs ${line.net.toLocaleString('en-PK')}.`,
+          },
+          createdAt: now(),
+          readAt: null,
+        })),
+        ...state.notifications,
+      ];
+    }
+
+    if (status === 'REVIEWED' && wasApproved) {
+      // Reopened — the slips stay, marked not current, so what was approved is
+      // still readable after the correction.
+      const slips = { ...state.payslips };
+      for (const line of period.lines) {
+        const id = `${line.uid}_${month}`;
+        if (slips[id]) slips[id] = { ...slips[id], current: false };
+      }
+      state.payslips = slips;
+    }
+
+    emit();
+    return ok({ status });
+  },
+
+  getPayslips(uid: string) {
+    return ok({
+      slips: Object.values(state.payslips)
+        .filter((slip) => slip.uid === uid)
+        .sort((a, b) => b.monthKey.localeCompare(a.monthKey)),
+    });
+  },
+
+  setSalaryAccess(uid: string, granted: boolean): Result {
+    const employee = state.employees.find((row) => row.uid === uid);
+    if (!employee) return fail('That account no longer exists.');
+    if (employee.accessRole !== 'subadmin') {
+      return fail('Salary access is granted to managers, not to employees.');
+    }
+
+    state.employees = state.employees.map((row) =>
+      row.uid === uid ? { ...row, salaryAccess: granted } : row
+    );
+    emit();
+    return ok(undefined);
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Office expenses                                                   */
+  /* ---------------------------------------------------------------- */
+
+  getExpenseCategories() {
+    return ok({
+      categories: [
+        ...new Set([
+          ...DEFAULT_EXPENSE_CATEGORIES,
+          ...state.expenseCategories,
+          ...LEGACY_EXPENSE_CATEGORIES,
+        ]),
+      ],
+      custom: state.expenseCategories,
+    });
+  },
+
+  manageExpenseCategory(action: 'ADD' | 'RENAME' | 'REMOVE', name: string, renameTo?: string) {
+    const label = name.trim();
+    if (!label) return fail('Give the category a name.');
+
+    let next = state.expenseCategories;
+    let moved: number | undefined;
+
+    if (action === 'ADD') {
+      const known = new Set<string>([
+        ...DEFAULT_EXPENSE_CATEGORIES,
+        ...LEGACY_EXPENSE_CATEGORIES,
+        ...state.expenseCategories,
+      ]);
+      if (known.has(label)) return fail(`"${label}" is already a category.`);
+      next = [...state.expenseCategories, label];
+    } else if (action === 'REMOVE') {
+      next = state.expenseCategories.filter((entry) => entry !== label);
+      if (next.length === state.expenseCategories.length) {
+        return fail('Only categories you added can be removed.');
+      }
+    } else {
+      const target = (renameTo ?? '').trim();
+      if (!target) return fail('Give the category its new name.');
+      next = state.expenseCategories.map((entry) => (entry === label ? target : entry));
+      moved = state.expenses.filter((expense) => expense.category === label).length;
+      state.expenses = state.expenses.map((expense) =>
+        expense.category === label ? { ...expense, category: target } : expense
+      );
+    }
+
+    state.expenseCategories = next;
+    emit();
+    return ok({
+      categories: [
+        ...new Set([...DEFAULT_EXPENSE_CATEGORIES, ...next, ...LEGACY_EXPENSE_CATEGORIES]),
+      ],
+      moved,
+    });
+  },
+
+  createOfficeExpense(
+    input: {
+      title: string;
+      category: string;
+      amount: number;
+      date?: string;
+      paidBy?: string;
+      paymentMethod?: string;
+      description?: string;
+      receiptUrl?: string;
+      receiptName?: string;
+      status?: ExpenseStatus;
+    },
+    actorUid: string,
+    actorEmail: string | null
+  ) {
+    const title = input.title.trim();
+    if (!title) return fail('Give the expense a title.');
+    if (!(Number(input.amount) > 0)) return fail('Enter an amount greater than zero.');
+    if (!input.category.trim()) return fail('Choose a category.');
+
+    const dayKey = (input.date ?? '').slice(0, 10) || karachiDayKey();
+    if (dayKey > karachiDayKey()) return fail('The expense date cannot be in the future.');
+
+    const id = nextId('exp');
+    state.expenses = [
+      {
+        id,
+        title,
+        category: input.category.trim(),
+        amount: Math.round(Number(input.amount)),
+        description: input.description?.trim() || null,
+        addedByUid: actorUid,
+        addedByEmail: actorEmail,
+        date: ts(new Date(`${dayKey}T12:00:00+05:00`)),
+        dayKey,
+        status: EXPENSE_STATUSES.includes(input.status as ExpenseStatus)
+          ? (input.status as ExpenseStatus)
+          : 'PENDING',
+        paidBy: input.paidBy?.trim() || null,
+        paymentMethod: input.paymentMethod?.trim() || null,
+        receiptUrl: input.receiptUrl?.trim() || null,
+        receiptName: input.receiptName?.trim() || null,
+      },
+      ...state.expenses,
+    ];
+    emit();
+    return ok({ expenseId: id });
+  },
+
+  updateOfficeExpense(
+    expenseId: string,
+    input: {
+      title: string;
+      category: string;
+      amount: number;
+      date?: string;
+      paidBy?: string;
+      paymentMethod?: string;
+      description?: string;
+      receiptUrl?: string;
+      receiptName?: string;
+    },
+    actorUid: string
+  ): Result {
+    const existing = state.expenses.find((expense) => expense.id === expenseId);
+    if (!existing) return fail('That expense no longer exists.');
+    if (!input.title.trim()) return fail('Give the expense a title.');
+    if (!(Number(input.amount) > 0)) return fail('Enter an amount greater than zero.');
+
+    const dayKey = (input.date ?? '').slice(0, 10) || existing.dayKey || karachiDayKey();
+    state.expenses = state.expenses.map((expense) =>
+      expense.id === expenseId
+        ? {
+            ...expense,
+            title: input.title.trim(),
+            category: input.category.trim(),
+            amount: Math.round(Number(input.amount)),
+            description: input.description?.trim() || null,
+            paidBy: input.paidBy?.trim() || null,
+            paymentMethod: input.paymentMethod?.trim() || null,
+            receiptUrl: input.receiptUrl?.trim() || null,
+            receiptName: input.receiptName?.trim() || null,
+            dayKey,
+            date: ts(new Date(`${dayKey}T12:00:00+05:00`)),
+            updatedByUid: actorUid,
+          }
+        : expense
+    );
+    emit();
+    return ok(undefined);
+  },
+
+  setOfficeExpenseStatus(
+    expenseId: string,
+    status: ExpenseStatus,
+    note: string | undefined,
+    actorUid: string
+  ) {
+    const existing = state.expenses.find((expense) => expense.id === expenseId);
+    if (!existing) return fail('That expense no longer exists.');
+
+    const current = normalizeExpenseStatus(existing.status);
+    if (current === status) return fail(`This expense is already ${status.toLowerCase()}.`);
+
+    const session = getDemoSession();
+    state.expenses = state.expenses.map((expense) =>
+      expense.id === expenseId
+        ? {
+            ...expense,
+            status,
+            decidedByUid: actorUid,
+            decidedByName: session?.name ?? null,
+            decisionNote: note?.trim() || null,
+          }
+        : expense
+    );
+    emit();
+    return ok({ status });
+  },
+
+  deleteOfficeExpense(expenseId: string): Result {
+    const existing = state.expenses.find((expense) => expense.id === expenseId);
+    if (!existing) return fail('That expense no longer exists.');
+    if (normalizeExpenseStatus(existing.status) === 'APPROVED') {
+      return fail(
+        'An approved expense cannot be deleted. Reject it instead — that keeps the record and the reason.'
+      );
+    }
+
+    state.expenses = state.expenses.filter((expense) => expense.id !== expenseId);
+    emit();
+    return ok(undefined);
+  },
+
+  /** Mirrors `finalizeAttendanceDeductions` (§12). */
+  finalizeAttendanceDeductions(monthKey: string, actorUid: string) {
+    const month = monthKey.slice(0, 7);
+    if (month >= karachiMonthKey()) {
+      return fail('Wait until the month is over before closing it.');
+    }
+    if (state.attendancePeriods[month]?.finalized) {
+      return fail(`${month} was already finalised. Reopen it first if the figures need to change.`);
+    }
+
+    const lateCounts = new Map<string, number>();
+    for (const row of state.attendance) {
+      if (!row.dayKey.startsWith(month)) continue;
+      if (!row.late || (row.overrideStatus && row.overrideStatus !== 'LATE')) continue;
+      lateCounts.set(row.uid, (lateCounts.get(row.uid) ?? 0) + 1);
+    }
+
+    const lines = state.employees
+      .map((employee) => {
+        const lateCount = lateCounts.get(employee.uid) ?? 0;
+        const { outcomes, total } = monthDeductions(
+          lateCount,
+          state.attendancePolicy,
+          employee.monthlySalary ?? 0
+        );
+        return {
+          uid: employee.uid,
+          name: employee.name,
+          monthlySalary: employee.monthlySalary ?? 0,
+          lateCount,
+          amount: total,
+          basis: outcomes.filter((outcome) => outcome.deducted).map((outcome) => outcome.basis),
+        };
+      })
+      .filter((line) => line.amount > 0);
+
+    const total = lines.reduce((sum, line) => sum + line.amount, 0);
+    const session = getDemoSession();
+
+    state.attendancePeriods = {
+      ...state.attendancePeriods,
+      [month]: {
+        monthKey: month,
+        finalized: true,
+        finalizedAt: new Date().toISOString(),
+        finalizedByUid: actorUid,
+        finalizedByName: session?.name ?? null,
+        lines,
+        total,
+        policy: state.attendancePolicy,
+      },
+    };
+    emit();
+    return ok({ monthKey: month, total, people: lines.length });
+  },
+
+  reopenAttendancePeriod(monthKey: string): Result {
+    const month = monthKey.slice(0, 7);
+    const period = state.attendancePeriods[month];
+    if (!period?.finalized) return fail(`${month} is not closed.`);
+
+    state.attendancePeriods = {
+      ...state.attendancePeriods,
+      [month]: { ...period, finalized: false },
+    };
+    emit();
+    return ok(undefined);
+  },
+
+  getAttendancePeriod(monthKey: string) {
+    const month = monthKey.slice(0, 7);
+    return ok(
+      state.attendancePeriods[month] ?? {
+        monthKey: month,
+        finalized: false,
+        finalizedAt: null,
+        finalizedByUid: null,
+        finalizedByName: null,
+        lines: [],
+        total: 0,
+        policy: null,
+      }
+    );
+  },
+
+  /** Mirrors `getAttendanceSummary` — one person's month with the working shown. */
+  getAttendanceSummary(uid: string | undefined, monthKey: string | undefined, actorUid: string) {
+    const target = uid || actorUid;
+    const month = (monthKey ?? karachiMonthKey()).slice(0, 7);
+    const employee = state.employees.find((e) => e.uid === target);
+    const policy = state.attendancePolicy;
+
+    let present = 0, late = 0, absent = 0, leave = 0, halfDay = 0, minutesTotal = 0;
+
+    for (const row of state.attendance) {
+      if (row.uid !== target || !row.dayKey.startsWith(month)) continue;
+      const minutes = row.workedMinutes ?? 0;
+      minutesTotal += minutes;
+      const status: AttendanceStatus =
+        row.overrideStatus ?? (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt)));
+      if (status === 'PRESENT') present += 1;
+      else if (status === 'LATE') late += 1;
+      else if (status === 'ABSENT') absent += 1;
+      else if (status === 'LEAVE') leave += 1;
+      else if (status === 'HALF_DAY') halfDay += 1;
+    }
+
+    const considered = present + late + halfDay + absent;
+    const credited = present + late + halfDay * 0.5;
+    const { outcomes, total } = monthDeductions(late, policy, employee?.monthlySalary ?? 0);
+
+    return ok({
+      uid: target,
+      monthKey: month,
+      present,
+      late,
+      absent,
+      leave,
+      halfDay,
+      workedMinutes: minutesTotal,
+      rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
+      deductions: outcomes,
+      deductionTotal: total,
+      rules: {
+        startTime: policy.startTime,
+        graceMinutes: policy.graceMinutes,
+        lateAfter: formatClockValue((parseClock(policy.startTime) ?? 0) + policy.graceMinutes),
+        absentCutoff: policy.absentCutoff,
+        allowedLates: policy.allowedLates,
+        deductionMode: policy.deductionMode,
+        deductionValue: policy.deductionValue,
+        ipRestriction: policy.ipRestriction,
+      },
+    });
+  },
+
+  /** Mirrors `adjustAttendance` — the correction sits beside what happened. */
+  adjustAttendance(
+    uid: string,
+    dayKey: string,
+    change: { status?: AttendanceStatus; late?: boolean; note?: string }
+  ): Result {
+    const id = `${uid}_${dayKey}`;
+    const existing = state.attendance.find((row) => row.id === id);
+    const patch = {
+      id,
+      uid,
+      dayKey,
+      monthKey: dayKey.slice(0, 7),
+      ...(change.status ? { overrideStatus: change.status } : {}),
+      overrideNote: change.note?.trim() || null,
+    };
+
+    state.attendance = existing
+      ? state.attendance.map((row) => (row.id === id ? { ...row, ...patch } : row))
+      : [...state.attendance, patch];
+
+    emit();
+    return ok(undefined);
   },
 
   markNotificationRead(id: string): Result {
@@ -1916,12 +3360,47 @@ export const demo = {
     return ok({ written, duplicates });
   },
 
+  /** Mirrors `promoteDataBankRecords` by running the single path per record. */
+  promoteDataBankRecords: (recordIds: string[], assignedUserId: string, actorUid = 'demo-admin') => {
+    let promoted = 0;
+    let skipped = 0;
+    const leadIds: string[] = [];
+
+    for (const recordId of recordIds) {
+      const result = demo.promoteDataBankRecord(recordId, assignedUserId, actorUid);
+      if (result.ok && 'data' in result) {
+        promoted += 1;
+        leadIds.push(result.data.leadId);
+      } else {
+        skipped += 1;
+      }
+    }
+
+    return ok({ promoted, skipped, leadIds });
+  },
+
   promoteDataBankRecord: (recordId: string, assignedUserId: string, actorUid = 'demo-admin') => {
     const record = state.dataBankRecords.find((r) => r.id === recordId);
     if (!record) return fail('That record no longer exists.');
+    // Employee, manager or the admin themselves (§2). A manager or the admin
+    // gets the lead in their **Client section** rather than the employee lead
+    // area — the server does the same, and the demo has to demonstrate it.
+    const session = getDemoSession();
+    const isSelf = assignedUserId === (session?.uid ?? actorUid);
     const employee = state.employees.find((e) => e.uid === assignedUserId);
-    if (!employee) return fail('Choose a team member to assign this to.');
-    if (employee.status === 'DISABLED') return fail('That employee is paused — resume them or choose someone else.');
+
+    if (!employee && !isSelf) return fail('That account no longer exists.');
+    if (employee?.status === 'DISABLED') {
+      return fail('That employee is paused — resume them or choose someone else.');
+    }
+
+    const targetRole: 'admin' | 'subadmin' | 'employee' = employee
+      ? employee.accessRole === 'subadmin'
+        ? 'subadmin'
+        : 'employee'
+      : (session?.role ?? 'admin');
+    const targetName = employee?.name ?? session?.name ?? 'Admin';
+    const goesToClients = targetRole !== 'employee';
 
     const folder = state.dataBankFolders.find((f) => f.id === record.folderId);
     const labels = new Map((folder?.fields ?? []).map((f) => [f.key, f.label]));
@@ -1944,8 +3423,17 @@ export const demo = {
         status: 'ACCEPTED',
         source: 'DATA_BANK',
         assignedUserId,
+        assigneeName: targetName,
         attemptedAssignees: [assignedUserId],
         distributionMethod: 'MANUAL',
+        dataBankFolderId: record.folderId,
+        dataBankFolderName: folder?.name ?? null,
+        subAdminUid:
+          targetRole === 'subadmin'
+            ? assignedUserId
+            : targetRole === 'admin'
+              ? null
+              : (employee?.subAdminUid ?? null),
         campaignId: null,
         campaignName: null,
         followUpCount: 0,
@@ -1964,9 +3452,13 @@ export const demo = {
         id: nextId('notif'),
         type: 'NEW_LEAD_ASSIGNED',
         leadId,
-        targetRole: 'employee',
+        targetRole,
         targetUid: assignedUserId,
-        payload: { message: `${record.name} has been assigned to you.` },
+        payload: {
+          message: goesToClients
+            ? `${record.name} was added to your ${folder?.name ?? 'client'} folder.`
+            : `${record.name} has been assigned to you.`,
+        },
         createdAt: stamp,
         readAt: null,
       },
@@ -1977,6 +3469,45 @@ export const demo = {
       { id: `${leadId}-e1`, type: 'FORCE_ACCEPTED', actorUid, at: stamp, meta: { assignedTo: assignedUserId } },
     ];
 
+    // §5 — into the recipient's Client section, in a folder mirroring the
+    // source. The id is deterministic, so importing more of the same folder
+    // later lands in the folder that already exists rather than a second copy.
+    if (goesToClients && folder) {
+      const clientFolderId = `db_${assignedUserId}_${folder.id}`;
+      if (!state.clientFolders.some((f) => f.id === clientFolderId)) {
+        state.clientFolders = [
+          {
+            id: clientFolderId,
+            name: folder.name,
+            description: `Imported from the ${folder.name} data bank folder.`,
+            color: null,
+            subAdminUid: targetRole === 'subadmin' ? assignedUserId : null,
+            leadCount: 0,
+            createdByUid: actorUid,
+            createdByName: session?.name ?? null,
+            createdAt: stamp,
+          },
+          ...state.clientFolders,
+        ];
+      }
+
+      state.clientFolderLeads = [
+        {
+          id: `${clientFolderId}__${leadId}`,
+          folderId: clientFolderId,
+          leadId,
+          leadName: record.name,
+          addedByUid: actorUid,
+          addedAt: stamp,
+        },
+        ...state.clientFolderLeads,
+      ];
+
+      state.clientFolders = state.clientFolders.map((f) =>
+        f.id === clientFolderId ? { ...f, leadCount: f.leadCount + 1 } : f
+      );
+    }
+
     // The row leaves the folder — the owner's decision.
     state.dataBankRecords = state.dataBankRecords.filter((r) => r.id !== recordId);
     if (folder) {
@@ -1984,6 +3515,6 @@ export const demo = {
       folder.promotedCount += 1;
     }
     emit();
-    return ok({ leadId });
+    return ok({ leadId, clientFolderId: goesToClients && folder ? `db_${assignedUserId}_${folder.id}` : null });
   },
 };

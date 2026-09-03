@@ -39,7 +39,14 @@ import { RECORDS_PER_PAGE } from "@/hooks/useDataBank";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { WorkspaceEmpty } from "@/components/leads/WorkspaceEmpty";
 import { CursorPager } from "@/components/employees/DossierControls";
+import {
+  buildAssignOptions,
+  describeAssignee,
+  groupAssignOptions,
+  type AssignOption,
+} from "@/lib/assignTargets";
 import { ImportModal } from "./ImportModal";
+import { BulkPromoteBar } from "./BulkPromoteBar";
 import { RecordFormModal } from "./RecordFormModal";
 import {
   ArrowLeft,
@@ -96,9 +103,30 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   // people they may promote a record to.
   const { employees } = useEmployees(wantsData, { role, uid: user?.uid });
 
+  /**
+   * Who a record may go to (§2): employees, managers, and the viewer
+   * themselves. Built here so the row action and the bulk bar cannot offer
+   * different lists.
+   */
+  const assignOptions = useMemo(
+    () =>
+      buildAssignOptions(employees, {
+        uid: user?.uid ?? "",
+        name: user?.email?.split("@")[0] ?? "Me",
+        role: role ?? null,
+      }),
+    [employees, user?.uid, user?.email, role]
+  );
+
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<DataBankStatus | "ALL">("ALL");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /**
+   * The bulk selection (§9). Ids rather than indexes, so a row that scrolls
+   * away or is filtered out stays selected — and so the payload sent to the
+   * server is exactly what the bar counted.
+   */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [importOpen, setImportOpen] = useState(false);
   const [formFor, setFormFor] = useState<{ record: DataBankRecord | null } | null>(null);
   // `href` lets a success message point at where the thing went — a promoted
@@ -113,11 +141,6 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
 
   const page = useDataBankRecords(folderId, { search: query, status, enabled: wantsData });
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
-
-  const activeEmployees = useMemo(
-    () => employees.filter((employee) => employee.status === "ACTIVE"),
-    [employees]
-  );
 
   const afterWrite = (message: string, href?: string) => {
     setBanner({ tone: "success", text: message, href });
@@ -315,6 +338,29 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
           </div>
         )}
 
+        {/* §9 — bulk selection and assignment, above the rows it acts on. */}
+        <div className="px-3.5 pb-2.5">
+          <BulkPromoteBar
+            selected={[...picked]}
+            available={page.records.length}
+            assignOptions={assignOptions}
+            getIdToken={getIdToken}
+            onSelectCount={(n) => {
+              // From the top of what is on screen, in the order shown — "50"
+              // has to mean the first fifty of this search, not fifty rows
+              // from somewhere in a 40,000-row folder.
+              const take = page.records.slice(0, n).map((record) => record.id);
+              setPicked(new Set(take));
+              return take.length;
+            }}
+            onClear={() => setPicked(new Set())}
+            onDone={(message) => {
+              setPicked(new Set());
+              afterWrite(message, "/admin/leads?filter=active");
+            }}
+          />
+        </div>
+
         {/* Rows */}
         <div className="teal-scrollbar flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 pb-5">
           {page.loading ? (
@@ -329,9 +375,26 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
               const seen = isOpened(record.id);
               const shade = ROW_TONES[active ? "selected" : seen ? "opened" : "unopened"];
               const tone = STATUS_TONE[record.status];
+              const ticked = picked.has(record.id);
               return (
+                <div key={record.id} className="flex items-center gap-2">
+                  {/* Outside the row button so ticking does not also open the
+                      record — two different intentions, two targets. */}
+                  <input
+                    type="checkbox"
+                    checked={ticked}
+                    aria-label={`Select ${record.name}`}
+                    onChange={() =>
+                      setPicked((current) => {
+                        const next = new Set(current);
+                        if (next.has(record.id)) next.delete(record.id);
+                        else next.add(record.id);
+                        return next;
+                      })
+                    }
+                    className="h-4 w-4 shrink-0 accent-[#2f7d78]"
+                  />
                 <button
-                  key={record.id}
                   onClick={() => {
                     setSelectedId(record.id);
                     markOpened(record.id);
@@ -344,7 +407,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                     background: shade.background,
                     borderColor: shade.border,
                   }}
-                  className="animate-lead-row grid w-full grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
+                  className="animate-lead-row grid w-full min-w-0 flex-1 grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
                 >
                   <span
                     className="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white text-[13.5px] font-medium text-[#4a5c5a]"
@@ -386,6 +449,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                     </span>
                   </span>
                 </button>
+                </div>
               );
             })
           )}
@@ -418,7 +482,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
             key={selected.id}
             record={selected}
             folder={folder}
-            employees={activeEmployees}
+            assignOptions={assignOptions}
             getIdToken={getIdToken}
             onBack={() => setSelectedId(null)}
             onEdit={() => setFormFor({ record: selected })}
@@ -469,7 +533,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
 function RecordPane({
   record,
   folder,
-  employees,
+  assignOptions,
   getIdToken,
   onBack,
   onEdit,
@@ -478,7 +542,7 @@ function RecordPane({
 }: {
   record: DataBankRecord;
   folder: NonNullable<ReturnType<typeof useDataBankFolder>["folder"]>;
-  employees: Array<{ uid: string; name: string; priority: number }>;
+  assignOptions: AssignOption[];
   getIdToken: () => Promise<string>;
   onBack: () => void;
   onEdit: () => void;
@@ -529,7 +593,7 @@ function RecordPane({
     setBusy(true);
     setError(null);
 
-    const who = employees.find((e) => e.uid === assignee)?.name ?? "the team";
+    const who = describeAssignee(assignOptions, assignee);
     const done = () =>
       onRemoved(`${record.name} is now a lead assigned to ${who}.`, "/admin/leads?filter=active");
 
@@ -768,11 +832,15 @@ function RecordPane({
               aria-label="Assign this lead to"
               className="min-w-[200px] flex-1 rounded-md border border-[#bfe0dc] bg-white px-3 py-2.5 text-[13.5px] text-[#2b3a39] outline-none focus:border-[#4f9c99]"
             >
-              <option value="">Choose a team member…</option>
-              {employees.map((employee) => (
-                <option key={employee.uid} value={employee.uid}>
-                  {employee.name} · P{employee.priority}
-                </option>
+              <option value="">Choose who this goes to…</option>
+              {groupAssignOptions(assignOptions).map((section) => (
+                <optgroup key={section.group} label={section.label}>
+                  {section.options.map((option) => (
+                    <option key={option.uid} value={option.uid}>
+                      {option.label} — {option.hint}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
             <button
@@ -783,11 +851,15 @@ function RecordPane({
               {busy ? "Working…" : "Promote to lead"}
             </button>
           </div>
-          {employees.length === 0 && (
+          {assignOptions.length === 0 && (
             <p className="mt-2 text-[12.5px] text-[#a5762a]">
-              No active employees to assign to — resume someone in the Employee Directory first.
+              Nobody to assign to — resume someone in the Employee Directory first.
             </p>
           )}
+          <p className="mt-2 text-[12px] text-[#3c4d4b]">
+            An employee gets it in their pipeline. A manager, or you, get it in the Client section
+            — in a folder mirroring this one.
+          </p>
         </div>
 
         <button

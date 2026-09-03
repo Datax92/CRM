@@ -14,6 +14,21 @@ export interface ExpenseRecord {
   addedByUid: string;
   addedByEmail?: string | null;
   date?: FirestoreTimestamp;
+  /**
+   * Everything below arrived with the Office Expenses module. All optional:
+   * records written before it have none of them, and an absent `status` reads
+   * as approved — see `lib/officeExpenses`.
+   */
+  dayKey?: string;
+  status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  paidBy?: string | null;
+  paymentMethod?: string | null;
+  receiptUrl?: string | null;
+  receiptName?: string | null;
+  updatedByUid?: string;
+  decidedByUid?: string | null;
+  decidedByName?: string | null;
+  decisionNote?: string | null;
 }
 
 export interface DealCustomer {
