@@ -63,7 +63,7 @@ follow-ups, attendance, payroll and financial reporting.
 - Moving somebody between teams re-stamps their leads and deals in paged batches (`reassignTeamOwnership`) — deliberately not a transaction; a half-finished run leaves stale ownership rather than corruption, and re-running finishes it.
 - **A Manager is not an employee.** Own Add Manager form: no lane priority, no KPI targets, no auto-assign, no job title, no leads. Their analytics are their team's, summed on read (`lib/managerMetrics.ts`) with conversion team-wide (won ÷ handled), never an average of per-person rates. Their lead view is read-only for lead work — the server books follow-ups and deals against the *assigned employee*, so a manager logging one would credit somebody else's KPI.
 - `managerKind` (SALES / HR) rides in the **auth claim**, because the sidebar must know before it can draw. Changing it re-issues the claim and revokes the token. An older manager with no claim reads as SALES.
-- Employees see only their own leads; a sub admin only their team's — enforced in rules *and* server actions. **Every read hook takes a scope for this reason**, not as an optimisation: `useLeads`, `useEmployees`, `useDataBankFolders` and `useFinancials` all add the clause their rule checks, and an unscoped list query is refused outright rather than returning less.
+- Employees see only their own leads; a sub admin only their team's — enforced in rules *and* server actions. **Every read hook takes a scope for this reason**, not as an optimisation: `useLeads`, `useEmployees`, `useDataBankFolders`, `useFinancials` and `useClientFolderMembers` all add the clause their rule checks, and an unscoped list query is refused outright rather than returning less. This has now shipped as a bug three times — the symptom is always a screen that renders with *nothing in it* rather than an error.
 - **The admin directory and a sub admin's Team page are one component** (`DirectoryView`), because two implementations of "the team" drift. Every mutating employee action is `requireAdmin`, so a sub admin gets the same screen with those controls **absent** rather than present and failing.
 
 ## Money
@@ -237,11 +237,14 @@ movement in these numbers as caused by the current work).
 - `npm run deploy:rules` — rules for `leaveRequests`, `configHistory`,
   `attendancePeriods`, `payrollPeriods`, `payslips`, the Clients collections and the
   widened `expenses` read.
-- **Indexes cannot be created by the current service account** (`datastore.indexes.create`
-  denied). ~16 composite indexes and the `followUps.dayKey` **collection-group** override
-  are missing; `npm run check:indexes` lists them. Reports runs its slow fallback until then.
+- **14 composite indexes and the `followUps.dayKey` collection-group override are
+  missing** (`npm run check:indexes` lists them; measured 2026-09-04). Reports runs its
+  slow per-lead fallback until the override lands. **`npm run deploy:indexes` creates all
+  of them** from `firestore.indexes.json` without the Firebase CLI — but the service
+  account must first be granted **Cloud Datastore Index Admin** in Google Cloud IAM, or
+  every call returns `The caller does not have permission`. Runbook §3a has the steps.
 - `/api/cron/mark-absentees` (12:05 PKT) and `/api/cron/recalculate-priorities` (00:30 PKT)
-  need `CRON_SECRET`.
+  need `CRON_SECRET` — currently empty, so both cron routes refuse to run.
 
 **Environment traps:** `.firebaserc` is gitignored, so `deploy:rules` targets whatever
 `firebase use` selected; the runtime project is `leadway-crm` while
@@ -852,3 +855,48 @@ admin simply does not read them.
   `subAdminUid` among its fields. Letting a Sales manager set salaries or move
   people between teams is not something to grant by loosening one guard.
   Granting it means naming the subset of fields a manager may write.
+
+### 2026-09-04 — The empty Client folder, and indexes without the CLI
+
+**A manager's own Client folder rendered with no leads in it.** The folder was
+listed, the count on the card was right, and opening it showed nothing.
+
+`useClientFolderMembers` queried `where('folderId','==',id)` and nothing else,
+but the rule on `clientFolderLeads` is `subAdminUid == request.auth.uid`.
+Firestore checks a **list** query against the rules *before* running it, so a
+query that cannot prove that clause is refused in full — not filtered down.
+Hence a folder whose own document was readable (that query *is* scoped) holding
+rows that were not. Third time this class has shipped; `useFinancials` was the
+second, earlier the same day.
+
+Verified against the live project rather than assumed: the manager's folders and
+every membership row already carried the right `subAdminUid`, and the leads
+behind them were correct. Nothing was wrong with the data — only the read.
+
+**Ordered in memory, deliberately.** The obvious fix adds `subAdminUid` beside
+`folderId` and keeps `orderBy('addedAt')`, which needs a three-field composite
+index that does not exist and that this project cannot currently deploy. Two
+equality filters with **no** `orderBy` are served by the automatic single-field
+indexes, so the query needs nothing new and the rows — already capped at 300 —
+are sorted client-side. A fix that depends on an index nobody can create is not
+a fix.
+
+**Indexes without the Firebase CLI.** `npm run deploy:indexes` reads
+`firestore.indexes.json` and creates what is missing through the Firestore Admin
+REST API with the service account already in `.env.local` — composite indexes by
+`POST`, and **field overrides by `PATCH`**, which is what the console calls
+*Single field → Add exemption* and the only thing that makes a collection-group
+query work. `--dry` lists first; re-running is safe (409 counts as "exists").
+
+Two things it got wrong on the way, both now fixed and worth remembering:
+`updateMask` is a FieldMask and serialises as `?updateMask=indexConfig` — the
+obvious `updateMask.fieldPaths=` is rejected as an unknown parameter; and the
+`PATCH` replaces the field's **whole** `indexConfig`, so all three scopes have to
+be sent together or the ordinary per-collection indexes are dropped.
+
+**It is blocked on one IAM role**, which is the owner's to grant: a Firebase
+service account can read and write documents but cannot manage indexes until it
+has **Cloud Datastore Index Admin**. The script detects the 403 and prints the
+account, the console link and the role name rather than the raw error. Runbook
+§3a covers it, and the report's on-screen warning now names the command instead
+of a console path that is genuinely hard to find.

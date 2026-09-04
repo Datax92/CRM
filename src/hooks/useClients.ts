@@ -54,6 +54,13 @@ export interface ClientFolderMember {
 
 const PAGE = 300;
 
+/** Newest first, from whatever shape the timestamp arrives in. */
+function millisOf(value: FirestoreTimestamp | undefined): number {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  return value.toDate?.()?.getTime() ?? 0;
+}
+
 /**
  * The folders this person may see.
  *
@@ -106,30 +113,53 @@ export function useClientFolders(
   };
 }
 
-/** One folder's membership rows. The leads themselves come from `useLeads`. */
-export function useClientFolderMembers(folderId: string | null, enabled = true) {
+/**
+ * One folder's membership rows. The leads themselves come from `useLeads`.
+ *
+ * **A manager's query carries their own uid**, because the rule for
+ * `clientFolderLeads` is `subAdminUid == request.auth.uid` and Firestore checks
+ * a list query against the rules *before* running it. Scoping only by
+ * `folderId` cannot prove that clause, so the whole query was refused and a
+ * manager opening their own Client folder saw an empty list — the folder was
+ * there, every lead inside it was invisible.
+ *
+ * **Ordered in memory rather than by the query.** Two equality filters with no
+ * `orderBy` are served by Firestore's automatic single-field indexes; adding
+ * `orderBy('addedAt')` would demand a three-field composite index that does not
+ * exist and that this project cannot currently deploy. A folder holds a
+ * bounded number of rows and they are already capped at `PAGE`, so sorting
+ * them here costs nothing and removes the dependency entirely.
+ */
+export function useClientFolderMembers(
+  folderId: string | null,
+  enabled = true,
+  scope?: { role?: string | null; uid?: string }
+) {
   const [state, setState] = useState<{
     key: string;
     members: ClientFolderMember[];
     error: string | null;
   } | null>(null);
   const demoState = useDemoState();
-  const key = enabled && folderId ? folderId : 'idle';
+
+  const ownerOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
+  // A manager with no uid yet would issue the unscoped query and be refused.
+  const waiting = scope?.role === 'subadmin' && !ownerOf;
+  const key = enabled && folderId && !waiting ? `${ownerOf ?? 'admin'}:${folderId}` : 'idle';
 
   useEffect(() => {
     if (IS_DEMO || key === 'idle') return;
 
+    const clauses = [where('folderId', '==', folderId)];
+    if (ownerOf) clauses.push(where('subAdminUid', '==', ownerOf));
+
     const unsubscribe = onSnapshot(
-      query(
-        collection(db, 'clientFolderLeads'),
-        where('folderId', '==', folderId),
-        orderBy('addedAt', 'desc'),
-        limit(PAGE)
-      ),
+      query(collection(db, 'clientFolderLeads'), ...clauses, limit(PAGE)),
       (snap) => {
         setState({
           key,
-          members: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolderMember[],
+          members: (snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolderMember[])
+            .sort((a, b) => millisOf(b.addedAt) - millisOf(a.addedAt)),
           error: null,
         });
       },
@@ -140,12 +170,14 @@ export function useClientFolderMembers(folderId: string | null, enabled = true) 
     );
 
     return () => unsubscribe();
-  }, [key, folderId]);
+  }, [key, folderId, ownerOf]);
 
   if (IS_DEMO) {
     return {
       members: folderId
-        ? (demoState.clientFolderLeads ?? []).filter((row) => row.folderId === folderId)
+        ? (demoState.clientFolderLeads ?? []).filter(
+            (row) => row.folderId === folderId && (!ownerOf || row.subAdminUid === ownerOf)
+          )
         : [],
       loading: false,
       error: null,

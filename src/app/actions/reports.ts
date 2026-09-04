@@ -578,11 +578,15 @@ async function loadEntries(
 
     return {
       entries,
+      // Names the command rather than a console path. The console's
+      // "Single field → Add exemption" screen is genuinely hard to find, and
+      // `npm run deploy:indexes` creates this override and every other missing
+      // index in one go from `firestore.indexes.json`.
       warning:
-        "Running without the followUps.dayKey collection-group index, so this took longer than " +
-        "it should. An administrator can add it in Firestore → Indexes → Single field → " +
-        "Add exemption (collection group: followUps, field: dayKey, Collection group scope: " +
-        "Ascending). The figures below are correct either way.",
+        "These figures are correct, but the report ran the slow way: the " +
+        "followUps.dayKey collection-group index is missing. A developer can create it " +
+        "with `npm run deploy:indexes` — see docs/deployment-runbook.md for the one " +
+        "IAM role that needs granting first.",
     };
   }
 }

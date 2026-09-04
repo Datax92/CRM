@@ -78,6 +78,47 @@ unauthenticated read and write on every collection.
 Index builds take a few minutes on a populated database. Until they finish, the
 dashboard may report that a view needs an index.
 
+### 3a. Indexes without the Firebase CLI
+
+`npm run deploy:rules` needs the Firebase CLI and an interactive login. If it is
+not installed, the service account in `.env.local` can create the indexes on its
+own:
+
+```bash
+npm run deploy:indexes -- --dry   # list what is missing
+npm run deploy:indexes            # create it
+npm run check:indexes             # confirm every one is READY
+```
+
+This reads `firestore.indexes.json` and creates both kinds of thing in it:
+
+- **composite indexes**, and
+- **field overrides** — what the console calls *Single field → Add exemption*.
+  `followUps.dayKey` is the one that matters: Firestore's automatic single-field
+  indexes are **collection-scoped only**, so `collectionGroup('followUps')` has
+  nothing to run on until the override exists, and the Team report falls back to
+  one query per lead and says so on screen.
+
+**It needs one IAM role first**, and the error says so if it is missing —
+`The caller does not have permission`. A Firebase service account can read and
+write documents but cannot manage indexes until you grant it:
+
+> Google Cloud console → **IAM & Admin → IAM** →
+> https://console.cloud.google.com/iam-admin/iam?project=leadway-crm
+>
+> Find `firebase-adminsdk-…@leadway-crm.iam.gserviceaccount.com`, click the
+> pencil, **Add another role** → **Cloud Datastore Index Admin** → **Save**.
+
+That role permits index management and nothing else. Wait a minute for it to
+propagate, then run `npm run deploy:indexes` again.
+
+**Doing it by hand instead.** The console path is *Firestore Database →
+Indexes → Single field* tab → **Add exemption** → collection group `followUps`,
+field path `dayKey`, then tick **Collection group** scope with **Ascending**.
+The tab is easy to miss because it sits beside *Composite* rather than under
+the composite list. The script is the better route when several are missing —
+there are 14 composite indexes owed as well.
+
 ## 4. Remove the demo records from production
 
 An earlier seed script wrote fictional leads, expenses and a fictional deal into

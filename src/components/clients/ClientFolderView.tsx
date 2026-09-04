@@ -37,7 +37,13 @@ export function ClientFolderView({
     role,
     uid: user?.uid,
   });
-  const { members, loading: membersLoading } = useClientFolderMembers(folderId, isManager);
+  // Scoped, for the same reason the folder list is: a manager's membership
+  // query must carry `subAdminUid == me` or the rule refuses it outright and
+  // the folder renders empty.
+  const { members, loading: membersLoading } = useClientFolderMembers(folderId, isManager, {
+    role,
+    uid: user?.uid,
+  });
 
   const folder = folders.find((entry) => entry.id === folderId) ?? null;
 
