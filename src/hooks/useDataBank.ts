@@ -47,8 +47,17 @@ export interface DataBankFolder {
   columnMap?: ColumnMap;
   recordCount: number;
   promotedCount: number;
+  /** Rows handed on to a manager's own Data Bank, and no longer here. */
+  handedOffCount?: number;
   /** The sub admin this folder is assigned to. Absent means admin-only. */
   subAdminUid?: string | null;
+  /**
+   * Set on a manager's mirror of a source folder — the folder those rows
+   * actually came out of. Absent on a folder created here from an import,
+   * which is how the UI tells a mirror from an original.
+   */
+  sourceFolderId?: string | null;
+  sourceFolderName?: string | null;
   createdAt?: FirestoreTimestamp;
 }
 
@@ -360,7 +369,13 @@ function folderFrom(id: string, raw: DocumentData): DataBankFolder {
     columnMap: raw.columnMap ?? {},
     recordCount: typeof raw.recordCount === "number" ? raw.recordCount : 0,
     promotedCount: typeof raw.promotedCount === "number" ? raw.promotedCount : 0,
+    handedOffCount: typeof raw.handedOffCount === "number" ? raw.handedOffCount : 0,
     subAdminUid: typeof raw.subAdminUid === "string" ? raw.subAdminUid : null,
+    // Read out of the snapshot as well as typed — the gap that has shipped
+    // four times on this project is a field declared on the interface and
+    // never mapped here.
+    sourceFolderId: typeof raw.sourceFolderId === "string" ? raw.sourceFolderId : null,
+    sourceFolderName: typeof raw.sourceFolderName === "string" ? raw.sourceFolderName : null,
     createdAt: raw.createdAt,
   };
 }

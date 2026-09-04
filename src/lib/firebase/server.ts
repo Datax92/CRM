@@ -2,6 +2,8 @@ import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getFirestore, initializeFirestore, type Firestore } from "firebase-admin/firestore";
 import { getAuth, type Auth } from "firebase-admin/auth";
 
+const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
+
 function getAdminApp(): App {
   const existing = getApps();
   if (existing.length > 0) {
@@ -24,6 +26,25 @@ function getAdminApp(): App {
         privateKey,
       }),
     });
+  }
+
+  // **No service account.** Falling through to Application Default
+  // Credentials, which exist on Cloud Run / App Engine / a machine with
+  // `gcloud auth application-default login`, and nowhere else — not on Vercel,
+  // and not on a plain dev box.
+  //
+  // Said out loud at startup because of how this fails otherwise: the browser
+  // keeps reading Firestore perfectly (it uses the `NEXT_PUBLIC_*` config and
+  // the user's own token) while every Server Action spends ~3 seconds probing
+  // the metadata server and then fails. That reads as one broken screen on a
+  // slow network, and it is neither.
+  if (!EMULATED) {
+    console.warn(
+      '[firebase-admin] FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY are not set — ' +
+        'falling back to Application Default Credentials. If this is a local machine ' +
+        'or Vercel, every Server Action will fail until they are set in .env.local ' +
+        '(Firebase console → Project settings → Service accounts → Generate new private key).'
+    );
   }
 
   return initializeApp({
@@ -72,7 +93,6 @@ function getAdminApp(): App {
  * the REST path still demands a real access token, so REST cannot talk to the
  * emulator at all.
  */
-const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const PREFER_REST = !EMULATED && process.env.FIREBASE_PREFER_REST !== "false";
 
 let firestore: Firestore | null = null;

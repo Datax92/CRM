@@ -16,11 +16,12 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { MobileDataBankFolders } from "@/components/mobile/MobileDataBank";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useDataBankFolders, type DataBankFolder } from "@/hooks/useDataBank";
+import { useSubAdmins } from "@/hooks/useEmployees";
 import { deleteDataBankFolder } from "@/lib/clientActions";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { FolderFormModal } from "@/components/dataBank/FolderFormModal";
 import { createPortal } from "react-dom";
-import { Database, Plus, Pencil, Trash2, ChevronRight } from "lucide-react";
+import { Database, Plus, Pencil, Trash2, ChevronRight, UserCheck } from "lucide-react";
 
 /**
  * Both managing roles land here.
@@ -44,6 +45,16 @@ export default function DataBankPage() {
     role,
     uid: user?.uid,
   });
+  // Only to name the manager on a handed-over folder. An admin's grid now
+  // shows both the originals and the managers' mirrors of them, and two cards
+  // reading "Facile Town 2" with no way to tell them apart would be worse than
+  // not showing the mirror at all.
+  const { subAdmins } = useSubAdmins(isAdmin && !isMobile);
+  const managerNames = useMemo(
+    () => new Map(subAdmins.map((manager) => [manager.uid, manager.name])),
+    [subAdmins]
+  );
+
   const [formFor, setFormFor] = useState<{ folder: DataBankFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<DataBankFolder | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
@@ -134,6 +145,13 @@ export default function DataBankPage() {
             <FolderCard
               key={folder.id}
               folder={folder}
+              /* A manager reading their own list does not need telling whose
+                 folder it is; only the admin sees more than one owner. */
+              ownerName={
+                isAdmin && folder.subAdminUid
+                  ? (managerNames.get(folder.subAdminUid) ?? "a manager")
+                  : null
+              }
               onEdit={isAdmin ? () => setFormFor({ folder }) : undefined}
               onDelete={isAdmin ? () => setConfirming(folder) : undefined}
             />
@@ -167,10 +185,13 @@ export default function DataBankPage() {
 
 function FolderCard({
   folder,
+  ownerName,
   onEdit,
   onDelete,
 }: {
   folder: DataBankFolder;
+  /** Set when this folder is a manager's mirror — see `ensureManagerFolder`. */
+  ownerName?: string | null;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
@@ -187,6 +208,12 @@ function FolderCard({
               )}
               <span className="truncate text-[16px] text-[#2b3a39]">{folder.name}</span>
             </div>
+            {ownerName && (
+              <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-[#eaf1f6] px-2.5 py-0.5 text-[11px] text-[#4d7590]">
+                <UserCheck size={11} />
+                Handed to {ownerName}
+              </span>
+            )}
             {folder.description && (
               <p className="mt-1 truncate text-[12.5px] text-[#9aacaa]">{folder.description}</p>
             )}
@@ -207,6 +234,16 @@ function FolderCard({
             </div>
             <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Promoted</div>
           </div>
+          {/* Only when some have left. A permanent "0 handed over" column on
+              every folder is noise on the majority that never will. */}
+          {(folder.handedOffCount ?? 0) > 0 && (
+            <div>
+              <div className="text-[24px] tabular-nums text-[#4d7590]">
+                {(folder.handedOffCount ?? 0).toLocaleString()}
+              </div>
+              <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Handed on</div>
+            </div>
+          )}
         </div>
 
         <div className="mt-3.5 flex flex-wrap gap-1.5">

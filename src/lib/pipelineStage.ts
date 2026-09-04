@@ -15,6 +15,10 @@
  * the lead's manager from the follow-up transaction, and a person deciding.
  * `pipelineStageOverride: 'COLD'` is what that decision writes.
  *
+ * **Accepting a lead does not start the band.** A lead sitting at ACCEPTED with
+ * no entries carries no stage at all; writing its Remark is what makes it P3.
+ * See `awaitingFirstEntry`.
+ *
  * So there are three states a lead can be in with respect to Cold:
  *
  * | | `stage.value` | `coldPending` |
@@ -85,6 +89,28 @@ const CLOSED_STATUSES: LeadStatus[] = ['CLOSED_LOST', 'NOT_INTERESTED'];
 /** Nobody has worked these yet, so there is no progress to describe. */
 const INTAKE_STATUSES: LeadStatus[] = ['NEW', 'ASSIGNED', 'UNASSIGNED_NO_CAPACITY'];
 
+/**
+ * Accepting a lead is not progress on it.
+ *
+ * ACCEPTED sits in the P3 band because that is where the conversation starts,
+ * but a lead that has merely landed on somebody's desk has had **nothing done
+ * to it** — and counting it as P3 made every fresh assignment inflate the
+ * pipeline the moment it was handed out. The band begins when the first entry
+ * is written: the Remark.
+ *
+ * So ACCEPTED is a *pending* state — no stage — until an entry exists, and P3
+ * from then on. Every other P3 status is a deliberate act by a person
+ * ("Contacted", "Following up"), so those take the band immediately even if
+ * nobody has typed a note yet.
+ *
+ * Derived, not stored: `followUpCount` is already on every lead, so leads that
+ * exist today classify correctly the moment this ships and there is no
+ * backfill to run and nothing to go stale.
+ */
+export function awaitingFirstEntry(lead: PipelineStageInput): boolean {
+  return lead.status === 'ACCEPTED' && (lead.followUpCount ?? 0) < 1;
+}
+
 export interface PipelineStageInput {
   status: string;
   followUpCount?: number | null;
@@ -135,6 +161,9 @@ export function meetsColdRule(lead: PipelineStageInput): boolean {
  */
 export function autoPipelineStage(lead: PipelineStageInput): PipelineStage | null {
   if (has(CLOSED_STATUSES, lead.status) || has(INTAKE_STATUSES, lead.status)) return null;
+  // Accepted but not yet worked — see `awaitingFirstEntry`. The Remark starts
+  // the band, not the assignment.
+  if (awaitingFirstEntry(lead)) return null;
   return stageForStatus(lead.status);
 }
 
@@ -185,6 +214,9 @@ export function explainPipelineStage(lead: PipelineStageInput): string {
   if (manual) return `Set to ${PIPELINE_STAGE_NAMES[value!]} by hand.`;
   if (has(INTAKE_STATUSES, lead.status)) {
     return 'Not worked yet — the stage starts once someone takes the lead.';
+  }
+  if (awaitingFirstEntry(lead)) {
+    return 'Accepted, not yet worked. Adding the first Remark moves this lead to P3.';
   }
 
   if (coldPending) {

@@ -50,6 +50,7 @@ import {
   type DossierFilters,
 } from "@/components/employees/directoryChrome";
 import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "@/components/employees/AnalyticsPanels";
+import { countByFilter } from "@/lib/leadBuckets";
 import { DossierFilterBar, Pager } from "@/components/employees/DossierControls";
 
 /** Roster cards, and rows inside a profile tab, per page. */
@@ -58,7 +59,8 @@ const PROFILE_PAGE_SIZE = 6;
 import { MobileHeader, HeaderCircle } from "./mobileChrome";
 import { AccountButton } from "./MobileAccount";
 import { MobileBody, useMobileCentre } from "./MobileShell";
-import { Sheet, SheetAction } from "./MobileLeadDetail";
+import { MobileLeadDetail, Sheet, SheetAction } from "./MobileLeadDetail";
+import { useAuth } from "@/context/AuthContext";
 import { ManagerFormModal } from "@/components/employees/ManagerFormModal";
 import { buildAllManagerMetrics } from "@/lib/managerMetrics";
 import type { DataBankFolder } from "@/hooks/useDataBank";
@@ -105,6 +107,7 @@ export function MobileEmployees({
   onSaved,
   onRecalculate,
   recalculating,
+  canManage = true,
 }: {
   metrics: EmployeeMetrics[];
   rows: EmployeeMetrics[];
@@ -128,6 +131,12 @@ export function MobileEmployees({
   onSaved: (message: string) => void;
   onRecalculate: () => void;
   recalculating: boolean;
+  /**
+   * Whether this reader may change anything. False for a sub admin: every
+   * mutating employee action is `requireAdmin` on the server, so the controls
+   * are absent rather than present-and-failing. Reading is identical.
+   */
+  canManage?: boolean;
 }) {
   /** `undefined` closed, `null` creating, an employee editing. */
   const [formFor, setFormFor] = useState<EmployeeMetrics | null | undefined>(undefined);
@@ -145,10 +154,12 @@ export function MobileEmployees({
   // regresses for them.
   const centre: CentreAction = useMemo(
     () =>
-      view === "managers"
-        ? { kind: "add", onPress: () => setManagerFormFor(null), label: "Add a manager" }
-        : { kind: "add", onPress: () => setFormFor(null), label: "Add an employee" },
-    [view]
+      !canManage
+        ? null
+        : view === "managers"
+          ? { kind: "add", onPress: () => setManagerFormFor(null), label: "Add a manager" }
+          : { kind: "add", onPress: () => setFormFor(null), label: "Add an employee" },
+    [view, canManage]
   );
   useMobileCentre(centre);
 
@@ -231,6 +242,10 @@ export function MobileEmployees({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            {/* Both are `requireAdmin` on the server — absent, not disabled.
+                The account button stays: everyone needs a way out. */}
+            {canManage && (
+              <>
             <HeaderCircle onClick={openAddForm} label={addLabel}>
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
                 <path d="M12 5v14M5 12h14" />
@@ -251,6 +266,8 @@ export function MobileEmployees({
                 <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" />
               </svg>
             </HeaderCircle>
+              </>
+            )}
             <AccountButton initial={accountInitial} />
           </div>
         </div>
@@ -435,7 +452,9 @@ export function MobileEmployees({
         {notice && <MobileNotice tone="success" text={notice} onDismiss={onDismissNotice} />}
 
         {/* Named, not just a plus. On the Managers view especially, an icon
-            alone does not say what it would create. */}
+            alone does not say what it would create. Admin only — the server
+            refuses the write for anyone else. */}
+        {canManage && (
         <button
           type="button"
           onClick={openAddForm}
@@ -464,6 +483,7 @@ export function MobileEmployees({
           </svg>
           {view === "managers" ? "Add Manager" : "Add Employee"}
         </button>
+        )}
 
         {view === "people" ? (
           <>
@@ -502,10 +522,14 @@ export function MobileEmployees({
                 manager={manager}
                 folders={folders.filter((folder) => folder.subAdminUid === manager.uid).length}
                 index={index}
-                onEdit={() => {
-                  const record = subAdmins.find((person) => person.uid === manager.uid) ?? null;
-                  setManagerFormFor(record);
-                }}
+                onEdit={
+                  canManage
+                    ? () => {
+                        const record = subAdmins.find((person) => person.uid === manager.uid) ?? null;
+                        setManagerFormFor(record);
+                      }
+                    : undefined
+                }
               />
             ))}
 
@@ -535,10 +559,14 @@ export function MobileEmployees({
           leads={leads}
           deals={deals}
           onClose={() => onSelect(null)}
-          onEdit={() => {
-            onSelect(null);
-            setFormFor(selected);
-          }}
+          onEdit={
+            canManage
+              ? () => {
+                  onSelect(null);
+                  setFormFor(selected);
+                }
+              : undefined
+          }
         />
       )}
 
@@ -593,7 +621,8 @@ function ManagerCard({
   manager: ReturnType<typeof buildAllManagerMetrics>[number];
   folders: number;
   index: number;
-  onEdit: () => void;
+  /** Absent for a sub admin — editing is `requireAdmin` on the server. */
+  onEdit?: () => void;
 }) {
   return (
     <div
@@ -656,6 +685,7 @@ function ManagerCard({
           </div>
         </div>
 
+        {onEdit && (
         <button
           type="button"
           onClick={onEdit}
@@ -676,6 +706,7 @@ function ManagerCard({
         >
           Edit
         </button>
+        )}
       </div>
 
       <div
@@ -912,10 +943,23 @@ function ProfileOverlay({
   leads: Lead[];
   deals: DealRecord[];
   onClose: () => void;
-  onEdit: () => void;
+  /** Absent for a sub admin — editing is `requireAdmin` on the server. */
+  onEdit?: () => void;
 }) {
+  // Read from the context rather than threaded down: the directory is already
+  // behind a role guard, and the lead sheet needs both of these.
+  const { role, getIdToken } = useAuth();
+  const viewerRole: "admin" | "subadmin" | "employee" =
+    role === "admin" || role === "subadmin" ? role : "employee";
+
   const [tab, setTab] = useState<ProfileTab>("leads");
   const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
+  /**
+   * The lead being read. `MobileLeadDetail` is the phone's equivalent of the
+   * desktop dossier's `LeadDetailPane` — the same document, the same actions,
+   * so a lead opened from here is not a summary of the one in the pipeline.
+   */
+  const [openLead, setOpenLead] = useState<Lead | null>(null);
 
   const ownLeads = useMemo(
     () =>
@@ -937,6 +981,18 @@ function ProfileOverlay({
   // The filters cut the tab bodies only — the hero figures keep describing the
   // employee's whole record, exactly as on the desktop dossier.
   const shownLeads = useMemo(() => applyLeadFilters(ownLeads, filters), [ownLeads, filters]);
+  /**
+   * How many leads sit under each cut, within the chosen period.
+   *
+   * Counted on the period-filtered list rather than the whole record, so the
+   * numbers on the chips are the numbers the chips will produce. `countByFilter`
+   * is the same function the leads workspace counts with.
+   */
+  const cutCounts = useMemo(
+    () => countByFilter(applyLeadFilters(ownLeads, { ...filters, cut: "ALL" })),
+    [ownLeads, filters]
+  );
+
   const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters.period), [ownDeals, filters.period]);
   const shownActivity = useMemo(
     () => applyActivityPeriod(activity, filters.period),
@@ -947,14 +1003,17 @@ function ProfileOverlay({
   const dealPages = usePagination(shownDeals, PROFILE_PAGE_SIZE);
   const activityPages = usePagination(shownActivity, PROFILE_PAGE_SIZE);
 
-  // The hardware back gesture should leave the profile, not the directory.
+  // The hardware back gesture should leave the profile, not the directory —
+  // and should close an open lead before it closes the profile behind it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (openLead) setOpenLead(null);
+      else onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, openLead]);
 
   return (
     <div
@@ -991,11 +1050,16 @@ function ProfileOverlay({
           <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", opacity: 0.82 }}>
             Employee
           </span>
-          <HeaderCircle onClick={onEdit} label="Edit this employee" size={36}>
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
-              <path d="M4 20h4l11-11-4-4L4 16v4Z" />
-            </svg>
-          </HeaderCircle>
+          {onEdit ? (
+            <HeaderCircle onClick={onEdit} label="Edit this employee" size={36}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <path d="M4 20h4l11-11-4-4L4 16v4Z" />
+              </svg>
+            </HeaderCircle>
+          ) : (
+            // Keeps the title centred between the back button and this slot.
+            <span style={{ width: 36, flexShrink: 0 }} aria-hidden />
+          )}
         </div>
 
         <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 14, marginTop: 16 }}>
@@ -1169,9 +1233,14 @@ function ProfileOverlay({
                 filters={filters}
                 onChange={setFilters}
                 variant="mobile"
+                counts={cutCounts}
                 countLine={`${shownLeads.length} / ${ownLeads.length}`}
               />
-              <MobileAssignedLeads leads={leadPages.items} empty={ownLeads.length === 0} />
+              <MobileAssignedLeads
+                leads={leadPages.items}
+                empty={ownLeads.length === 0}
+                onOpen={setOpenLead}
+              />
               <Pager pagination={leadPages} variant="mobile" noun="leads" />
             </>
           )}
@@ -1210,11 +1279,41 @@ function ProfileOverlay({
           )}
         </div>
       </MobileBody>
+
+      {openLead && (
+        <MobileLeadDetail
+          key={openLead.id}
+          /* Resolved against the live list rather than the captured object, so
+             a status change made inside the sheet is reflected behind it. */
+          lead={leads.find((row) => row.id === openLead.id) ?? openLead}
+          onClose={() => setOpenLead(null)}
+          userRole={viewerRole}
+          getIdToken={getIdToken}
+          assigneeName={employee.name}
+        />
+      )}
     </div>
   );
 }
 
-function MobileAssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }) {
+/**
+ * The employee's leads, each opening the **full lead record** — the same
+ * `MobileLeadDetail` the pipeline uses, on the same document.
+ *
+ * These cards were previously inert, so a manager on a phone could see that a
+ * lead existed and could not read a word of its history; on the desktop the
+ * same row has always opened `LeadDetailPane`. That was the gap, not a
+ * deliberate simplification.
+ */
+function MobileAssignedLeads({
+  leads,
+  empty,
+  onOpen,
+}: {
+  leads: Lead[];
+  empty: boolean;
+  onOpen: (lead: Lead) => void;
+}) {
   if (leads.length === 0) {
     return (
       <EmptyPanel>
@@ -1233,9 +1332,23 @@ function MobileAssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }
         // Same helper the leads list and the deal record use.
         const source = describeLeadSource(lead);
         return (
-          <div
+          <button
             key={lead.id}
-            style={{ background: "#fff", border: `1px solid ${E.border}`, borderRadius: 18, padding: "14px 15px" }}
+            type="button"
+            className="mob-press"
+            onClick={() => onOpen(lead)}
+            style={{
+              background: "#fff",
+              border: `1px solid ${E.border}`,
+              borderRadius: 18,
+              padding: "14px 15px",
+              textAlign: "left",
+              width: "100%",
+              cursor: "pointer",
+              WebkitTapHighlightColor: "transparent",
+              font: "inherit",
+              color: "inherit",
+            }}
           >
             <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) auto", alignItems: "center", gap: 12 }}>
               <div
@@ -1307,7 +1420,7 @@ function MobileAssignedLeads({ leads, empty }: { leads: Lead[]; empty: boolean }
             >
               {lead.campaignName ? `${source} · ${lead.campaignName}` : source}
             </div>
-          </div>
+          </button>
         );
       })}
     </div>

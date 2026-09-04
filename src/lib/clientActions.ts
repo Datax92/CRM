@@ -33,8 +33,10 @@ import {
   importDataBankRows as _importDataBankRows,
   promoteDataBankRecord as _promoteDataBankRecord,
   promoteDataBankRecords as _promoteDataBankRecords,
+  assignRecordsToManager as _assignRecordsToManager,
   type FolderInput,
   type ImportChunkResult,
+  type HandoffResult,
 } from '@/app/actions/dataBank';
 import type { ColumnMap, DataBankStatus } from '@/lib/dataBank';
 import {
@@ -549,6 +551,24 @@ export async function promoteDataBankRecords(
   return _promoteDataBankRecords(token, recordIds, assignedUserId);
 }
 
+/**
+ * Hands cold records to a manager's own Data Bank rather than promoting them.
+ *
+ * A manager is given rows to *distribute*, not a lead to work, so this is a
+ * different operation from promotion and deliberately has its own name — the
+ * Data Bank surfaces pick between the two from the chosen recipient's group.
+ */
+export async function assignRecordsToManager(
+  token: string,
+  recordIds: string[],
+  managerUid: string
+): Promise<ActionResult<HandoffResult>> {
+  if (IS_DEMO) return demo.assignRecordsToManager(recordIds, managerUid, actor().uid);
+  return _assignRecordsToManager(token, recordIds, managerUid);
+}
+
+export type { HandoffResult } from '@/app/actions/dataBank';
+
 /** Re-exported so existing client imports from '@/lib/clientActions' keep working. */
 export { EXPENSE_CATEGORIES, PAYMENT_METHODS, RECEIVABLE_SIZES } from '@/lib/constants';
 
@@ -562,13 +582,14 @@ export { EXPENSE_CATEGORIES, PAYMENT_METHODS, RECEIVABLE_SIZES } from '@/lib/con
 export async function buildTeamReport(
   token: string,
   from: string,
-  to: string
+  to: string,
+  subject?: string | null
 ): Promise<ActionResult<TeamReport>> {
-  if (IS_DEMO) return demo.buildTeamReport(from, to, actor().uid);
-  return _buildTeamReport(token, from, to);
+  if (IS_DEMO) return demo.buildTeamReport(from, to, actor().uid, subject);
+  return _buildTeamReport(token, from, to, subject);
 }
 
-export type { TeamReport, ReportRow } from '@/app/actions/reports';
+export type { TeamReport, ReportRow, ReportOption } from '@/app/actions/reports';
 
 /* -------------------------------------------------------------------------- */
 /* Client folders — a view over existing leads, never a copy of them           */

@@ -42,7 +42,12 @@ import { formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
 import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
 import { initialsOf } from "@/lib/leadDisplay";
-import { pipelineStage, explainPipelineStage, PIPELINE_STAGE_LABELS } from "@/lib/pipelineStage";
+import {
+  pipelineStage,
+  awaitingFirstEntry,
+  explainPipelineStage,
+  PIPELINE_STAGE_LABELS,
+} from "@/lib/pipelineStage";
 import { STAGE_TONES, StageIcon } from "@/components/leads/StageChrome";
 import { KycPanel } from "@/components/leads/KycPanel";
 import { describeLeadSource } from "@/lib/leadSource";
@@ -572,6 +577,26 @@ export function MobileLeadDetail({
             <div style={{ ...FIELD_LABEL, gap: 8 }}>
               <span>Pipeline Stage</span>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                {/* Accepted but not yet worked. Saying nothing would leave the
+                    rep wondering why the lead has no band. */}
+                {awaitingFirstEntry(lead) && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      borderRadius: 999,
+                      border: `1px solid ${M.cardBorder}`,
+                      background: M.tealTint,
+                      padding: "8px 13px",
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      color: M.body,
+                    }}
+                  >
+                    Not started — add the first Remark to reach P3
+                  </span>
+                )}
+
                 {stage.value && (
                   <span
                     style={{

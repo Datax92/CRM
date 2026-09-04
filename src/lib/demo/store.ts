@@ -45,11 +45,16 @@ import {
   type LeaveStatus,
   type LeaveType,
 } from '@/lib/attendancePolicy';
-import { isTerminal, stageForStatus, type LeadStatus } from '@/lib/leadStatus';
+import { isTerminal, type LeadStatus } from '@/lib/leadStatus';
 import type { DistributionLine } from '@/lib/profitDistribution';
 import { calculateDistribution, type DistributionShare } from '@/lib/profitDistribution';
 import { validateKyc, leadPatchFromKyc, type KycValues } from '@/lib/kyc';
-import { PIPELINE_STAGES, meetsColdRule, type PipelineStage } from '@/lib/pipelineStage';
+import { PIPELINE_STAGES, meetsColdRule, pipelineStage, type PipelineStage } from '@/lib/pipelineStage';
+import {
+  ALL_EMPLOYEES, ALL_MANAGERS, blankMetrics, describeSubject, parseSubject, rowsForSubject,
+  shortId, sumMetrics, teamLabel, type ReportPerson,
+} from '@/lib/reportScope';
+import type { ReportOption } from '@/app/actions/reports';
 import { entryAllowance } from '@/lib/followUpKind';
 import { ADMIN_ASSIGN_WINDOW_MS, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
@@ -157,6 +162,77 @@ function ts(date: Date) {
     seconds: Math.floor(date.getTime() / 1000),
   };
 }
+/**
+ * The report selector, mirroring `buildOptions` on the server.
+ *
+ * Kept beside the demo report rather than shared with the action: the action
+ * is a `"use server"` module, so importing a value out of it into client code
+ * would drag the Admin SDK into the browser bundle.
+ */
+function demoReportOptions(people: ReportPerson[], viewerUid: string): ReportOption[] {
+  const employees = people.filter((person) => person.role === 'employee');
+  const managers = people.filter((person) => person.role === 'subadmin');
+  const admins = people.filter((person) => person.role === 'admin');
+  const options: ReportOption[] = [];
+
+  if (employees.length > 1) {
+    options.push({
+      value: ALL_EMPLOYEES,
+      label: 'All Employees',
+      group: 'OVERALL',
+      hint: `Combined performance of ${employees.length} employees`,
+    });
+  }
+  // Only when there is more than one team. With a single manager "All
+  // Managers" and selecting that manager produce identical figures, and two
+  // options that do the same thing read as though they do not.
+  if (managers.length > 1) {
+    options.push({
+      value: ALL_MANAGERS,
+      label: 'All Managers',
+      group: 'OVERALL',
+      hint: 'Every manager, each including their own team',
+    });
+  }
+  for (const person of employees) {
+    options.push({
+      value: person.uid,
+      label: person.name,
+      group: 'EMPLOYEES',
+      hint: person.uid === viewerUid ? 'You' : undefined,
+    });
+  }
+  for (const person of managers) {
+    options.push({
+      value: person.uid,
+      label: person.name,
+      group: 'MANAGERS',
+      hint: person.uid === viewerUid ? 'You — with your team' : 'Includes their team',
+    });
+  }
+  for (const person of admins) {
+    options.push({
+      value: person.uid,
+      label: person.uid === viewerUid ? `${person.name} (You)` : person.name,
+      group: 'ADMIN',
+      hint: "The admin's own activity",
+    });
+  }
+
+  if (options.length === 0 && people.length > 0) {
+    options.push({ value: people[0].uid, label: people[0].name, group: 'EMPLOYEES' });
+  }
+  return options;
+}
+
+/** Whatever a demo record holds for a date — Timestamp, Date or ISO — as a Date. */
+function toDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') return new Date(value);
+  const stamp = (value as { toDate?: () => Date } | null | undefined)?.toDate?.();
+  return stamp ?? new Date(0);
+}
+
 const minutesFromNow = (n: number) => ts(new Date(Date.now() + n * 60_000));
 const hoursAgo = (n: number) => ts(new Date(Date.now() - n * 3_600_000));
 const daysAgo = (n: number) => ts(new Date(Date.now() - n * 86_400_000));
@@ -958,7 +1034,15 @@ export const demo = {
     const lead = state.leads.find((l) => l.id === leadId);
     if (!lead) return fail('That lead no longer exists.');
     if (lead.status === 'ASSIGNED') return fail('Accept this lead before updating its status.');
-    patchLead(leadId, { status });
+    patchLead(leadId, {
+      status,
+      // Stamped one-way the first time token money arrives — the status moves
+      // on to Deal Closed, the fact that a token was taken does not. Mirrors
+      // the server so the report counts the same thing in both modes.
+      ...(status === 'TOKEN_RECEIVED' && !lead.tokenReceivedAt
+        ? { tokenReceived: true, tokenReceivedAt: ts(new Date()) }
+        : {}),
+    });
     addEvent(leadId, 'STATUS_CHANGED', actorUid, { from: lead.status, to: status });
     emit();
     return ok(undefined);
@@ -1330,84 +1414,115 @@ export const demo = {
   },
 
   /**
-   * Mirrors `buildTeamReport` (§4–§6) over the in-memory store.
-   *
-   * Same scoping rules as the server: an admin sees everyone, a manager their
-   * own team, an employee only themselves.
+   * Mirrors `buildTeamReport` over the in-memory store — same subjects, same
+   * columns, same no-double-counting rule, so demo mode and the live project
+   * cannot disagree about what a report means.
    */
-  buildTeamReport(from: string, to: string, actorUid: string) {
+  buildTeamReport(from: string, to: string, actorUid: string, subjectId?: string | null) {
     const session = getDemoSession();
     const role = session?.role ?? 'admin';
 
-    const people = state.employees.filter((employee) => {
-      if (employee.accessRole === 'subadmin') return false;
-      if (role === 'admin') return true;
-      if (role === 'subadmin') return employee.subAdminUid === actorUid;
-      return employee.uid === actorUid;
-    });
+    const people: ReportPerson[] = state.employees
+      .map((employee) => ({
+        uid: employee.uid,
+        name: employee.name,
+        role: (employee.accessRole === 'subadmin' ? 'subadmin' : 'employee') as ReportPerson['role'],
+        subAdminUid: employee.subAdminUid ?? null,
+      }))
+      .filter((person) => {
+        if (role === 'admin') return true;
+        if (role === 'subadmin') return person.uid === actorUid || person.subAdminUid === actorUid;
+        return person.uid === actorUid;
+      });
 
-    const managerName = new Map(
-      state.employees.filter((e) => e.accessRole === 'subadmin').map((e) => [e.uid, e.name])
+    // The admin is a subject like anybody else — their own activity.
+    if (role === 'admin') {
+      const admin = DEMO_ACCOUNTS.find((account) => account.role === 'admin');
+      if (admin && !people.some((person) => person.uid === admin.uid)) {
+        people.push({ uid: admin.uid, name: admin.name, role: 'admin', subAdminUid: null });
+      }
+    }
+
+    const options = demoReportOptions(people, actorUid);
+    const valid = new Set(options.map((option) => option.value));
+    let subject = parseSubject(subjectId);
+    if (!valid.has(subject.id)) subject = parseSubject(options[0]?.value ?? ALL_EMPLOYEES);
+
+    const subjectPeople = rowsForSubject(people, subject);
+    const managerNames = new Map(
+      people.filter((person) => person.role === 'subadmin').map((person) => [person.uid, person.name])
     );
 
-    const rows = people.map((person) => {
-      const row = {
-        uid: person.uid,
-        name: person.name,
-        assignedTo: person.subAdminUid ? (managerName.get(person.subAdminUid) ?? 'Manager') : 'Admin',
-        connects: 0,
-        followUpConnects: 0,
-        meetings: 0,
-        siteVisits: 0,
-        p3: 0,
-        p2: 0,
-        p1: 0,
-      };
+    const rows = subjectPeople.map((person) => {
+      const metrics = blankMetrics();
 
       for (const [leadId, entries] of Object.entries(state.followUps)) {
-        const lead = state.leads.find((l) => l.id === leadId);
+        const lead = state.leads.find((row) => row.id === leadId);
         if (!lead || lead.assignedUserId !== person.uid) continue;
 
         for (const entry of entries) {
           const day = entry.dayKey ?? '';
           if (!day || day < from || day > to) continue;
           if (entry.connect) {
-            // Disjoint, exactly as the server counts them: the first connected
-            // contact is a Connect, every later one a Follow-Up Connect.
-            if (entry.kind === 'REMARK') row.connects += 1;
-            else row.followUpConnects += 1;
+            if (entry.kind === 'REMARK') metrics.newConnects += 1;
+            else metrics.followUpConnects += 1;
           }
-          if (entry.meetingHeld) row.meetings += 1;
-          if (entry.siteVisit) row.siteVisits += 1;
+          if (entry.meetingHeld) metrics.meetings += 1;
+          if (entry.siteVisit) metrics.siteVisits += 1;
         }
       }
 
       for (const lead of state.leads) {
         if (lead.assignedUserId !== person.uid) continue;
-        if (lead.pipelineStageOverride === 'COLD') continue;
-        const stage = stageForStatus(lead.status);
-        if (stage === 'P3') row.p3 += 1;
-        else if (stage === 'P2') row.p2 += 1;
-        else if (stage === 'P1') row.p1 += 1;
+
+        const stage = pipelineStage(lead).value;
+        if (stage === 'P3') metrics.p3 += 1;
+        else if (stage === 'P2') metrics.p2 += 1;
+        else if (stage === 'P1') metrics.p1 += 1;
+
+        const tokenDay = lead.tokenReceivedAt ? karachiDayKey(toDate(lead.tokenReceivedAt)) : null;
+        if (tokenDay && tokenDay >= from && tokenDay <= to) metrics.tokensReceived += 1;
+        else if (!tokenDay && lead.status === 'TOKEN_RECEIVED') metrics.tokensReceived += 1;
       }
 
-      return row;
+      for (const deal of state.deals) {
+        if (deal.userId !== person.uid) continue;
+        const day = karachiDayKey(toDate(deal.dealDate ?? deal.enteredAt));
+        if (day >= from && day <= to) metrics.dealsClosed += 1;
+      }
+
+      return {
+        uid: person.uid,
+        id: shortId(person.uid),
+        name: person.name,
+        role: person.role,
+        team: teamLabel(person, managerNames),
+        ...metrics,
+      };
     });
 
-    const totals = rows.reduce(
-      (sum, row) => ({
-        connects: sum.connects + row.connects,
-        followUpConnects: sum.followUpConnects + row.followUpConnects,
-        meetings: sum.meetings + row.meetings,
-        siteVisits: sum.siteVisits + row.siteVisits,
-        p3: sum.p3 + row.p3,
-        p2: sum.p2 + row.p2,
-        p1: sum.p1 + row.p1,
-      }),
-      { connects: 0, followUpConnects: 0, meetings: 0, siteVisits: 0, p3: 0, p2: 0, p1: 0 }
-    );
-
-    return ok({ from, to, rows: rows.sort((a, b) => a.name.localeCompare(b.name)), totals });
+    return ok({
+      from,
+      to,
+      subject: subject.id,
+      subjectLabel: describeSubject(people, subject),
+      rows,
+      totals: sumMetrics(
+        rows.map((row) => ({
+          newConnects: row.newConnects,
+          followUpConnects: row.followUpConnects,
+          meetings: row.meetings,
+          siteVisits: row.siteVisits,
+          dealsClosed: row.dealsClosed,
+          tokensReceived: row.tokensReceived,
+          p1: row.p1,
+          p2: row.p2,
+          p3: row.p3,
+        }))
+      ),
+      options,
+      warning: null,
+    });
   },
 
   /* ---------------------------------------------------------------- */
@@ -3358,6 +3473,82 @@ export const demo = {
     folder.recordCount += written;
     emit();
     return ok({ written, duplicates });
+  },
+
+  /**
+   * Mirrors `assignRecordsToManager` — the rows **move** into the manager's
+   * own mirror of the folder rather than becoming leads. Same deterministic
+   * mirror id, same one-row-one-owner rule.
+   */
+  assignRecordsToManager: (recordIds: string[], managerUid: string, actorUid = 'demo-admin') => {
+    const manager = state.employees.find((e) => e.uid === managerUid);
+    if (!manager) return fail('That account no longer exists.');
+    if (manager.accessRole !== 'subadmin') return fail(`${manager.name} is not a manager.`);
+    if (manager.status === 'DISABLED') {
+      return fail(`${manager.name} is paused — resume them or choose someone else.`);
+    }
+
+    let moved = 0;
+    let skipped = 0;
+    const folderIds = new Set<string>();
+
+    for (const recordId of recordIds) {
+      const record = state.dataBankRecords.find((r) => r.id === recordId);
+      const source = record && state.dataBankFolders.find((f) => f.id === record.folderId);
+      if (!record || !source || source.subAdminUid === managerUid) {
+        skipped += 1;
+        continue;
+      }
+
+      const originId = source.sourceFolderId ?? source.id;
+      const originName = source.sourceFolderName ?? source.name;
+      const mirrorId = `mgr_${managerUid}_${originId}`;
+
+      const existing = state.dataBankFolders.find((f) => f.id === mirrorId);
+      const mirror: DataBankFolder =
+        existing ?? {
+          id: mirrorId,
+          name: originName,
+          description: `Handed to ${manager.name} from the ${originName} folder.`,
+          fields: source.fields,
+          roles: source.roles,
+          subAdminUid: managerUid,
+          sourceFolderId: originId,
+          sourceFolderName: originName,
+          recordCount: 0,
+          promotedCount: 0,
+          createdAt: ts(new Date()),
+        };
+      if (!existing) state.dataBankFolders = [...state.dataBankFolders, mirror];
+
+      record.folderId = mirrorId;
+      source.recordCount = Math.max(0, source.recordCount - 1);
+      mirror.recordCount += 1;
+      folderIds.add(mirrorId);
+      moved += 1;
+    }
+
+    if (moved > 0) {
+      state.notifications = [
+        {
+          id: nextId('n'),
+          type: 'DATA_BANK_ASSIGNED',
+          leadId: '',
+          targetRole: 'subadmin',
+          targetUid: managerUid,
+          payload: {
+            message: `${moved} Data Bank record${moved === 1 ? '' : 's'} handed to you. Assign them to your team from your Data Bank.`,
+          },
+          createdAt: now(),
+          readAt: null,
+        },
+        ...state.notifications,
+      ];
+    }
+
+    emit();
+    void actorUid;
+    return ok({ moved, skipped, folderIds: [...folderIds] });
   },
 
   /** Mirrors `promoteDataBankRecords` by running the single path per record. */

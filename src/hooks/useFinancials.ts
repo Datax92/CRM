@@ -110,17 +110,47 @@ export interface FinancialTotals {
  * whatever the other had left behind — a race that produced a different figure
  * depending on which query resolved first.
  */
-export function useFinancials(range: DateRange, enabled = true) {
+export function useFinancials(
+  range: DateRange,
+  enabled = true,
+  /**
+   * Who is reading.
+   *
+   * **Omitting this reads the whole company**, which only an admin may do.
+   * Firestore checks a *list* query against the rules before running it and
+   * refuses one it cannot prove safe — so an unscoped `closedDeals` read by a
+   * sub admin is denied outright, and the screen shows zero revenue with a
+   * `permission-denied` in the console. That is exactly what the sub admin's
+   * team page was doing.
+   *
+   * Passing `{ role: 'subadmin', uid }` adds the `subAdminUid == me` clause the
+   * rule checks, which is also the only thing that makes the query legal.
+   * Expenses stay admin-only and are simply not read.
+   */
+  scope?: { role?: string | null; uid?: string }
+) {
   const [deals, setDeals] = useState<DealRecord[] | null>(null);
   const [expenses, setExpenses] = useState<ExpenseRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const demoState = useDemoState();
 
+  const teamOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
+  // A sub admin with no uid yet would issue the unscoped query and be refused,
+  // so wait for it rather than firing one that cannot succeed.
+  const ready = enabled && (scope?.role !== 'subadmin' || Boolean(teamOf));
+
   useEffect(() => {
-    if (IS_DEMO || !enabled) return;
+    if (IS_DEMO || !ready) return;
 
     const unsubDeals = onSnapshot(
-      query(collection(db, 'closedDeals'), orderBy('enteredAt', 'desc'), limit(1000)),
+      teamOf
+        ? query(
+            collection(db, 'closedDeals'),
+            where('subAdminUid', '==', teamOf),
+            orderBy('enteredAt', 'desc'),
+            limit(1000)
+          )
+        : query(collection(db, 'closedDeals'), orderBy('enteredAt', 'desc'), limit(1000)),
       (snap) => {
         setDeals(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as DealRecord[]);
       },
@@ -130,6 +160,12 @@ export function useFinancials(range: DateRange, enabled = true) {
         setError(describeFirestoreError(err));
       }
     );
+
+    // Expenses are the company's, not a team's — there is no scoped form of
+    // this query, so a sub admin simply does not read them.
+    if (teamOf) {
+      return () => unsubDeals();
+    }
 
     const unsubExpenses = onSnapshot(
       query(collection(db, 'expenses'), orderBy('date', 'desc'), limit(1000)),
@@ -147,15 +183,19 @@ export function useFinancials(range: DateRange, enabled = true) {
       unsubDeals();
       unsubExpenses();
     };
-  }, [enabled]);
+  }, [ready, teamOf]);
 
-  const allDeals = useMemo(
-    () => (!enabled ? [] : IS_DEMO ? demoState.deals : (deals ?? [])),
-    [enabled, deals, demoState.deals]
-  );
+  const allDeals = useMemo(() => {
+    if (!enabled) return [];
+    if (!IS_DEMO) return deals ?? [];
+    // Demo mode is scoped the same way, or it would demonstrate the leak the
+    // live rules forbid.
+    return teamOf ? demoState.deals.filter((deal) => deal.subAdminUid === teamOf) : demoState.deals;
+  }, [enabled, deals, demoState.deals, teamOf]);
+
   const allExpenses = useMemo(
-    () => (!enabled ? [] : IS_DEMO ? demoState.expenses : (expenses ?? [])),
-    [enabled, expenses, demoState.expenses]
+    () => (!enabled || teamOf ? [] : IS_DEMO ? demoState.expenses : (expenses ?? [])),
+    [enabled, teamOf, expenses, demoState.expenses]
   );
 
   // Filtering happens here rather than in the query so that changing the range

@@ -61,6 +61,13 @@ export interface Lead {
   /** True once any entry recorded a site visit. Counted in Reports (§4). */
   siteVisit?: boolean;
   /**
+   * Stamped one-way the first time the status reaches TOKEN_RECEIVED. The
+   * status moves on to Deal Closed; the fact that token money arrived does
+   * not, so the report reads this rather than the current status.
+   */
+  tokenReceived?: boolean;
+  tokenReceivedAt?: FirestoreTimestamp;
+  /**
    * The entry that is still editable (§2). Writing a new one locks whatever
    * came before by simply no longer naming it — so "is this row editable" is a
    * field comparison rather than an ordering read.

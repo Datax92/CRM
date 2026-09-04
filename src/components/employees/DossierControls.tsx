@@ -1,6 +1,6 @@
 "use client";
 
-import { isStageFilter } from "@/lib/leadBuckets";
+import { isStageFilter, isActivityFilter, ACTIVITY_FILTER_HINTS } from "@/lib/leadBuckets";
 import { STAGE_TONES } from "@/components/leads/StageChrome";
 /**
  * The filter row and the pager the employee dossier uses on both surfaces.
@@ -23,6 +23,10 @@ import {
 
 type Variant = "web" | "mobile";
 
+/** One tone for all three activity cuts — see `CutChip`. */
+const ACTIVITY_INK = "#4d7590";
+const ACTIVITY_TINT = "#eaf1f6";
+
 /**
  * Period + lead cut.
  *
@@ -36,12 +40,21 @@ export function DossierFilterBar({
   variant,
   showCut = true,
   countLine,
+  counts,
 }: {
   filters: DossierFilters;
   onChange: (next: DossierFilters) => void;
   variant: Variant;
   showCut?: boolean;
   countLine?: string;
+  /**
+   * How many leads each cut holds, in the current period.
+   *
+   * Worth the space: Remarks and Follow-ups are two stops on one road and a
+   * reader cannot otherwise tell a filter that found nothing from a filter
+   * that is not working. A zero is shown, not hidden — "0" is the answer.
+   */
+  counts?: Partial<Record<LeadFilterKey, number>>;
 }) {
   const web = variant === "web";
 
@@ -103,6 +116,7 @@ export function DossierFilterBar({
                 cut={key}
                 active={filters.cut === key}
                 variant={variant}
+                count={counts?.[key]}
                 onSelect={() => onChange({ ...filters, cut: key })}
               />
             ))}
@@ -136,23 +150,30 @@ function CutChip({
   cut,
   active,
   variant,
+  count,
   onSelect,
 }: {
   cut: LeadFilterKey;
   active: boolean;
   variant: Variant;
+  count?: number;
   onSelect: () => void;
 }) {
   const web = variant === "web";
   const stageTone = isStageFilter(cut) ? STAGE_TONES[cut] : null;
-  const accent = stageTone ? stageTone.softText : E.tealInk;
-  const fill = stageTone ? stageTone.soft : E.surface;
+  // The activity cuts share one tone of their own: they are a different kind
+  // of question from the stages, and giving each its own colour would read as
+  // three more stages.
+  const activity = isActivityFilter(cut);
+  const accent = stageTone ? stageTone.softText : activity ? ACTIVITY_INK : E.tealInk;
+  const fill = stageTone ? stageTone.soft : activity ? ACTIVITY_TINT : E.surface;
 
   return (
     <button
       type="button"
       role="tab"
       aria-selected={active}
+      title={activity ? ACTIVITY_FILTER_HINTS[cut] : undefined}
       onClick={onSelect}
       className={web ? undefined : "mob-press"}
       style={{
@@ -173,6 +194,19 @@ function CutChip({
       }}
     >
       {LEAD_FILTER_LABELS[cut]}
+      {count !== undefined && (
+        <span
+          style={{
+            marginLeft: 6,
+            fontSize: web ? 11 : 10.5,
+            fontWeight: 800,
+            opacity: active ? 0.85 : 0.6,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {count}
+        </span>
+      )}
     </button>
   );
 }

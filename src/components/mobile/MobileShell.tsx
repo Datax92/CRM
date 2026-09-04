@@ -81,6 +81,9 @@ function hasOwnChrome(pathname: string): boolean {
     pathname === "/subadmin/leads" ||
     pathname === "/employee/leads" ||
     pathname === "/admin/employees/directory" ||
+    // The sub admin's Team page is the same component as the admin directory
+    // and draws the same teal header, so it needs the same treatment.
+    pathname === "/subadmin/team" ||
     // The Money hubs draw their own teal header, so the shell must not add its
     // padded scroll wrapper on top of one.
     pathname === "/admin/money" ||

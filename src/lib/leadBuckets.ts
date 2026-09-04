@@ -13,12 +13,37 @@
  * along a lead is rather than which part of the workflow owns it.
  */
 
-import type { LeadStatus } from './leadStatus';
-import { resolveRange, withinRange, type DateRange } from './dates';
-import { pipelineStage, PIPELINE_STAGES, type PipelineStage } from './pipelineStage';
+// Explicit .ts extensions: this module is exercised directly by the unit tests
+// under `node --experimental-strip-types`, whose ESM loader cannot resolve an
+// extensionless specifier. `allowImportingTsExtensions` is already on for
+// exactly this, and `pipelineStage.ts` does the same.
+import type { LeadStatus } from './leadStatus.ts';
+import { resolveRange, withinRange, type DateRange } from './dates.ts';
+import { pipelineStage, PIPELINE_STAGES, type PipelineStage } from './pipelineStage.ts';
 
 export type LeadFilterKey =
-  | 'ALL' | 'TODAY' | 'NEW' | 'PENDING' | 'ACTIVE' | 'CLOSED' | PipelineStage;
+  | 'ALL' | 'TODAY' | 'NEW' | 'PENDING' | 'ACTIVE' | 'CLOSED' | PipelineStage
+  | ActivityFilterKey;
+
+/**
+ * Cuts by what has been *done* to a lead rather than where it stands.
+ *
+ * These are for the employee dossier: "show me the leads this person has
+ * actually remarked on / followed up / got through to". They are not on the
+ * workspace chip row, because the workspace answers "what is in my pipeline"
+ * and these answer "what has this person done" — a different question that
+ * deserves its own place rather than four more chips over the pipeline.
+ *
+ * Read off the counters the follow-up transaction already maintains on the
+ * lead, so they cost nothing extra and cannot disagree with the entries.
+ */
+export type ActivityFilterKey = 'REMARKED' | 'FOLLOWED_UP' | 'CONNECTED';
+
+export const ACTIVITY_FILTERS: ActivityFilterKey[] = ['REMARKED', 'FOLLOWED_UP', 'CONNECTED'];
+
+export function isActivityFilter(key: LeadFilterKey): key is ActivityFilterKey {
+  return (ACTIVITY_FILTERS as string[]).includes(key);
+}
 
 /**
  * A sub admin sees the same workspace an admin does, scoped to their own
@@ -83,6 +108,16 @@ export const LEAD_FILTER_LABELS: Record<LeadFilterKey, string> = {
   P3: 'P3',
   P2: 'P2',
   P1: 'P1',
+  REMARKED: 'Remarks',
+  FOLLOWED_UP: 'Follow-ups',
+  CONNECTED: 'Connected',
+};
+
+/** One line each, for the chip's tooltip — these are not self-evident. */
+export const ACTIVITY_FILTER_HINTS: Record<ActivityFilterKey, string> = {
+  REMARKED: 'Remark written, not followed up yet — moves to Follow-ups on the next entry',
+  FOLLOWED_UP: 'Has gone past the Remark to at least one follow-up',
+  CONNECTED: 'A call was answered — 1:10 or longer, on the Remark or any follow-up',
 };
 
 /** True for the four chips that are a pipeline stage rather than a bucket. */
@@ -148,6 +183,39 @@ interface BucketableLead {
   pipelineStageOverride?: PipelineStage | null;
   /** The retired field name, still read so old pins resolve. */
   temperatureOverride?: string | null;
+  /** Connected calls logged against this lead — the CONNECTED cut. */
+  connectCount?: number | null;
+}
+
+/**
+ * Whether a lead answers one of the activity cuts.
+ *
+ * **Remarks and Follow-ups are two stops on one road, not two labels for the
+ * same lead.** The first entry on a lead is its Remark and every later one is
+ * a Follow-Up (`lib/followUpKind`), so:
+ *
+ * | entries | Remarks | Follow-ups |
+ * |---|---|---|
+ * | 0 | — | — |
+ * | 1 | **yes** | — |
+ * | 2+ | — | **yes** |
+ *
+ * A lead that has moved on to follow-ups **leaves** Remarks. The two are
+ * disjoint on purpose: the question "who has been remarked on but not chased
+ * yet" is the whole reason to have the Remarks cut, and it cannot be answered
+ * by a filter that also returns every lead with fifteen follow-ups.
+ *
+ * **Connected cuts across both**, because it asks something different — was a
+ * call actually answered — and that can happen on the Remark or on any
+ * follow-up. `connectCount` is the counter `addFollowUp` maintains, and a call
+ * counts only at `CONNECT_MIN_SECONDS` (1:10) or longer, so a logged call too
+ * short to be a connect is deliberately not here.
+ */
+export function matchesActivityFilter(lead: BucketableLead, key: ActivityFilterKey): boolean {
+  const entries = lead.followUpCount ?? 0;
+  if (key === 'REMARKED') return entries === 1;
+  if (key === 'FOLLOWED_UP') return entries >= 2;
+  return (lead.connectCount ?? 0) >= 1;
 }
 
 /**
@@ -168,6 +236,9 @@ export function matchesLeadFilter(
   // A stage is orthogonal to the workflow buckets: a P1 lead is also an active
   // one, so these are answered before `bucketOf` is consulted.
   if (isStageFilter(key)) return pipelineStage(lead).value === key;
+  // So is activity — a lead somebody has connected with is also active, or
+  // closed, or P2. Answered here for the same reason.
+  if (isActivityFilter(key)) return matchesActivityFilter(lead, key);
   return bucketOf(lead.status, role) === key;
 }
 
@@ -181,6 +252,7 @@ export function countByFilter(
   const counts: Record<LeadFilterKey, number> = {
     ALL: 0, TODAY: 0, NEW: 0, PENDING: 0, ACTIVE: 0, CLOSED: 0,
     COLD: 0, P3: 0, P2: 0, P1: 0,
+    REMARKED: 0, FOLLOWED_UP: 0, CONNECTED: 0,
   };
 
   for (const lead of leads) {
@@ -190,6 +262,10 @@ export function countByFilter(
 
     const stage = pipelineStage(lead).value;
     if (stage) counts[stage] += 1;
+
+    for (const key of ACTIVITY_FILTERS) {
+      if (matchesActivityFilter(lead, key)) counts[key] += 1;
+    }
   }
 
   return counts;

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  assignActionFor,
   buildAssignOptions,
   describeAssignee,
   groupAssignOptions,
@@ -51,14 +52,32 @@ test('an employee is offered nobody to assign to', () => {
   assert.equal(options.some((option) => option.group === 'MYSELF'), false);
 });
 
-test('the hint says where a lead actually goes, per group', () => {
+test('the hint says where a record actually goes, per group', () => {
   const options = buildAssignOptions(roster, admin);
   const manager = options.find((option) => option.uid === 'm1')!;
   const employee = options.find((option) => option.uid === 'e1')!;
 
-  assert.match(manager.hint, /Client section/);
+  // A manager is handed the record to distribute; the admin taking it gets a
+  // lead in their own Client section. Two different destinations, and the hint
+  // is the only thing on screen that says which.
+  assert.match(manager.hint, /Data Bank/);
   assert.match(options[0].hint, /Client section/);
   assert.match(employee.hint, /lane P1/, 'an employee still shows their lane priority');
+});
+
+test('a manager is a hand-off; everyone else is a promotion', () => {
+  const options = buildAssignOptions(roster, admin);
+
+  assert.equal(assignActionFor(options, 'm1'), 'HANDOFF');
+  assert.equal(assignActionFor(options, 'e1'), 'PROMOTE');
+  assert.equal(assignActionFor(options, admin.uid), 'PROMOTE');
+});
+
+test('an unknown recipient falls back to promotion, not the newer path', () => {
+  // The behaviour every caller had before hand-offs existed: the server
+  // refuses an unknown uid with a message, rather than silently moving a
+  // record into somebody's Data Bank.
+  assert.equal(assignActionFor(buildAssignOptions(roster, admin), 'nobody'), 'PROMOTE');
 });
 
 test('groups come out in a fixed order, and empty ones are dropped', () => {

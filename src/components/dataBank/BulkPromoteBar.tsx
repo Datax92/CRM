@@ -22,8 +22,9 @@
 
 import { useState } from "react";
 import { Users, X, Check, ChevronDown } from "lucide-react";
-import { promoteDataBankRecords } from "@/lib/clientActions";
+import { promoteDataBankRecords, assignRecordsToManager } from "@/lib/clientActions";
 import {
+  assignActionFor,
   describeAssignee,
   groupAssignOptions,
   type AssignOption,
@@ -64,7 +65,8 @@ export function BulkPromoteBar({
   /** Take the first `n` visible rows. The parent owns the ordering. */
   onSelectCount: (n: number) => number;
   onClear: () => void;
-  onDone: (message: string) => void;
+  /** `href` points at wherever the rows actually went, which differs by action. */
+  onDone: (message: string, href?: string) => void;
   /** Phone: stack the controls instead of one row. */
   compact?: boolean;
 }) {
@@ -72,19 +74,40 @@ export function BulkPromoteBar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /** Hand the records to a manager, or promote them into leads. */
+  const handoff = assignee ? assignActionFor(assignOptions, assignee) === "HANDOFF" : false;
+
   const promote = async () => {
     if (!assignee) return setError("Choose who these go to.");
     if (selected.length === 0) return setError("Select at least one record.");
 
     setBusy(true);
     setError(null);
+    const who = describeAssignee(assignOptions, assignee);
+
     try {
+      // A manager receives the **records**, to distribute to their own team;
+      // everybody else receives **leads**. The option carries which, so this
+      // bar and the single-row action cannot disagree.
+      if (handoff) {
+        const result = await assignRecordsToManager(await getIdToken(), selected, assignee);
+        if (result.ok) {
+          onDone(
+            `${result.data.moved} record${result.data.moved === 1 ? "" : "s"} handed to ${who} — now in their Data Bank.` +
+              (result.data.skipped ? ` ${result.data.skipped} were skipped.` : "")
+          );
+        } else {
+          setError(result.error);
+        }
+        return;
+      }
+
       const result = await promoteDataBankRecords(await getIdToken(), selected, assignee);
       if (result.ok) {
-        const who = describeAssignee(assignOptions, assignee);
         onDone(
           `${result.data.promoted} lead${result.data.promoted === 1 ? "" : "s"} assigned to ${who}.` +
-            (result.data.skipped ? ` ${result.data.skipped} were skipped.` : "")
+            (result.data.skipped ? ` ${result.data.skipped} were skipped.` : ""),
+          "/admin/leads?filter=active"
         );
       } else {
         setError(result.error);
@@ -175,7 +198,15 @@ export function BulkPromoteBar({
           flexWrap: "wrap",
         }}
       >
-        <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+        <span
+          style={{
+            position: "relative",
+            display: "inline-flex",
+            alignItems: "center",
+            flex: compact ? "1 1 100%" : undefined,
+            minWidth: 0,
+          }}
+        >
           <Users size={14} style={{ position: "absolute", left: 11, color: T.faint }} aria-hidden />
           <select
             value={assignee}
@@ -188,10 +219,13 @@ export function BulkPromoteBar({
               border: `1px solid ${T.line}`,
               background: T.ground,
               padding: "10px 30px 10px 32px",
-              fontSize: 13,
+              // 16px on the phone, or iOS Safari zooms the page on focus and
+              // leaves the reader scrolled somewhere they did not ask to be.
+              fontSize: compact ? 16 : 13,
               color: T.ink,
               cursor: "pointer",
               minWidth: 190,
+              flex: compact ? 1 : undefined,
             }}
           >
             <option value="">Assign to…</option>
@@ -224,7 +258,11 @@ export function BulkPromoteBar({
             flex: compact ? 1 : undefined,
           }}
         >
-          {busy ? "Assigning…" : `Assign ${selected.length || ""}`.trim()}
+          {busy
+            ? handoff
+              ? "Handing over…"
+              : "Assigning…"
+            : `${handoff ? "Hand over" : "Assign"} ${selected.length || ""}`.trim()}
         </button>
       </div>
 

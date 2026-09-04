@@ -21,7 +21,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { useEmployees } from "@/hooks/useEmployees";
+import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import {
   useDataBankFolders,
   useDataBankFolder,
@@ -35,6 +35,7 @@ import {
   updateDataBankRecord,
   deleteDataBankRecord,
   promoteDataBankRecord,
+  assignRecordsToManager,
 } from "@/lib/clientActions";
 import { RECORD_STATUSES, RECORD_STATUS_LABELS, type DataBankStatus } from "@/lib/dataBank";
 import { formatBusinessDate } from "@/lib/dates";
@@ -45,11 +46,13 @@ import { useOpenedLeads } from "@/hooks/useOpenedLeads";
 import { CursorPager } from "@/components/employees/DossierControls";
 import {
   buildAssignOptions,
+  assignActionFor,
   describeAssignee,
   groupAssignOptions,
   type AssignOption,
 } from "@/lib/assignTargets";
 import { FolderFormModal } from "@/components/dataBank/FolderFormModal";
+import { BulkPromoteBar } from "@/components/dataBank/BulkPromoteBar";
 import { ImportModal } from "@/components/dataBank/ImportModal";
 import { RecordFormModal } from "@/components/dataBank/RecordFormModal";
 import { M, HeaderCircle, MobileHeader } from "./mobileChrome";
@@ -62,8 +65,13 @@ const TONE: Record<DataBankStatus, { bg: string; text: string; dot: string }> = 
   NOT_INTERESTED: { bg: "#f2f7f6", text: M.faint, dot: M.ghost },
 };
 
-/** The same three read-state tones the leads list uses. */
+/**
+ * The same read-state tones the leads list uses — dark to light so the eye
+ * lands on new work first, with `selected` deepest of all because a ticked row
+ * is the one the bulk bar is about to act on.
+ */
 const ROW_TONES = {
+  selected: { background: "#c6e0dc", border: "#3f8f8a" },
   unopened: { background: "#e2f0ee", border: "#c9dedb" },
   opened: { background: M.cardBg, border: M.cardBorder },
 } as const;
@@ -81,6 +89,14 @@ export function MobileDataBankFolders() {
   // A sub admin sees the folders assigned to them; the query and the Security
   // Rule agree on that, so nothing is filtered afterwards.
   const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: user?.uid });
+  // Only to name the manager on a handed-over folder — an admin's list now
+  // shows the mirrors alongside the originals.
+  const { subAdmins } = useSubAdmins(isAdmin);
+  const managerNames = useMemo(
+    () => new Map(subAdmins.map((manager) => [manager.uid, manager.name])),
+    [subAdmins]
+  );
+
   const [formFor, setFormFor] = useState<{ folder: DataBankFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<DataBankFolder | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
@@ -232,6 +248,23 @@ export function MobileDataBankFolders() {
                   </svg>
                 </div>
 
+                {isAdmin && folder.subAdminUid && (
+                  <span
+                    style={{
+                      display: "inline-block",
+                      marginTop: 6,
+                      borderRadius: 999,
+                      background: "#eaf1f6",
+                      color: "#4d7590",
+                      padding: "2px 9px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Handed to {managerNames.get(folder.subAdminUid) ?? "a manager"}
+                  </span>
+                )}
+
                 {folder.description && (
                   <div
                     style={{
@@ -349,6 +382,9 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
 
   const { folder, loading: folderLoading, error: folderError } = useDataBankFolder(folderId, isManager);
   const { employees } = useEmployees(isManager, { role, uid: user?.uid });
+  // Managers come from their own query — `useEmployees` is `role ==
+  // "employee"`, so the Managers group was always empty without this.
+  const { subAdmins } = useSubAdmins(isManager && role === "admin");
   const { isOpened, markOpened } = useOpenedLeads(user?.uid);
 
   const [query, setQuery] = useState("");
@@ -357,6 +393,12 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   const [importOpen, setImportOpen] = useState(false);
   const [formFor, setFormFor] = useState<{ record: DataBankRecord | null } | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
+  /**
+   * The bulk selection, by id rather than index so a row that scrolls away or
+   * is filtered out stays selected — and so the payload sent to the server is
+   * exactly what the bar counted. The desktop workspace does the same.
+   */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
 
   const page = useDataBankRecords(folderId, { search: query, status, enabled: isManager });
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
@@ -368,18 +410,25 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
    */
   const assignOptions = useMemo(
     () =>
-      buildAssignOptions(employees, {
+      buildAssignOptions([...employees, ...subAdmins], {
         uid: user?.uid ?? "",
         name: user?.email?.split("@")[0] ?? "Me",
         role: role ?? null,
       }),
-    [employees, user?.uid, user?.email, role]
+    [employees, subAdmins, user?.uid, user?.email, role]
   );
 
   const afterWrite = (message: string) => {
     setBanner({ tone: "success", text: message });
     page.refresh();
   };
+
+  const toggle = (id: string) =>
+    setPicked((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   if (!folderLoading && !folder) {
     return (
@@ -527,6 +576,27 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
         {banner && <Note tone={banner.tone}>{banner.text}</Note>}
         {page.error && <Note tone="error">{page.error}</Note>}
 
+        {/* Bulk selection, the desktop's bar in its `compact` form — one
+            implementation, so the phone cannot offer different quantities or a
+            different set of recipients. */}
+        <BulkPromoteBar
+          compact
+          selected={[...picked]}
+          available={page.records.length}
+          assignOptions={assignOptions}
+          getIdToken={getIdToken}
+          onSelectCount={(n) => {
+            const take = page.records.slice(0, n).map((record) => record.id);
+            setPicked(new Set(take));
+            return take.length;
+          }}
+          onClear={() => setPicked(new Set())}
+          onDone={(message) => {
+            setPicked(new Set());
+            afterWrite(message);
+          }}
+        />
+
         {page.loading ? (
           <SkeletonCards />
         ) : page.records.length === 0 ? (
@@ -541,7 +611,8 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
         ) : (
           page.records.map((record, index) => {
             const seen = isOpened(record.id);
-            const shade = ROW_TONES[seen ? "opened" : "unopened"];
+            const ticked = picked.has(record.id);
+            const shade = ROW_TONES[ticked ? "selected" : seen ? "opened" : "unopened"];
             const tone = TONE[record.status];
             return (
               <button
@@ -568,24 +639,49 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
                     index < 8 ? `mob-rise 300ms cubic-bezier(0.22,0.61,0.36,1) ${index * 32}ms both` : undefined,
                 }}
               >
+                {/* The avatar doubles as the tick target. A separate checkbox
+                    column would cost 28px of a 390px row and push the phone
+                    number off the end; tapping the avatar is the gesture the
+                    row already invites. */}
                 <span
+                  role="checkbox"
+                  aria-checked={ticked}
+                  aria-label={`Select ${record.name}`}
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggle(record.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== " " && event.key !== "Enter") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggle(record.id);
+                  }}
                   style={{
                     width: 48,
                     height: 48,
                     borderRadius: "50%",
-                    background: "#fff",
-                    border: `2px solid ${tone.dot}`,
+                    background: ticked ? M.teal : "#fff",
+                    border: `2px solid ${ticked ? M.tealDeep : tone.dot}`,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     fontSize: 14,
                     fontWeight: 700,
-                    color: "#4a5c5a",
+                    color: ticked ? "#fff" : "#4a5c5a",
                     flexShrink: 0,
+                    cursor: "pointer",
+                    transition: "background-color 140ms ease, border-color 140ms ease",
                   }}
-                  aria-hidden
                 >
-                  {initialsOf(record.name)}
+                  {ticked ? (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="m5 13 4 4L19 7" />
+                    </svg>
+                  ) : (
+                    initialsOf(record.name)
+                  )}
                 </span>
 
                 <span style={{ minWidth: 0 }}>
@@ -733,6 +829,8 @@ function MobileRecordDetail({
   onRemoved: (message: string) => void;
 }) {
   const [assignee, setAssignee] = useState("");
+  /** Hand the record to a manager, or promote it into a lead. */
+  const handoff = assignee ? assignActionFor(assignOptions, assignee) === "HANDOFF" : false;
   const [notes, setNotes] = useState(record.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -774,6 +872,33 @@ function MobileRecordDetail({
     }
     setBusy(true);
     setError(null);
+
+    // A manager is handed the record to distribute; everybody else is handed a
+    // lead. The same split the desktop makes, from the same option field.
+    if (handoff) {
+      try {
+        const res = await withTimeout(
+          assignRecordsToManager(await getIdToken(), [record.id], assignee)
+        );
+        if (res.ok) {
+          onRemoved(
+            `${record.name} handed to ${describeAssignee(assignOptions, assignee)}. It is now in their Data Bank.`
+          );
+        } else {
+          setError(res.error);
+        }
+      } catch (err) {
+        setError(
+          err instanceof ActionTimeout
+            ? err.message
+            : "Could not reach the server. Nothing was changed."
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     // Gone means "out of this folder", not "deleted": promotion files the row
     // under a reserved folder id and removes the document afterwards, so
     // waiting for the document to disappear could outlast the work by a lot.
@@ -1070,11 +1195,10 @@ function MobileRecordDetail({
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M7 17 17 7M8 7h9v9" />
             </svg>
-            <span>Move into the pipeline</span>
+            <span>Hand this record on</span>
           </div>
           <p style={{ marginTop: 5, fontSize: 12.5, fontWeight: 500, color: M.body, lineHeight: 1.5 }}>
-            Creates a lead assigned straight to the person you pick — no acceptance window. Every
-            field above travels with it. The row then leaves this folder.
+            Either way the row leaves this folder and every field above travels with it.
           </p>
           <select
             value={assignee}
@@ -1117,7 +1241,7 @@ function MobileRecordDetail({
               opacity: busy || !assignee ? 0.5 : 1,
             }}
           >
-            {busy ? "Working…" : "Promote to lead"}
+            {busy ? "Working…" : handoff ? "Hand to manager" : "Promote to lead"}
           </button>
           {assignOptions.length === 0 && (
             <p style={{ marginTop: 9, fontSize: 12, fontWeight: 600, color: M.amberInk }}>
@@ -1125,7 +1249,8 @@ function MobileRecordDetail({
             </p>
           )}
           <p style={{ marginTop: 8, fontSize: 11.5, color: M.faint, lineHeight: 1.5 }}>
-            An employee gets it in their pipeline. A manager, or you, get it in the Client section.
+            An employee gets a lead in their pipeline. You get a lead in your Client section. A
+            manager gets the record in their own Data Bank, to hand on or take themselves.
           </p>
         </div>
 

@@ -37,6 +37,13 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+# Timestamped copies `npm run set-admin-key` leaves behind. They hold the same
+# secrets the file they back up does.
+.env.local.backup-*
+# A downloaded service-account key is full access to the database and cannot be
+# changed, only revoked. Ignored wherever it lands, in case one is opened here.
+*-firebase-adminsdk-*.json
+serviceAccountKey*.json
 .firebaserc
 prompts.md
 

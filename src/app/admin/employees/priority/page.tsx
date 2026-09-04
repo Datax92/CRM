@@ -5,6 +5,7 @@ import { MAX_PRIORITY } from "@/lib/constants/distribution";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useEmployees } from "@/hooks/useEmployees";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { useLeads } from "@/hooks/useLeads";
 import { useFinancials } from "@/hooks/useFinancials";
 import { buildEmployeeMetrics } from "@/lib/metrics";
@@ -17,6 +18,11 @@ export default function PrioritySettingsPage() {
   const { role, loading: authLoading, getIdToken } = useAuth();
   useProtectedRoute(["admin"]);
   const isAdmin = role === "admin";
+  // A four-column table with two controls per row is unreadable at 390px, so
+  // the phone gets cards carrying the same two controls rather than the table
+  // scrolled sideways. This screen is linked from the phone account sheet, so
+  // "it is a desktop page" was never an answer.
+  const isMobile = useIsMobile();
   const { employees, loading: empLoading, error: empError } = useEmployees(isAdmin);
   const { leads, loading: leadsLoading } = useLeads(isAdmin ? "admin" : null);
   const { allDeals } = useFinancials({ key: "ALL", from: null, to: null, label: "ALL" }, isAdmin);
@@ -119,6 +125,52 @@ export default function PrioritySettingsPage() {
         </div>
       )}
 
+      {isMobile ? (
+        <div className="flex flex-col gap-3">
+          {visibleMetrics.map((emp) => (
+            <div
+              key={emp.uid}
+              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate font-semibold text-slate-900">{emp.name}</div>
+                  <div className="truncate text-xs text-slate-500">{emp.email}</div>
+                </div>
+                <EmployeeStatusBadge status={emp.status} />
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <select
+                  aria-label={`Lane priority for ${emp.name}`}
+                  className="flex-1 cursor-pointer rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base font-semibold text-slate-900 outline-none focus:border-primary disabled:opacity-50"
+                  value={emp.priority}
+                  onChange={(e) => changePriority(emp.uid, parseInt(e.target.value, 10))}
+                  disabled={busy || emp.status === "DISABLED"}
+                >
+                  {Array.from({ length: MAX_PRIORITY }, (_, i) => i + 1).map((num) => (
+                    <option key={num} value={num}>
+                      Priority {num}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => toggleStatus(emp.uid, emp.status)}
+                  disabled={busy}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-50"
+                >
+                  {emp.status === "ACTIVE" ? "Pause" : "Resume"}
+                </button>
+              </div>
+            </div>
+          ))}
+          {visibleMetrics.length === 0 && (
+            <p className="rounded-2xl border border-slate-200 bg-white px-4 py-8 text-center text-slate-500">
+              No employees match your search.
+            </p>
+          )}
+        </div>
+      ) : (
       <ResponsiveTableWrapper minWidth={600}>
         <table className="w-full text-sm text-slate-900">
           <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
@@ -172,6 +224,7 @@ export default function PrioritySettingsPage() {
           </tbody>
         </table>
       </ResponsiveTableWrapper>
+      )}
     </div>
   );
 }

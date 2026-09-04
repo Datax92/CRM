@@ -19,6 +19,7 @@ import { useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
 import { addFollowUp, updateFollowUp, setLeadStatus, reviewColdLead, closeDeal, acceptLead, PAYMENT_METHODS } from "@/lib/clientActions";
 import {
+  awaitingFirstEntry,
   explainPipelineStage,
   pipelineStage,
   PIPELINE_STAGE_LABELS,
@@ -571,11 +572,21 @@ function PipelineStageControl({
     }
   };
 
-  if (!value && !coldPending) return null;
+  // A lead accepted but not yet worked has no band — and saying nothing about
+  // it would leave the rep wondering why. The rule is one sentence, so it goes
+  // where the stage would have been.
+  const notStarted = awaitingFirstEntry(lead);
+  if (!value && !coldPending && !notStarted) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2" title={explainPipelineStage(lead)}>
       <span className="text-[12.5px] text-[#5b6d6b]">Pipeline Stage:</span>
+
+      {notStarted && (
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[#dceae8] bg-[#f3faf9] px-2.5 py-1 text-[12px] font-semibold text-[#5b6d6b]">
+          Not started — add the first Remark to reach P3
+        </span>
+      )}
 
       {value && (
         <span

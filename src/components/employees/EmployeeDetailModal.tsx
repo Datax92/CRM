@@ -40,6 +40,7 @@ import {
   type DossierFilters,
 } from "./directoryChrome";
 import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "./AnalyticsPanels";
+import { countByFilter } from "@/lib/leadBuckets";
 import { DossierFilterBar, Pager } from "./DossierControls";
 
 /** Rows per page inside the dossier's tabs. */
@@ -70,7 +71,12 @@ export function EmployeeDetailModal({
   leads: Lead[];
   deals: DealRecord[];
   onClose: () => void;
-  onEdit: () => void;
+  /**
+   * Absent for a sub admin: editing an employee is `requireAdmin` on the
+   * server, so the button would only ever produce "That action is for
+   * administrators". Everything else in the dossier reads the same for both.
+   */
+  onEdit?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("leads");
   /**
@@ -106,6 +112,18 @@ export function EmployeeDetailModal({
   // tab keep describing the employee's whole record — a headline that moved
   // when you clicked "Today" would read as their career having shrunk.
   const shownLeads = useMemo(() => applyLeadFilters(ownLeads, filters), [ownLeads, filters]);
+  /**
+   * How many leads sit under each cut, within the chosen period.
+   *
+   * Counted on the period-filtered list rather than the whole record, so the
+   * numbers on the chips are the numbers the chips will produce. `countByFilter`
+   * is the same function the leads workspace counts with.
+   */
+  const cutCounts = useMemo(
+    () => countByFilter(applyLeadFilters(ownLeads, { ...filters, cut: "ALL" })),
+    [ownLeads, filters]
+  );
+
   const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters.period), [ownDeals, filters.period]);
   const shownActivity = useMemo(
     () => applyActivityPeriod(activity, filters.period),
@@ -281,6 +299,7 @@ export function EmployeeDetailModal({
           </div>
 
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            {onEdit && (
             <button
               type="button"
               onClick={onEdit}
@@ -304,6 +323,7 @@ export function EmployeeDetailModal({
               </svg>
               <span style={{ whiteSpace: "nowrap" }}>Edit Details</span>
             </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -445,6 +465,7 @@ export function EmployeeDetailModal({
                   filters={filters}
                   onChange={setFilters}
                   variant="web"
+                  counts={cutCounts}
                   countLine={`${shownLeads.length} of ${ownLeads.length} lead${ownLeads.length === 1 ? "" : "s"}`}
                 />
                 <AssignedLeads

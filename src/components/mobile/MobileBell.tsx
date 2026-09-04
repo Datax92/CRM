@@ -27,6 +27,8 @@ const TYPE_LABELS: Record<string, string> = {
   NO_FOLLOWUP: "No follow-up logged",
   UNASSIGNED_LEAD: "Needs manual assignment",
   NEW_LEAD_ASSIGNED: "New lead assigned",
+  DATA_BANK_ASSIGNED: "Data Bank records handed to you",
+  COLD_REVIEW_REQUIRED: "Lead may be cold — needs a decision",
 };
 
 export function MobileBell({

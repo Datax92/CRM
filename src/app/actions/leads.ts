@@ -273,7 +273,22 @@ export async function setLeadStatus(
         return;
       }
 
-      t.update(leadRef, { status });
+      t.update(leadRef, {
+        status,
+        // **When token money arrived**, stamped one-way the first time the
+        // status reaches it — the same pattern `meetingHeld` follows, and for
+        // the same reason: the Team report counts tokens over a date range,
+        // and a lead that has since moved on to Deal Closed no longer carries
+        // TOKEN_RECEIVED as its status. Reading the current status alone would
+        // report the token as never having happened.
+        //
+        // Written only when it becomes true, so moving a lead back and forth
+        // cannot re-date it, and it is never unset: a token that was taken
+        // stays taken.
+        ...(status === "TOKEN_RECEIVED" && !lead.tokenReceivedAt
+          ? { tokenReceivedAt: FieldValue.serverTimestamp(), tokenReceived: true }
+          : {}),
+      });
 
       t.create(leadRef.collection("events").doc(), {
         type: "STATUS_CHANGED",

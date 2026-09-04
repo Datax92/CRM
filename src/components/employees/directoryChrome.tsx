@@ -23,10 +23,16 @@ import type { Lead } from "@/hooks/useLeads";
 import type { DealRecord } from "@/hooks/useFinancials";
 import type { EmployeeMetrics } from "@/lib/metrics";
 import { DEFAULT_KPI_TARGETS } from "@/lib/kpi";
-import { matchesLeadFilter, LEAD_FILTER_LABELS, type LeadFilterKey } from "@/lib/leadBuckets";
+import {
+  matchesLeadFilter,
+  ACTIVITY_FILTER_HINTS,
+  LEAD_FILTER_LABELS,
+  isActivityFilter,
+  type LeadFilterKey,
+} from "@/lib/leadBuckets";
 import { resolveRange, withinRange, type RangeKey } from "@/lib/dates";
 
-export { LEAD_FILTER_LABELS };
+export { LEAD_FILTER_LABELS, ACTIVITY_FILTER_HINTS, isActivityFilter };
 export type { LeadFilterKey, RangeKey };
 
 export const E = {
@@ -239,7 +245,15 @@ export const DOSSIER_PERIODS: Array<{ key: RangeKey; label: string }> = [
   { key: "ALL", label: "All time" },
 ];
 
-/** ALL first, then the workflow buckets, then the four pipeline stages. */
+/**
+ * ALL first, then the workflow buckets, then the four pipeline stages, then
+ * what this person has actually **done** to their leads.
+ *
+ * The activity cuts come last because they answer a different question from
+ * the ones before them: those say where a lead stands, these say how far the
+ * employee has got with it. Putting "Connected" among the stages would suggest
+ * a lead moves *into* it the way it moves into P2.
+ */
 export const DOSSIER_LEAD_CUTS: LeadFilterKey[] = [
   "ALL",
   "ACTIVE",
@@ -248,6 +262,9 @@ export const DOSSIER_LEAD_CUTS: LeadFilterKey[] = [
   "P3",
   "P2",
   "P1",
+  "REMARKED",
+  "FOLLOWED_UP",
+  "CONNECTED",
 ];
 
 export interface DossierFilters {

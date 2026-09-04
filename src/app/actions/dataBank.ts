@@ -252,6 +252,9 @@ async function loadFolder(folderId: string) {
     fields: DataBankField[];
     roles: FieldRoles;
     subAdminUid?: string | null;
+    sourceFolderId?: string | null;
+    sourceFolderName?: string | null;
+    handedOffCount?: number;
   };
   // `name` comes back here so callers never re-read the document for it —
   // promotion used to fetch this same folder a second time just for the name.
@@ -261,7 +264,26 @@ async function loadFolder(folderId: string) {
     fields: data.fields ?? [],
     roles: data.roles,
     subAdminUid: data.subAdminUid ?? null,
+    // Set on a manager's mirror (see `ensureManagerFolder`). A lead promoted
+    // out of a mirror is filed under the *original* folder, so one source does
+    // not fragment into a Client folder per manager who touched it.
+    sourceFolderId: data.sourceFolderId ?? null,
+    sourceFolderName: data.sourceFolderName ?? null,
+    // How many rows have left for a manager's mirror. Read here so the import
+    // can skip the mirror lookup entirely when the answer is none.
+    handedOffCount: data.handedOffCount ?? 0,
   };
+}
+
+/**
+ * The managers' mirrors of a folder, if it has handed anything on.
+ *
+ * Read from the folders rather than kept as a list on the source, so a mirror
+ * created later is found without the source ever being written to.
+ */
+async function mirrorFolderIds(folderId: string): Promise<string[]> {
+  const snap = await adminDb.collection(FOLDERS).where("sourceFolderId", "==", folderId).get();
+  return snap.docs.map((doc) => doc.id);
 }
 
 /**
@@ -314,14 +336,28 @@ export async function addDataBankRecord(
     if (!record.name) throw new UserFacingError("Enter the name.");
     if (!record.phoneKey) throw new UserFacingError("Enter a usable phone number.");
 
-    const clash = await adminDb
-      .collection(RECORDS)
-      .where("folderId", "==", folderId)
-      .where("phoneKey", "==", record.phoneKey)
-      .limit(1)
-      .get();
-    if (!clash.empty) {
-      throw new UserFacingError(`That number is already in this folder (${clash.docs[0].data().name}).`);
+    // The folder, plus any mirror a manager has been handed rows into — a row
+    // that left for a manager is still one row for one prospective client, and
+    // typing it again here would make two. Same rule the import follows.
+    const scope = [
+      folderId,
+      ...(folder.handedOffCount > 0 ? await mirrorFolderIds(folderId) : []),
+    ];
+    for (const id of scope) {
+      const clash = await adminDb
+        .collection(RECORDS)
+        .where("folderId", "==", id)
+        .where("phoneKey", "==", record.phoneKey)
+        .limit(1)
+        .get();
+      if (!clash.empty) {
+        const name = clash.docs[0].data().name;
+        throw new UserFacingError(
+          id === folderId
+            ? `That number is already in this folder (${name}).`
+            : `That number has already been handed to a manager (${name}).`
+        );
+      }
     }
 
     const ref = await adminDb.collection(RECORDS).add({
@@ -430,19 +466,40 @@ export async function importDataBankRows(
       .map((row) => buildRecord(row.values, folder.fields, folder.roles))
       .filter((record) => record.name && record.phoneKey);
 
-    // Which of these numbers does the folder already hold? Firestore's `in`
-    // takes 30 values, so this is a handful of reads per chunk rather than one
-    // read per row.
+    // Which of these numbers are already held? Firestore's `in` takes 30
+    // values, so this is a handful of reads per chunk rather than one per row.
+    //
+    // **Rows handed to a manager count as held.** They have left this folder
+    // for a mirror of it (`assignRecordsToManager`), so a query scoped to
+    // `folderId` alone would not see them — and re-importing last month's
+    // sheet would recreate every handed-over row here, leaving two documents
+    // for one prospective client and two people ringing the same number.
+    //
+    // Deliberately one query **per folder** rather than one query with an `in`
+    // on folderId: this reuses the existing `folderId, phoneKey` index instead
+    // of needing a new one, and a folder that has handed nothing on
+    // (`handedOffCount` 0, the overwhelming majority) pays nothing at all.
+    const scope = [
+      folderId,
+      ...(folder.handedOffCount > 0 ? await mirrorFolderIds(folderId) : []),
+    ];
+
     const keys = [...new Set(prepared.map((record) => record.phoneKey))];
     const existing = new Set<string>();
     for (let i = 0; i < keys.length; i += 30) {
       const slice = keys.slice(i, i + 30);
-      const found = await adminDb
-        .collection(RECORDS)
-        .where("folderId", "==", folderId)
-        .where("phoneKey", "in", slice)
-        .get();
-      found.docs.forEach((doc) => existing.add(doc.data().phoneKey as string));
+      const found = await Promise.all(
+        scope.map((id) =>
+          adminDb
+            .collection(RECORDS)
+            .where("folderId", "==", id)
+            .where("phoneKey", "in", slice)
+            .get()
+        )
+      );
+      for (const snap of found) {
+        snap.docs.forEach((doc) => existing.add(doc.data().phoneKey as string));
+      }
     }
 
     const batch = adminDb.batch();
@@ -621,9 +678,16 @@ export async function promoteDataBankRecord(
     // same id, same source, same history.
     let clientFolderId: string | null = null;
     if (target.role !== "employee") {
+      // The **original** folder, not the manager's mirror of it: a lead that
+      // reached a manager via a hand-off and one promoted straight from the
+      // source belong in the same Client folder, or one source ends up
+      // fragmented into a folder per route it took.
       const { ref: clientFolder } = await ensureClientFolder(
         target,
-        { id: record.folderId as string, name: folder.name ?? 'Data Bank' },
+        {
+          id: folder.sourceFolderId ?? (record.folderId as string),
+          name: folder.sourceFolderName ?? folder.name ?? "Data Bank",
+        },
         admin
       );
       clientFolderId = clientFolder.id;
@@ -958,7 +1022,12 @@ export async function promoteDataBankRecords(
             clientFolder = (
               await ensureClientFolder(
                 target,
-                { id: folderId, name: folder.name ?? "Data Bank" },
+                {
+                  // The original folder, not a manager's mirror of it — see the
+                  // single-record path.
+                  id: folder.sourceFolderId ?? folderId,
+                  name: folder.sourceFolderName ?? folder.name ?? "Data Bank",
+                },
                 admin
               )
             ).ref;
@@ -1025,5 +1094,235 @@ export async function promoteDataBankRecords(
     }
 
     return { promoted, skipped, leadIds };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Data Bank -> a manager's Data Bank                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The manager's mirror of a source folder.
+ *
+ * **Deterministic id**, for the same reason the Client mirror has one: handing
+ * over ten more records from Facile Town 2 next week must land in the folder
+ * the manager already has, not create a second one with the same name.
+ */
+function managerFolderRefFor(managerUid: string, sourceFolderId: string) {
+  return adminDb.collection(FOLDERS).doc(`mgr_${managerUid}_${sourceFolderId}`);
+}
+
+/**
+ * Creates the manager's mirror if it is not there yet, and returns its ref.
+ *
+ * The mirror carries the **same fields, keys and roles** as the source. That is
+ * not a convenience: records are stored against field *keys*, so a mirror with
+ * its own keys would render every handed-over row blank. It is the same folder
+ * shape, owned by somebody else.
+ *
+ * Read before the batch, because a folder created inside a batch cannot be read
+ * back in the same batch to find out whether it already existed.
+ */
+async function ensureManagerFolder(
+  manager: { uid: string; name: string },
+  source: Awaited<ReturnType<typeof loadFolder>> & { id: string },
+  actor: DecodedAuth
+): Promise<{ ref: FirebaseFirestore.DocumentReference; created: boolean }> {
+  const ref = managerFolderRefFor(manager.uid, source.id);
+  const snap = await ref.get();
+  if (snap.exists) return { ref, created: false };
+
+  await ref.set({
+    name: source.name ?? "Data Bank",
+    description: `Handed to ${manager.name} from the ${source.name ?? "Data Bank"} folder.`,
+    // Ownership is the same shape every other scoped collection uses, and the
+    // shape the Security Rule already checks: `subAdminUid == request.auth.uid`
+    // is what makes the manager's folder list a query Firestore can prove.
+    subAdminUid: manager.uid,
+    fields: source.fields,
+    roles: source.roles,
+    // Where these rows came from, so the source is still traceable after a
+    // rename on either side — and so promotion can file the resulting lead
+    // under the *original* folder's Client mirror rather than this one.
+    sourceFolderId: source.id,
+    sourceFolderName: source.name ?? null,
+    recordCount: 0,
+    promotedCount: 0,
+    createdByUid: actor.uid,
+    createdByName: actor.name ?? actor.email ?? null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  return { ref, created: true };
+}
+
+export interface HandoffResult {
+  moved: number;
+  skipped: number;
+  /** The manager's folder the rows landed in, for a link in the confirmation. */
+  folderIds: string[];
+}
+
+/**
+ * Hands cold records to a manager's own Data Bank.
+ *
+ * **This is not a promotion.** Assigning a record to an employee turns it into
+ * a lead; assigning it to a manager gives the manager the row to *distribute* —
+ * they decide which of their people works it, or take it themselves. So the
+ * record stays a record and simply changes folder.
+ *
+ * **The rows move rather than being copied.** A copy would mean two documents
+ * for one prospective client: the admin could promote their copy while the
+ * manager promoted theirs, producing two identical leads for the same phone
+ * number and two people calling it. Moving keeps one row for one person, which
+ * is the same rule promotion already follows.
+ *
+ * The admin does not lose sight of them — an admin reads every folder, so the
+ * manager's mirror is listed for them too, and the source folder's
+ * `handedOffCount` records how many left.
+ *
+ * **Only the named manager.** The mirror carries their uid and nothing else's,
+ * so a record handed to Manager A is unreachable by Manager B: their folder
+ * query is `where('subAdminUid','==',them)` and the rule enforces exactly that
+ * clause.
+ */
+export async function assignRecordsToManager(
+  token: string,
+  recordIds: string[],
+  managerUid: string
+): Promise<ActionResult<HandoffResult>> {
+  return runAction("assignRecordsToManager", async () => {
+    const ids = [...new Set((recordIds ?? []).filter(Boolean))];
+    if (ids.length === 0) throw new UserFacingError("Select at least one record.");
+    if (ids.length > 500) throw new UserFacingError("Hand over at most 500 records at a time.");
+
+    // Admin only. A manager handing rows to another manager would move work
+    // sideways across the hierarchy, which is the admin's decision to make.
+    const admin = await requireAdmin(token);
+
+    const managerSnap = await adminDb.collection("users").doc(managerUid).get();
+    if (!managerSnap.exists) throw new UserFacingError("That account no longer exists.");
+
+    const managerData = managerSnap.data()!;
+    const managerName = (managerData.name as string) ?? (managerData.email as string) ?? "Manager";
+
+    if (managerData.role !== "subadmin") {
+      throw new UserFacingError(`${managerName} is not a manager.`);
+    }
+    if (managerData.status === "DISABLED") {
+      throw new UserFacingError(`${managerName} is paused — resume them or choose someone else.`);
+    }
+
+    const manager = { uid: managerUid, name: managerName };
+
+    let moved = 0;
+    let skipped = 0;
+    const folders = new Map<string, Awaited<ReturnType<typeof loadFolder>> & { id: string }>();
+    const mirrors = new Map<string, FirebaseFirestore.DocumentReference>();
+    const mirrorAdds = new Map<string, number>();
+
+    for (let index = 0; index < ids.length; index += 100) {
+      const slice = ids.slice(index, index + 100);
+      const snaps = await adminDb.getAll(...slice.map((id) => adminDb.collection(RECORDS).doc(id)));
+
+      const batch = adminDb.batch();
+      const now = FieldValue.serverTimestamp();
+      const perSource = new Map<string, number>();
+
+      for (const snap of snaps) {
+        if (!snap.exists) {
+          skipped += 1;
+          continue;
+        }
+        const record = snap.data()!;
+        // Already a lead, or already handed to this manager — either way there
+        // is nothing to move, and moving it again would double the counters.
+        if (record.promotedLeadId) {
+          skipped += 1;
+          continue;
+        }
+
+        const sourceId = record.folderId as string;
+        if (!sourceId || sourceId === PROMOTED_FOLDER_ID) {
+          skipped += 1;
+          continue;
+        }
+
+        let source = folders.get(sourceId);
+        if (!source) {
+          const loaded = await loadFolder(sourceId);
+          assertFolderAccess(admin, loaded);
+          source = { ...loaded, id: sourceId };
+          folders.set(sourceId, source);
+        }
+
+        // Already in this manager's mirror of this folder.
+        if (source.subAdminUid === managerUid) {
+          skipped += 1;
+          continue;
+        }
+
+        let mirror = mirrors.get(sourceId);
+        if (!mirror) {
+          // A folder that is *itself* a mirror hands over its own origin, so a
+          // record passed on twice does not nest `mgr_x_mgr_y_…` ids.
+          const originId = (source.sourceFolderId as string | undefined) ?? sourceId;
+          const originName = (source.sourceFolderName as string | undefined) ?? source.name;
+          const { ref } = await ensureManagerFolder(
+            manager,
+            { ...source, id: originId, name: originName },
+            admin
+          );
+          mirror = ref;
+          mirrors.set(sourceId, ref);
+        }
+
+        batch.update(snap.ref, {
+          folderId: mirror.id,
+          // Where it came from and who sent it, so the trail survives the move.
+          handedOffFromFolderId: sourceId,
+          handedOffToUid: managerUid,
+          handedOffByUid: admin.uid,
+          handedOffAt: now,
+        });
+
+        perSource.set(sourceId, (perSource.get(sourceId) ?? 0) + 1);
+        mirrorAdds.set(mirror.id, (mirrorAdds.get(mirror.id) ?? 0) + 1);
+        moved += 1;
+      }
+
+      for (const [sourceId, count] of perSource) {
+        batch.update(adminDb.collection(FOLDERS).doc(sourceId), {
+          recordCount: FieldValue.increment(-count),
+          handedOffCount: FieldValue.increment(count),
+        });
+      }
+      for (const [mirrorId, count] of mirrorAdds) {
+        batch.update(adminDb.collection(FOLDERS).doc(mirrorId), {
+          recordCount: FieldValue.increment(count),
+          updatedAt: now,
+        });
+      }
+      mirrorAdds.clear();
+
+      await batch.commit();
+    }
+
+    if (moved > 0) {
+      await adminDb.collection("notifications").add({
+        type: "DATA_BANK_ASSIGNED",
+        leadId: null,
+        targetRole: "subadmin",
+        targetUid: managerUid,
+        payload: {
+          message: `${moved} Data Bank record${moved === 1 ? "" : "s"} handed to you. Assign them to your team from your Data Bank.`,
+          count: moved,
+        },
+        createdAt: FieldValue.serverTimestamp(),
+        readAt: null,
+      });
+    }
+
+    return { moved, skipped, folderIds: [...mirrors.values()].map((ref) => ref.id) };
   });
 }

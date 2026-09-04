@@ -5,15 +5,22 @@
  *
  * | group | what happens to the lead |
  * |---|---|
- * | Employee | lands in their pipeline, exactly as it always has |
- * | Sub Admin / Manager | lands in **their Client section**, in a folder mirroring the source |
- * | Admin / Myself | lands in the **admin's own Client section** |
+ * | Employee | promoted to a lead in their pipeline, exactly as it always has |
+ * | Sub Admin / Manager | **moved into their own Data Bank**, still a record |
+ * | Admin / Myself | promoted to a lead in the **admin's own Client section** |
  *
- * Handing a lead to a manager or to yourself is not a distribution decision —
- * nobody is being given work off a rotation — so it does not belong in the
- * employee lead flow. The server enforces that; this module only builds the
- * list the two Data Bank surfaces offer, so desktop and phone cannot show
- * different options.
+ * **A manager is given rows to distribute, not a lead to work.** They pick
+ * which of their people takes each one — or take it themselves, at which point
+ * it becomes a lead in their Client section by the same path the admin uses.
+ * So handing over to a manager is a different operation from promotion, and
+ * `option.action` says which one a choice performs rather than leaving each
+ * call site to infer it from the group.
+ *
+ * Handing a lead to yourself is not a distribution decision either — nobody is
+ * being given work off a rotation — so it does not belong in the employee lead
+ * flow. The server enforces all of this; this module only builds the list the
+ * two Data Bank surfaces offer, so desktop and phone cannot show different
+ * options.
  *
  * Dependency-free, so the unit tests run under raw
  * `node --experimental-strip-types`.
@@ -33,6 +40,13 @@ export interface AssignOption {
   /** A short line under the name — the lane priority, or where the lead goes. */
   hint: string;
   group: 'MYSELF' | 'MANAGERS' | 'EMPLOYEES';
+  /**
+   * What picking this option actually does. `PROMOTE` turns the record into a
+   * lead; `HANDOFF` moves it into the manager's Data Bank for them to
+   * distribute. Carried on the option so the row action, the bulk bar and the
+   * phone sheet cannot each decide differently.
+   */
+  action: 'PROMOTE' | 'HANDOFF';
 }
 
 export const ASSIGN_GROUP_LABELS: Record<AssignOption['group'], string> = {
@@ -67,6 +81,7 @@ export function buildAssignOptions(
       label: viewer.role === 'admin' ? 'Admin / Myself' : `${viewer.name} (Myself)`,
       hint: 'Goes to your Client section, not the employee pipeline',
       group: 'MYSELF',
+      action: 'PROMOTE',
     });
   }
 
@@ -79,8 +94,9 @@ export function buildAssignOptions(
       options.push({
         uid: person.uid,
         label: person.name,
-        hint: 'Manager — goes to their Client section',
+        hint: 'Manager — goes to their Data Bank to distribute',
         group: 'MANAGERS',
+        action: 'HANDOFF',
       });
     } else {
       options.push({
@@ -88,6 +104,7 @@ export function buildAssignOptions(
         label: person.name,
         hint: person.priority ? `Employee · lane P${person.priority}` : 'Employee',
         group: 'EMPLOYEES',
+        action: 'PROMOTE',
       });
     }
   }
@@ -106,6 +123,18 @@ export function groupAssignOptions(
       options: options.filter((option) => option.group === group),
     }))
     .filter((section) => section.options.length > 0);
+}
+
+/**
+ * What the chosen option does — promotion, or a hand-off to a manager.
+ *
+ * Defaults to `PROMOTE` for a uid that is not in the list, which is the
+ * behaviour every caller had before hand-offs existed: an unknown recipient
+ * fails on the server with a message, rather than silently taking the newer
+ * path.
+ */
+export function assignActionFor(options: AssignOption[], uid: string): AssignOption['action'] {
+  return options.find((option) => option.uid === uid)?.action ?? 'PROMOTE';
 }
 
 /** The chosen option, for a confirmation message that names where it went. */

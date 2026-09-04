@@ -21,13 +21,14 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { MobileFolderWorkspace } from "@/components/mobile/MobileDataBank";
-import { useEmployees } from "@/hooks/useEmployees";
+import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { useDataBankFolder, useDataBankRecords, type DataBankRecord } from "@/hooks/useDataBank";
 import {
   addDataBankRecord,
   updateDataBankRecord,
   deleteDataBankRecord,
   promoteDataBankRecord,
+  assignRecordsToManager,
 } from "@/lib/clientActions";
 import { RECORD_STATUSES, RECORD_STATUS_LABELS, type DataBankStatus } from "@/lib/dataBank";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
@@ -40,6 +41,7 @@ import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { WorkspaceEmpty } from "@/components/leads/WorkspaceEmpty";
 import { CursorPager } from "@/components/employees/DossierControls";
 import {
+  assignActionFor,
   buildAssignOptions,
   describeAssignee,
   groupAssignOptions,
@@ -102,20 +104,25 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   // A sub admin's roster is their own team, which is also exactly the set of
   // people they may promote a record to.
   const { employees } = useEmployees(wantsData, { role, uid: user?.uid });
+  // Managers are a separate query — `useEmployees` is `role == "employee"`, so
+  // without this the Managers group was silently always empty and the option
+  // the assign list has always supported could never appear. Admin only: a
+  // manager handing rows sideways to another manager is the admin's call.
+  const { subAdmins } = useSubAdmins(wantsData && role === "admin");
 
   /**
-   * Who a record may go to (§2): employees, managers, and the viewer
-   * themselves. Built here so the row action and the bulk bar cannot offer
-   * different lists.
+   * Who a record may go to: employees, managers, and the viewer themselves.
+   * Built here so the row action and the bulk bar cannot offer different
+   * lists, and carrying `action` so both dispatch the same way.
    */
   const assignOptions = useMemo(
     () =>
-      buildAssignOptions(employees, {
+      buildAssignOptions([...employees, ...subAdmins], {
         uid: user?.uid ?? "",
         name: user?.email?.split("@")[0] ?? "Me",
         role: role ?? null,
       }),
-    [employees, user?.uid, user?.email, role]
+    [employees, subAdmins, user?.uid, user?.email, role]
   );
 
   const [query, setQuery] = useState("");
@@ -354,9 +361,12 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
               return take.length;
             }}
             onClear={() => setPicked(new Set())}
-            onDone={(message) => {
+            onDone={(message, href) => {
               setPicked(new Set());
-              afterWrite(message, "/admin/leads?filter=active");
+              // The link follows the action: promoted rows land in the
+              // pipeline, handed-over rows land in a manager's Data Bank,
+              // which is not a page this admin needs sending to.
+              afterWrite(message, href);
             }}
           />
         </div>
@@ -550,6 +560,9 @@ function RecordPane({
   onRemoved: (message: string, href?: string) => void;
 }) {
   const [assignee, setAssignee] = useState("");
+  // What the chosen recipient's option actually does, so the button says which
+  // of the two operations it is about to perform.
+  const handoff = assignee ? assignActionFor(assignOptions, assignee) === "HANDOFF" : false;
   const [notes, setNotes] = useState(record.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -594,6 +607,32 @@ function RecordPane({
     setError(null);
 
     const who = describeAssignee(assignOptions, assignee);
+
+    // A manager is handed the **record**, to distribute to their own team; an
+    // employee or the viewer is handed a **lead**. Two different operations,
+    // and the option itself says which — see `lib/assignTargets`.
+    if (assignActionFor(assignOptions, assignee) === "HANDOFF") {
+      try {
+        const res = await withTimeout(
+          assignRecordsToManager(await getIdToken(), [record.id], assignee)
+        );
+        if (res.ok) {
+          onRemoved(`${record.name} handed to ${who}. It is now in their Data Bank.`);
+        } else {
+          setError(res.error);
+        }
+      } catch (err) {
+        setError(
+          err instanceof ActionTimeout
+            ? err.message
+            : "Could not reach the server. Nothing was changed."
+        );
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const done = () =>
       onRemoved(`${record.name} is now a lead assigned to ${who}.`, "/admin/leads?filter=active");
 
@@ -819,11 +858,10 @@ function RecordPane({
         <div className="rounded-xl border border-[#bfe0dc] bg-[#e8f5f3] px-5 py-4">
           <div className="flex items-center gap-2 text-[14.5px] text-[#1f5c58]">
             <ArrowUpRight size={17} />
-            <span>Move into the pipeline</span>
+            <span>Hand this record on</span>
           </div>
           <p className="mt-1 text-[12.5px] text-[#3c4d4b]">
-            Creates a lead assigned straight to the person you pick — no acceptance window. Every
-            field above travels with it. The row then leaves this folder.
+            Either way the row leaves this folder and every field above travels with it.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2.5">
             <select
@@ -848,7 +886,7 @@ function RecordPane({
               disabled={busy || !assignee}
               className="rounded-full bg-[#2f7d78] px-6 py-2.5 text-[13.5px] text-white transition-colors hover:bg-[#1f5c58] disabled:opacity-50"
             >
-              {busy ? "Working…" : "Promote to lead"}
+              {busy ? "Working…" : handoff ? "Hand to manager" : "Promote to lead"}
             </button>
           </div>
           {assignOptions.length === 0 && (
@@ -857,8 +895,10 @@ function RecordPane({
             </p>
           )}
           <p className="mt-2 text-[12px] text-[#3c4d4b]">
-            An employee gets it in their pipeline. A manager, or you, get it in the Client section
-            — in a folder mirroring this one.
+            An <strong className="font-medium">employee</strong> gets a lead in their pipeline.{" "}
+            <strong className="font-medium">You</strong> get a lead in your Client section. A{" "}
+            <strong className="font-medium">manager</strong> gets the record in their own Data
+            Bank, to hand to one of their team or take themselves.
           </p>
         </div>
 

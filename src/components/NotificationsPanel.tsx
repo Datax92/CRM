@@ -18,6 +18,7 @@ const ALERT_META: Record<string, { label: string; icon: typeof AlertTriangle; to
   DEAL_CLOSED_REVIEW: { label: "Deal closed — profit to distribute", icon: PieChart, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   PROFIT_SHARE_ASSIGNED: { label: "Your share of a closed deal", icon: Wallet, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   COLD_REVIEW_REQUIRED: { label: "Lead may be cold — needs a decision", icon: Snowflake, tone: "text-sky-700 bg-sky-50 border-sky-200" },
+  DATA_BANK_ASSIGNED: { label: "Data Bank records handed to you", icon: Bell, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
 
   // Attendance (§8). Late and absent are the admin's and HR's; the four
   // leave alerts and the adjustment go to the employee they are about.
@@ -44,6 +45,12 @@ const ALERT_META: Record<string, { label: string; icon: typeof AlertTriangle; to
 function alertAction(type: string, role: string | undefined): { href: string; label: string } | null {
   if (type === "DEAL_CLOSED_REVIEW" && role === "admin") {
     return { href: "/admin/financials/distribution", label: "Finalize Profit Distribution" };
+  }
+  // Records handed to a manager are work waiting on them — they have to
+  // distribute them before anybody can call anyone, so the alert links to
+  // where that happens.
+  if (type === "DATA_BANK_ASSIGNED" && role === "subadmin") {
+    return { href: "/subadmin/data-bank", label: "Open my Data Bank" };
   }
   if (type === "PROFIT_SHARE_ASSIGNED") {
     return {

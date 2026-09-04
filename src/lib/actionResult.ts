@@ -12,6 +12,12 @@
  */
 
 import { QUOTA_MESSAGE, isQuotaExhausted } from './quotaError';
+import {
+  CREDENTIALS_MESSAGE,
+  credentialsKnownMissing,
+  isCredentialFailure,
+  noteCredentialFailure,
+} from './configError';
 
 export type ActionResult<T = void> =
   | { ok: true; data: T }
@@ -45,6 +51,14 @@ export async function runAction<T>(
   body: () => Promise<T>
 ): Promise<ActionResult<T>> {
   const startedAt = Date.now();
+
+  // Already established that the server has no credentials. Discovering it
+  // again costs ~3s of metadata probing per call and cannot produce a
+  // different answer — the fix is an env change and a restart.
+  if (credentialsKnownMissing()) {
+    return { ok: false, error: CREDENTIALS_MESSAGE };
+  }
+
   try {
     const data = await body();
     const took = Date.now() - startedAt;
@@ -59,6 +73,18 @@ export async function runAction<T>(
 
     if (isUserFacing) {
       return { ok: false, error: (error as Error).message };
+    }
+
+    // No service account. A configuration failure, not a bug — and the one
+    // that most looks like a bug, because the browser keeps working while
+    // every Server Action fails. Say which it is.
+    if (isCredentialFailure(error)) {
+      noteCredentialFailure();
+      console.error(
+        `[action:${label}] no Firebase Admin credentials after ${Date.now() - startedAt}ms — ` +
+          'set FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in .env.local and restart.'
+      );
+      return { ok: false, error: CREDENTIALS_MESSAGE };
     }
 
     // A spent daily quota is not a bug and not an outage, and the generic

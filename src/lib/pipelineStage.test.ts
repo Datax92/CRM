@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  awaitingFirstEntry,
   autoPipelineStage,
   pipelineStage,
   explainPipelineStage,
@@ -165,4 +166,73 @@ test('an unknown stored status is shown, not blanked', () => {
   assert.equal(statusLabel('SOME_OLD_STATUS'), 'Some Old Status');
   assert.equal(statusLabel(''), '—');
   assert.equal(statusLabel('MEETING_DONE'), 'Meeting Done');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Accepting a lead is not progress on it                                      */
+/* -------------------------------------------------------------------------- */
+
+test('an accepted lead with no entries carries no stage at all', () => {
+  const fresh = { status: 'ACCEPTED', followUpCount: 0 };
+
+  assert.equal(awaitingFirstEntry(fresh), true);
+  assert.equal(autoPipelineStage(fresh), null);
+  assert.equal(pipelineStage(fresh).value, null);
+});
+
+test('the first Remark is what makes an accepted lead P3', () => {
+  assert.equal(pipelineStage({ status: 'ACCEPTED', followUpCount: 1 }).value, 'P3');
+  assert.equal(pipelineStage({ status: 'ACCEPTED', followUpCount: 7 }).value, 'P3');
+});
+
+test('a missing followUpCount reads as no entries, not as one', () => {
+  // Leads written before the counter existed must not be reported as worked.
+  assert.equal(pipelineStage({ status: 'ACCEPTED' }).value, null);
+  assert.equal(pipelineStage({ status: 'ACCEPTED', followUpCount: null }).value, null);
+});
+
+test('only ACCEPTED waits for its Remark — every other P3 status is deliberate', () => {
+  // "Contacted" or "Following up" is somebody saying they did the work, so the
+  // band starts immediately even with no note typed yet.
+  for (const status of STAGE_STATUSES.P3) {
+    if (status === 'ACCEPTED') continue;
+    // NOT_INTERESTED is listed in the P3 band but is a closed lead, so it
+    // carries no stage at all — the band says what kind of conversation it
+    // was, not whether the lead is still open.
+    if (status === 'NOT_INTERESTED') continue;
+    assert.equal(
+      pipelineStage({ status, followUpCount: 0 }).value,
+      'P3',
+      `${status} should be P3 straight away`
+    );
+  }
+});
+
+test('the assignment states still carry no stage, entries or not', () => {
+  for (const status of ['NEW', 'ASSIGNED', 'UNASSIGNED_NO_CAPACITY']) {
+    assert.equal(pipelineStage({ status, followUpCount: 3 }).value, null);
+    assert.equal(awaitingFirstEntry({ status, followUpCount: 0 }), false);
+  }
+});
+
+test('the P2 and P1 bands never wait for a Remark', () => {
+  for (const status of [...STAGE_STATUSES.P2, ...STAGE_STATUSES.P1]) {
+    assert.equal(pipelineStage({ status, followUpCount: 0 }).value, stageForStatus(status));
+  }
+});
+
+test('a pinned stage still wins over the waiting rule', () => {
+  const pinned = pipelineStage({
+    status: 'ACCEPTED',
+    followUpCount: 0,
+    pipelineStageOverride: 'COLD',
+  });
+  assert.equal(pinned.value, 'COLD');
+  assert.equal(pinned.manual, true);
+});
+
+test('the explanation names the Remark as what moves it on', () => {
+  const line = explainPipelineStage({ status: 'ACCEPTED', followUpCount: 0 });
+  assert.match(line, /Remark/);
+  assert.match(line, /P3/);
 });
