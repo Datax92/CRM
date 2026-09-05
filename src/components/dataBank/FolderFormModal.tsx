@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { createDataBankFolder, updateDataBankFolder } from "@/lib/clientActions";
 import { useSubAdmins } from "@/hooks/useEmployees";
+import { useAuth } from "@/context/AuthContext";
 import { MAX_FIELDS_PER_FOLDER } from "@/lib/dataBank";
 import type { DataBankFolder } from "@/hooks/useDataBank";
 
@@ -52,7 +53,16 @@ export function FolderFormModal({
   // every folder created before the hierarchy means, so the empty option is
   // first and is the default.
   const [subAdminUid, setSubAdminUid] = useState(folder?.subAdminUid ?? "");
-  const { subAdmins } = useSubAdmins();
+  /**
+   * Who a folder belongs to is the **admin's** decision, so only the admin is
+   * asked. `createDataBankFolder` files a manager's folder under their own uid
+   * from the verified token, and `updateDataBankFolder` ignores the field for a
+   * manager entirely — so this is a control that is absent rather than present
+   * and quietly ignored.
+   */
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
+  const { subAdmins } = useSubAdmins(isAdmin);
   const [rows, setRows] = useState<Row[]>(() =>
     folder
       ? folder.fields.map((field, index) => ({ key: field.key, label: field.label, uid: index }))
@@ -197,7 +207,9 @@ export function FolderFormModal({
 
           {/* §7 — handing a folder to a sub admin. This is the only control
               that grants access to a cold list, so it says plainly what it
-              does rather than reading as a filing label. */}
+              does rather than reading as a filing label. Admin only; a manager
+              is always making their own. */}
+          {isAdmin && (
           <label className={LABEL}>
             <span>Assigned to</span>
             <select
@@ -217,6 +229,7 @@ export function FolderFormModal({
               others.
             </span>
           </label>
+          )}
 
           <div className="h-px bg-[#e6f1f0]" />
 

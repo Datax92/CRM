@@ -1,7 +1,16 @@
 "use client";
 
 /**
- * Employee performance dossier, built to `Employee Directory.dc.html`.
+ * Performance dossier, built to `Employee Directory.dc.html`.
+ *
+ * **One dossier, two subjects.** Pass `team` and it becomes a *manager's*: the
+ * same header, the same figure strip, the same tabs, reading their team's
+ * leads, deals and activity instead of one person's, with a Team tab listing
+ * the people the figures are the sum of. A manager takes no leads themselves,
+ * so their numbers **are** their team's — the rule `lib/managerMetrics` exists
+ * for — and a second component that restated it would drift from this one the
+ * first time either changed. The admin could previously open any employee and
+ * no manager at all, which is the gap this closes.
  *
  * Everything here is derived from documents the directory page already holds —
  * the employee's leads and closed deals — rather than fetched per employee.
@@ -40,13 +49,15 @@ import {
   type DossierFilters,
 } from "./directoryChrome";
 import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "./AnalyticsPanels";
+import { buildManagerMetrics } from "@/lib/managerMetrics";
+import { formatCompactMoney } from "@/lib/money";
 import { countByFilter } from "@/lib/leadBuckets";
 import { DossierFilterBar, Pager } from "./DossierControls";
 
 /** Rows per page inside the dossier's tabs. */
 const PAGE_SIZE = 6;
 
-type Tab = "leads" | "deals" | "activity" | "analytics";
+type Tab = "leads" | "deals" | "activity" | "analytics" | "team";
 
 /** Most recent meaningful moment on a lead. */
 function lastTouchAt(lead: Lead) {
@@ -64,12 +75,21 @@ export function EmployeeDetailModal({
   employee,
   leads,
   deals,
+  team,
   onClose,
   onEdit,
+  onOpenMember,
 }: {
   employee: EmployeeMetrics;
   leads: Lead[];
   deals: DealRecord[];
+  /**
+   * Present when the subject is a **manager**: the employees assigned to them.
+   * Its presence is what switches this dossier into manager mode — an empty
+   * array is a manager with nobody under them yet, which is a real state and
+   * reads as zeros, not as an employee.
+   */
+  team?: EmployeeMetrics[];
   onClose: () => void;
   /**
    * Absent for a sub admin: editing an employee is `requireAdmin` on the
@@ -77,6 +97,8 @@ export function EmployeeDetailModal({
    * administrators". Everything else in the dossier reads the same for both.
    */
   onEdit?: () => void;
+  /** Open one of the manager's employees. Manager mode only. */
+  onOpenMember?: (member: EmployeeMetrics) => void;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("leads");
   /**
@@ -88,25 +110,84 @@ export function EmployeeDetailModal({
   const { getIdToken } = useAuth();
   const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
 
+  const isManager = team !== undefined;
+
+  /**
+   * Whose work this dossier is about.
+   *
+   * For an employee, themselves. For a manager, **themselves and their team** —
+   * a manager can hold leads of their own (a Data Bank record taken into their
+   * Client section is assigned to them), and dropping those would show a
+   * manager a smaller number than the pipeline does.
+   */
+  const owners = useMemo(
+    () => new Set<string>([employee.uid, ...(team ?? []).map((member) => member.uid)]),
+    [employee.uid, team]
+  );
+
+  /**
+   * A manager's headline figures are their team's, summed once.
+   *
+   * `buildManagerMetrics` is the same function the Managers panel behind this
+   * modal uses, so the card and the dossier cannot disagree about the same
+   * manager. The manager's own row is included, for the reason above.
+   */
+  const figures = useMemo(
+    () => (isManager ? buildManagerMetrics(employee, team ?? []) : null),
+    [isManager, employee, team]
+  );
+
+  /**
+   * The subject in one shape, so nothing below has to ask which kind it is.
+   *
+   * The manager's **own record** supplies the fields a total cannot have — the
+   * KPI targets the Analytics tab measures against, the job title, the joining
+   * date — and the team totals are laid over the counts. Summing a target
+   * across a team would compare a manager's revenue to one person's goal.
+   */
+  const subject: EmployeeMetrics = useMemo(
+    () =>
+      figures
+        ? {
+            ...employee,
+            assigned: figures.assigned,
+            accepted: figures.accepted,
+            missed: figures.missed,
+            active: figures.active,
+            closedWon: figures.closedWon,
+            lost: figures.lost,
+            followUps: figures.followUps,
+            calls: figures.calls,
+            revenue: figures.revenue,
+            payable: figures.payable,
+            profit: figures.profit,
+          }
+        : employee,
+    [figures, employee]
+  );
+
   const ownLeads = useMemo(
     () =>
       leads
-        .filter((l) => l.assignedUserId === employee.uid)
+        .filter((l) => (l.assignedUserId ? owners.has(l.assignedUserId) : false))
         .sort((a, b) => toMillis(lastTouchAt(b)) - toMillis(lastTouchAt(a))),
-    [leads, employee.uid]
+    [leads, owners]
   );
   const ownDeals = useMemo(
     () =>
       deals
-        .filter((d) => d.userId === employee.uid)
+        .filter((d) => (d.userId ? owners.has(d.userId) : false))
         .sort((a, b) => toMillis(b.dealDate ?? b.enteredAt) - toMillis(a.dealDate ?? a.enteredAt)),
-    [deals, employee.uid]
+    [deals, owners]
   );
   const analytics = useMemo(
-    () => buildDirectoryAnalytics(employee, leads, deals),
-    [employee, leads, deals]
+    () => buildDirectoryAnalytics(subject, leads, deals, owners),
+    [subject, leads, deals, owners]
   );
-  const activity = useMemo(() => buildActivity(employee, leads, deals), [employee, leads, deals]);
+  const activity = useMemo(
+    () => buildActivity(employee, leads, deals, owners),
+    [employee, leads, deals, owners]
+  );
 
   // The filters cut the tab bodies only. The figure strip and the Analytics
   // tab keep describing the employee's whole record — a headline that moved
@@ -146,27 +227,43 @@ export function EmployeeDetailModal({
     };
   }, [onClose]);
 
-  const winRate = employee.assigned > 0 ? ((employee.closedWon / employee.assigned) * 100).toFixed(1) : "0.0";
+  const winRate = subject.assigned > 0 ? ((subject.closedWon / subject.assigned) * 100).toFixed(1) : "0.0";
   // Offered, then taken away when the window lapsed — the denominator is
   // everything they were ever offered, not just what they kept.
-  const offered = employee.accepted + employee.missed;
-  const acceptanceRate = offered > 0 ? ((employee.accepted / offered) * 100).toFixed(1) : "100.0";
+  const offered = subject.accepted + subject.missed;
+  const acceptanceRate = offered > 0 ? ((subject.accepted / offered) * 100).toFixed(1) : "100.0";
 
   const tabs: Array<{ key: Tab; label: string; count: number | null }> = [
-    { key: "leads", label: "Assigned Leads", count: ownLeads.length },
+    // A manager's list is their team's, so it is not "assigned" to them.
+    { key: "leads", label: isManager ? "Team Leads" : "Assigned Leads", count: ownLeads.length },
     { key: "deals", label: "Deals Closed", count: ownDeals.length },
+    ...(isManager
+      ? [{ key: "team" as Tab, label: "Team", count: (team ?? []).length }]
+      : []),
     { key: "activity", label: "Activity", count: activity.length },
     { key: "analytics", label: "Analytics", count: null },
   ];
 
-  const stats: Array<{ label: string; value: string; color: string }> = [
-    { label: "Leads Handled", value: String(employee.assigned), color: E.ink },
-    { label: "Acceptance Rate", value: `${acceptanceRate}%`, color: E.ink },
-    { label: "Win Rate", value: `${winRate}%`, color: E.ink },
-    { label: "Missed Leads", value: String(employee.missed), color: employee.missed > 0 ? E.red : E.ink },
-    { label: "Won / Lost", value: `${employee.closedWon} / ${employee.lost}`, color: E.tealInk },
-    { label: "Profit Generated", value: formatMoney(employee.profit), color: E.tealInk },
-  ];
+  const stats: Array<{ label: string; value: string; color: string }> = isManager
+    ? [
+        // Headcount replaces acceptance rate: a manager accepts nothing, and a
+        // rate summed over a team answers a question nobody asked of them. How
+        // many people they run is the first thing anybody wants to know.
+        { label: "Team Size", value: String((team ?? []).length), color: E.ink },
+        { label: "Leads Handled", value: String(subject.assigned), color: E.ink },
+        { label: "Win Rate", value: `${winRate}%`, color: E.ink },
+        { label: "Missed Leads", value: String(subject.missed), color: subject.missed > 0 ? E.red : E.ink },
+        { label: "Won / Lost", value: `${subject.closedWon} / ${subject.lost}`, color: E.tealInk },
+        { label: "Revenue", value: formatCompactMoney(subject.revenue), color: E.tealInk },
+      ]
+    : [
+        { label: "Leads Handled", value: String(subject.assigned), color: E.ink },
+        { label: "Acceptance Rate", value: `${acceptanceRate}%`, color: E.ink },
+        { label: "Win Rate", value: `${winRate}%`, color: E.ink },
+        { label: "Missed Leads", value: String(subject.missed), color: subject.missed > 0 ? E.red : E.ink },
+        { label: "Won / Lost", value: `${subject.closedWon} / ${subject.lost}`, color: E.tealInk },
+        { label: "Profit Generated", value: formatMoney(subject.profit), color: E.tealInk },
+      ];
 
   if (typeof document === "undefined") return null;
 
@@ -194,7 +291,7 @@ export function EmployeeDetailModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Employee: ${employee.name}`}
+        aria-label={`${isManager ? "Manager" : "Employee"}: ${employee.name}`}
         className="animate-modal-pop"
         style={{
           position: "relative",
@@ -262,19 +359,37 @@ export function EmployeeDetailModal({
               >
                 {employee.status === "ACTIVE" ? "Active" : "Inactive"}
               </span>
-              <span
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.5)",
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Priority {employee.priority}
-              </span>
-              {employee.autoAssign === false && (
+              {/* A manager has no place in the distribution lane — the Add
+                  Manager form does not offer a priority, so printing one would
+                  be inventing a rank they are not in. */}
+              {isManager ? (
+                <span
+                  style={{
+                    padding: "4px 12px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.5)",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Manager · {(team ?? []).length} {(team ?? []).length === 1 ? "employee" : "employees"}
+                </span>
+              ) : (
+                <span
+                  style={{
+                    padding: "4px 12px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.5)",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Priority {employee.priority}
+                </span>
+              )}
+              {!isManager && employee.autoAssign === false && (
                 <span
                   style={{
                     padding: "4px 12px",
@@ -291,7 +406,8 @@ export function EmployeeDetailModal({
               )}
             </div>
             <div style={{ fontSize: 12.5, fontWeight: 500, opacity: 0.85, marginTop: 4 }}>
-              {employee.email} &nbsp;·&nbsp; {employee.jobTitle}
+              {employee.email}
+              {employee.jobTitle && <> &nbsp;·&nbsp; {employee.jobTitle}</>}
               {(employee.joinedAt || employee.createdAt) && (
                 <> &nbsp;·&nbsp; Joined {formatBusinessDate(employee.joinedAt ?? employee.createdAt)}</>
               )}
@@ -509,8 +625,15 @@ export function EmployeeDetailModal({
               </>
             )}
 
+            {activeTab === "team" && (
+              <TeamRoster
+                team={team ?? []}
+                onOpen={onOpenMember}
+              />
+            )}
+
             {activeTab === "analytics" && (
-              <AnalyticsPanels analytics={analytics} handled={employee.assigned} variant="web" />
+              <AnalyticsPanels analytics={analytics} handled={subject.assigned} variant="web" />
             )}
           </div>
         </div>
@@ -846,6 +969,171 @@ function DealsList({ deals, empty }: { deals: DealRecord[]; empty: boolean }) {
         </Card>
       ))}
     </div>
+  );
+}
+
+/**
+ * The people a manager's figures are the sum of.
+ *
+ * Deliberately not a second directory table: it is the roll-call that explains
+ * the numbers above it, so each row carries the two figures those numbers are
+ * built from and opens that person's own dossier for the rest. The manager's
+ * own row is not here — they are the subject, not a member of their own team.
+ */
+function TeamRoster({
+  team,
+  onOpen,
+}: {
+  team: EmployeeMetrics[];
+  onOpen?: (member: EmployeeMetrics) => void;
+}) {
+  if (team.length === 0) {
+    return (
+      <EmptyPanel>
+        No employees on this team yet. Somebody joins it from their own record, in the Reports To
+        field.
+      </EmptyPanel>
+    );
+  }
+
+  const sorted = [...team].sort((a, b) => b.assigned - a.assigned || a.name.localeCompare(b.name));
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {sorted.map((member, index) => {
+        const winRate = member.assigned > 0 ? Math.round((member.closedWon / member.assigned) * 100) : 0;
+
+        return (
+          <div
+            key={member.uid}
+            role={onOpen ? "button" : undefined}
+            tabIndex={onOpen ? 0 : undefined}
+            onClick={onOpen ? () => onOpen(member) : undefined}
+            onKeyDown={
+              onOpen
+                ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpen(member);
+                    }
+                  }
+                : undefined
+            }
+            className={index < 10 ? "directory-row-in" : undefined}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "34px minmax(0,1fr) auto",
+              alignItems: "center",
+              gap: 12,
+              border: `1px solid ${E.border}`,
+              borderRadius: 12,
+              background: E.surface,
+              padding: "11px 14px",
+              cursor: onOpen ? "pointer" : "default",
+              animationDelay: index < 10 ? `${index * 28}ms` : undefined,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 999,
+                background: E.tealTint,
+                color: E.tealInk,
+                display: "grid",
+                placeItems: "center",
+                fontSize: 12.5,
+                fontWeight: 800,
+              }}
+            >
+              {initialsOf(member.name)}
+            </span>
+
+            <span style={{ minWidth: 0 }}>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 13.5,
+                  fontWeight: 700,
+                  color: E.ink,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {member.name}
+                {member.status === "DISABLED" && (
+                  <span style={{ marginLeft: 7, fontSize: 10, fontWeight: 800, color: E.amber }}>
+                    INACTIVE
+                  </span>
+                )}
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 11.5,
+                  color: E.faint,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {member.jobTitle || member.email}
+              </span>
+            </span>
+
+            <span style={{ display: "flex", gap: 18, textAlign: "right", flexShrink: 0 }}>
+              <MemberFigure label="Leads" value={String(member.assigned)} />
+              <MemberFigure label="Won" value={String(member.closedWon)} accent />
+              {/* A zero renders in the hairline tone, so a row of real work
+                  stands out from a row of nothing. */}
+              <MemberFigure label="Win rate" value={`${winRate}%`} muted={winRate === 0} />
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MemberFigure({
+  label,
+  value,
+  accent,
+  muted,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <span style={{ display: "block", minWidth: 46 }}>
+      <span
+        style={{
+          display: "block",
+          fontSize: 15,
+          fontWeight: 800,
+          fontVariantNumeric: "tabular-nums",
+          color: muted ? E.hair : accent ? E.tealInk : E.ink,
+        }}
+      >
+        {value}
+      </span>
+      <span
+        style={{
+          display: "block",
+          fontSize: 9.5,
+          fontWeight: 700,
+          letterSpacing: "0.7px",
+          textTransform: "uppercase",
+          color: E.label,
+        }}
+      >
+        {label}
+      </span>
+    </span>
   );
 }
 

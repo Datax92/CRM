@@ -595,7 +595,7 @@ export function AttendanceDashboard({ basePath }: { basePath: string }) {
 
       <p style={{ marginTop: 14, fontSize: 11.5, color: E.faint, lineHeight: 1.6 }}>
         Check in and out from the dashboard — one control, so a day cannot be opened twice. Check In
-        is refused off the office network when the restriction is on;{" "}
+        is refused off the office Wi-Fi when the restriction is on;{" "}
         <strong style={{ color: E.muted }}>Check Out works from anywhere</strong>, so a day never
         stays open because somebody finished at a client site. Scoped on the server — a manager sees
         their own team, an admin and HR see everyone.

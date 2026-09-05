@@ -42,12 +42,14 @@ import type { ColumnMap, DataBankStatus } from '@/lib/dataBank';
 import {
   recordAttendancePing as _recordAttendancePing,
   punchAttendance as _punchAttendance,
+  getPunchRequirements as _getPunchRequirements,
   setAttendanceOverride as _setAttendanceOverride,
   getAttendanceConfig as _getAttendanceConfig,
   setAttendanceConfig as _setAttendanceConfig,
   type AttendanceConfig,
   type AttendancePingResult,
   type AttendancePunchResult,
+  type PunchContext,
   type PunchKind,
 } from '@/app/actions/attendance';
 import type { AttendanceStatus } from '@/lib/attendance';
@@ -393,13 +395,38 @@ export async function recordAttendancePing(token: string): Promise<ActionResult<
   return _recordAttendancePing(token);
 }
 
-/** The employee's own Check In / Check Out. */
+/**
+ * The employee's own Check In / Check Out.
+ *
+ * `context` carries what the *device* claims: the Wi-Fi network name, which no
+ * browser will tell us and the employee therefore types once, and the position,
+ * which the browser will give up but only with permission. Both are claims, and
+ * both are judged on the server. It never carries the address: that is read off
+ * the request server-side, where the browser cannot reach it.
+ */
 export async function punchAttendance(
   token: string,
-  kind: PunchKind
+  kind: PunchKind,
+  context: PunchContext = {}
 ): Promise<ActionResult<AttendancePunchResult>> {
   if (IS_DEMO) return demo.punchAttendance(actor().uid, kind) as ActionResult<AttendancePunchResult>;
-  return _punchAttendance(token, kind);
+  return _punchAttendance(token, kind, context);
+}
+
+/**
+ * Whether this employee must name their Wi-Fi network to check in.
+ *
+ * Asked rather than assumed: `config/attendance` is admin-only, so the punch
+ * control cannot read the policy, and showing the field to everybody would put
+ * a question on the screen of every office that does not use it.
+ */
+export async function getPunchRequirements(
+  token: string
+): Promise<ActionResult<{ wifiRequired: boolean; locationRequired: boolean; exempt: boolean }>> {
+  if (IS_DEMO) {
+    return { ok: true, data: { wifiRequired: false, locationRequired: false, exempt: false } };
+  }
+  return _getPunchRequirements(token);
 }
 
 export async function setAttendanceOverride(

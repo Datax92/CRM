@@ -49,7 +49,9 @@ follow-ups, attendance, payroll and financial reporting.
 - **Cold is decided, not inflicted.** `meetsColdRule` (10 follow-ups without reaching Seems Interested) raises `coldPending` and notifies the admin *and* the lead's manager once, guarded by `coldReviewRequestedAt`. `reviewColdLead` writes the decision; dismissing clears the flag so the rule can raise it again. The employee is told either way.
 - **Lead source names the exact origin** — `Data Bank (Facile Town 2)`, `Meta Ads (Ramadan Offer)` — from fields denormalised onto the lead at creation, never a live join (`lib/leadSource.ts`). A folder rename must not rewrite a lead's recorded origin.
 - **Entries: the first is a Remark, the rest are Follow-Ups.** `kind` is now *stored* (the day rule has to know whether the Remark exists before writing); `lib/followUpKind.ts` still labels older entries by position. `entryAllowance`: day one takes a Remark *and* a Follow-Up, every later day one Follow-Up. Admins are exempt from the per-day cap.
-- **Only the newest entry is editable, for every role including admin.** Editing appends the previous values to `revisions` with who and when, and moves the KPI counters by the delta.
+- **Only the newest entry is editable, for every role including admin.** Editing appends the previous values to `revisions` with who and when, and moves the KPI counters by the delta. The lead names it in `latestFollowUpId` — and **where that field is absent**, on leads whose entries predate it, the newest is resolved from the subcollection by `occurredAt`, which is the order the pane displays. It used to read `if (lead.latestFollowUpId && …)`, so on exactly those leads the guard evaluated false and the rule stopped existing: every entry was editable. The pointer is written back on the first edit, so each such lead repairs itself.
+- **Entries are numbered along the list, not against it.** `index` is the position in the *chronological* array: the Remark is named rather than numbered, and each Follow-Up after it is #1, #2, #3. Counting down from `length` numbered a five-entry lead #4, #3, #2, #1 and left the newest — the only editable one — with no number at all.
+- **Deal Closed is not in the status dropdown.** `setLeadStatus` refuses `CLOSED_WON` outright, because a won deal has to come through Deal Entry so the customer record and the amounts are captured. Offering it was offering a choice that could only produce an error, which read as the status refusing to change.
 - History renders **chronologically** (`toChronological` at the point of display). Queries, `latestFollowUpId` and the edit-the-newest rule all stay newest-first.
 - **KYC is the client record and every field is optional** — including the name. Saving it rewrites the lead's name / phone / email / city and pre-fills Deal Entry, all in one transaction (`lib/kyc.ts`). An incomplete KYC saved on the first call is the normal case.
 - A follow-up recording a meeting sets `meetingHeld: true` on the lead, one-way.
@@ -61,7 +63,7 @@ follow-ups, attendance, payroll and financial reporting.
 - **Never a list on the manager.** A Security Rule cannot prove a list query against a scope held in another document, so every sub-admin query is `where('subAdminUid','==',me)` and every rule mirrors it exactly.
 - **Two levels deep only** — a sub admin never reports to a sub admin. A chain would make "whose team is this" a graph walk, and rules cannot walk graphs.
 - Moving somebody between teams re-stamps their leads and deals in paged batches (`reassignTeamOwnership`) — deliberately not a transaction; a half-finished run leaves stale ownership rather than corruption, and re-running finishes it.
-- **A Manager is not an employee.** Own Add Manager form: no lane priority, no KPI targets, no auto-assign, no job title, no leads. Their analytics are their team's, summed on read (`lib/managerMetrics.ts`) with conversion team-wide (won ÷ handled), never an average of per-person rates. Their lead view is read-only for lead work — the server books follow-ups and deals against the *assigned employee*, so a manager logging one would credit somebody else's KPI.
+- **A Manager is not an employee.** Own Add Manager form: no lane priority, no KPI targets, no auto-assign, no job title, no leads. Their analytics are **their team's plus their own**, summed on read (`lib/managerMetrics.ts`) with conversion team-wide (won ÷ handled), never an average of per-person rates — the same set `reportScope.teamOf` builds, so the directory card, the manager's dossier and Reports agree on one number. `headcount` stays the *team* size. **Clicking a manager opens the same `EmployeeDetailModal` an employee row does**, given their team: pass `team` and it is a manager's dossier (Team Leads / Deals / Team / Activity / Analytics, team-scoped), omit it and it is an employee's. One component, because two would drift. Their lead view is read-only for **their team's** leads — the server books follow-ups and deals against the *assigned employee*, so a manager logging one would credit somebody else's KPI. **A lead assigned to the manager themselves is theirs to work**: a Data Bank record promoted into their Client section, or one handed to them, carries `assignedUserId = their uid`, so the entry credits them. `canWorkLead` always allowed it; only the two panes refused, which is why a manager could open a lead in Clients and not write a word on it.
 - `managerKind` (SALES / HR) rides in the **auth claim**, because the sidebar must know before it can draw. Changing it re-issues the claim and revokes the token. An older manager with no claim reads as SALES.
 - Employees see only their own leads; a sub admin only their team's — enforced in rules *and* server actions. **Every read hook takes a scope for this reason**, not as an optimisation: `useLeads`, `useEmployees`, `useDataBankFolders`, `useFinancials` and `useClientFolderMembers` all add the clause their rule checks, and an unscoped list query is refused outright rather than returning less. This has now shipped as a bug three times — the symptom is always a screen that renders with *nothing in it* rather than an error.
 - **The admin directory and a sub admin's Team page are one component** (`DirectoryView`), because two implementations of "the team" drift. Every mutating employee action is `requireAdmin`, so a sub admin gets the same screen with those controls **absent** rather than present and failing.
@@ -80,9 +82,21 @@ follow-ups, attendance, payroll and financial reporting.
 
 ## Attendance
 
-- **Presence is declared** (Check In / Check Out); **location is not** — the network is classified server-side from the request's own IP, read **first-entry-first** from `x-forwarded-for` (the last hop is the platform proxy and identical for everyone).
+- **Presence is declared** (Check In / Check Out). **Location has two checks, and they are not equally strong.** Both are judged on the server; a client-side verdict would be bypassed by editing one response.
+  - **Where the device is** (`classifyLocation`) — the browser's geolocation, against the office's marked coordinates. **This is the check that answers the question**: a saved Wi-Fi name travels home in somebody's pocket, a position does not. Faking it needs a mock-location app or devtools; *forgetting* to fake it is impossible, which is the whole difference.
+  - **The Wi-Fi network name** (`classifyWifi`) — corroboration, and the answer for a device that will not share a position at all.
+  - **The IP allow-list was removed, not tuned.** A business line's public address is dynamic: the ISP hands out a new one on reconnect, a list built from today's address silently stops matching, and the restriction then refuses the entire company. That is the mechanism being wrong for the network, not a value needing adjustment. The address is still **recorded** on every punch (`checkInIp`, `lastIp`) and shown on the day's record — it is what an admin checks a suspicious day against — but nothing is ever matched against it and there is no list to maintain.
+  - **No browser exposes the SSID.** There is no web API for it, on any platform. So the name is typed once per device, kept in `localStorage` (`useStoredNetworkName`, read through `useSyncExternalStore` — a `localStorage` read in a render body and a `setState` in an effect are both rejected by the lint rule), sent with the punch, and compared **on the server**.
+  - **What makes a declared signal hold up is that it is never blind.** The accepted names are never shown to an employee — not in Settings they cannot open, not in the punch control, and **not in the refusal message**, which names only what *their* device claimed. A check whose expected answer is printed on the failure screen is a prompt, not a check. Every refused check-in is written to `users/{uid}.lastRefusedCheckIn` and **notifies the admin, HR and the employee's own manager**, once per employee per day. Bypassable but visible is the achievable goal; unbypassable is not.
+  - The refusal is filed on the **user** document, never on `attendance/{uid}_{dayKey}`: creating that document with no `firstActionAt` would make a refused attempt look like an opened day, and `deriveStatus` grades a day with no activity as absent. A refusal must not change anybody's attendance.
+  - **The radius is compared against the distance alone**, never against distance minus the error bar. Subtracting the accuracy is how a 150m rule quietly becomes a 400m one that the admin who typed 150 cannot see. Accuracy is used for exactly one thing: throwing out readings vaguer than `MAX_FIX_ACCURACY_METERS` (200m), which come back **`IMPRECISE`** and are asked to retry — never `AWAY`. A laptop positioning itself from surrounding Wi-Fi is routinely a kilometre out, and refusing that person as though they were at home would be wrong. Set the radius generously instead; it is a number on a screen somebody can change.
+  - **The office is marked by standing in it and pressing a button**, not by typing coordinates. An admin who has to look up their own latitude will transpose it, and a wrong office refuses the entire company. Settings refuses to pin the office from a reading vaguer than 200m for the same reason.
+  - `resolveNetwork` lets **location win outright** when it has an answer — an office day whose network name was never set is still an office day, and a day five kilometres away is remote whatever the device typed. The Wi-Fi name is the fallback only when location knows nothing.
+  - **Location is read only at the moment Check In is pressed** — `withLocation` is passed for `kind === "IN"` and nothing else, so no other screen triggers a permission prompt. A prompt on a screen that has no use for the answer teaches people to hit Block, and somebody who has blocked it cannot check in at all. `PunchRulesHint` says so *before* the browser asks.
+  - A device that will not give a position sends its **failure code** to the server rather than giving up locally: the refusal is the server's to make and to record, and deciding locally would lose the one event an admin needs to see.
+  - `getPunchRequirements` tells the punch control whether to ask for a name and whether to ask for a position — booleans only, **never the office coordinates**, which a client that knew them could send straight back — a boolean and nothing else, because `config/attendance` is admin-only and a dropdown of accepted names would hand over the answer. It is **re-asked after a refused punch**, or a browser open since before the admin switched the rule on would be told to use a box that is not on its screen.
 - **Check-in is refused off the office network; check-out never is.** Blocking a check-out would strand an open day, and an open day grades as a half day.
-- `ipRestriction` absent + `officeIps` non-empty ⇒ **enforced**. Absent + empty ⇒ not enforced (nothing to enforce against, and refusing everybody locks the company out). Explicit `true`/`false` always wins.
+- `locationRestriction` absent + a marked office ⇒ **enforced**; `wifiRestriction` absent + `officeWifiNames` non-empty ⇒ **enforced**. Absent + empty ⇒ not enforced (nothing to enforce against, and refusing everybody locks the company out — the exact failure the address check produced). Explicit `true`/`false` always wins, and Settings always sends the field. Saving either restriction on with nothing behind it — no office marked, no names listed — is refused. A coordinate is kept only as a **pair**: half an office is no office, and `0,0` is in the Atlantic, which is what an unset field looks like. `ipExemptUids` keeps its stored name — renaming it would empty every existing exemption list on the next read — and means "may check in from any network".
 - Unconfigured is **`UNKNOWN` ("Unverified")**, never "Remote" — a month of "Remote" must be distinguishable from a setting nobody filled in.
 - Statuses are PRESENT / **LATE** / ABSENT / LEAVE, each carrying a letter as well as a colour. An override wins everywhere, including the deduction, and is stored *beside* the observed times.
 - `deriveStatus(0, true)` is `HALF_DAY` — a day checked in but not out is never graded absent. Half days count as **half** in the rate.
@@ -103,11 +117,13 @@ follow-ups, attendance, payroll and financial reporting.
   entry* — the first follow-up moves a lead out of it — and Follow-ups is two or more.
   Connected cuts across both, reading `connectCount`, so a call under 1:10 is contact
   and not a connect.
-- Reports (`buildTeamReport`, a Server Action) have **one subject at a time** — an employee, a manager (their own work *and* their team's), the admin, All Employees, or All Managers. Every figure is built per person once (`lib/reportScope`), and a composite subject is the sum of a *set of people*, which is what makes double-counting impossible rather than merely unlikely. New Connects is the *first* connected contact on a lead (its Remark), Follow-up Connects every later one — disjoint, or the columns sum to more than the work that happened. The activity columns are range-scoped; P1/P2/P3 describe where the leads stand today and say so.
+- Reports (`buildTeamReport`, a Server Action) have **one subject at a time** — an employee, a manager (their own work *and* their team's), the admin, All Employees, or All Managers. Every figure is built per person once (`lib/reportScope`), and a composite subject is the sum of a *set of people*, which is what makes double-counting impossible rather than merely unlikely. New Connects is the *first* connected contact on a lead (its Remark), Follow-up Connects every later one — disjoint, or the columns sum to more than the work that happened. **Remarks and Follow-ups count every entry, connected or not**, and are deliberately not disjoint from the connect columns: a day of unanswered calls is real work and must not read as a zero. The activity columns are range-scoped; P1/P2/P3 describe where the leads stand today and say so.
 
 ## Data Bank & Clients
 
 - Cold lists live apart from the pipeline: `leads` is a small live working set, a source export is 20,000+ rows. Mixing them would slow every pipeline query.
+- **Both managing roles build folders.** Create, rename and delete are a manager's as well as the admin's — a walk-in sheet or an event sign-up is a manager's own cold list, and refusing it left their Data Bank holding nothing but the mirrors an admin had handed them. What stays the admin's is *whose* folder it is: `createDataBankFolder` takes the owner from the caller's **token** for a manager, and `updateDataBankFolder` ignores the owner field for them entirely, so a folder cannot be filed under — or taken from — somebody else. Adding and importing records were already `requireManager`; only folder creation was not, which is why a manager appeared to be able to do neither.
+- **A Client folder is not created by hand.** It holds leads that already exist, so an empty one is a container with no way to fill it; every route in is a promotion from the Data Bank. "New Folder" was removed from the Clients screen for that reason — it was the one of the two screens where the button led nowhere. Rename and delete stay.
 - **Fields are per folder**, labelled in the source's own words. One is designated the name and one the phone — without them the app cannot dial, dedupe or promote. **Keys are generated and permanent; only labels are editable.**
 - Import maps columns rather than matching header names exactly, remembers corrections on the folder, and dedupes on a normalised phone key (`0300 1234567` / `+92 300…` / Excel's zero-eaten `3001234567` all collapse to one). Junk yields `""`, which never matches.
 - **Nothing is dropped silently** — `prepareImport` reports every rejected row by line number. Existing numbers are skipped, never overwritten, and **a row handed to a manager still counts as held**: the dedupe scans the folder plus its mirrors (one query each, reusing the `folderId, phoneKey` index, and skipped entirely when `handedOffCount` is 0), or re-importing last month's sheet would recreate every handed-over row and put two people on one number.
@@ -237,12 +253,25 @@ movement in these numbers as caused by the current work).
 - `npm run deploy:rules` — rules for `leaveRequests`, `configHistory`,
   `attendancePeriods`, `payrollPeriods`, `payslips`, the Clients collections and the
   widened `expenses` read.
-- **14 composite indexes and the `followUps.dayKey` collection-group override are
-  missing** (`npm run check:indexes` lists them; measured 2026-09-04). Reports runs its
-  slow per-lead fallback until the override lands. **`npm run deploy:indexes` creates all
-  of them** from `firestore.indexes.json` without the Firebase CLI — but the service
-  account must first be granted **Cloud Datastore Index Admin** in Google Cloud IAM, or
-  every call returns `The caller does not have permission`. Runbook §3a has the steps.
+- ~~14 composite indexes and the `followUps.dayKey` collection-group override~~ —
+  **done 2026-09-05.** The service account was granted **Cloud Datastore Index Admin**
+  and `npm run deploy:indexes` created 13 composite indexes and the override.
+  `npm run check:indexes` reports **nothing missing**, and `npm run diagnose:report`
+  now completes the collection-group activity query in ~750ms instead of falling back —
+  so Reports no longer shows its "ran the slow way" banner.
+
+  Two lessons from that run, both worth keeping:
+  - **IAM propagation is not instant.** The first `deploy:indexes` after the grant still
+    returned `The caller does not have permission` on all 15. A
+    `cloudresourcemanager … :testIamPermissions` call — which any principal may make
+    about *itself* — proved the permissions were held, and the retry succeeded. Ask GCP
+    what the key can do before concluding the grant went to the wrong principal.
+  - **A single-field index cannot be declared as a composite one.** `dealPayouts
+    .finalizedAt` and `expenses.dayKey` were one-field entries in
+    `firestore.indexes.json`; Firestore refuses them with *"this index is not necessary,
+    configure using single field index controls"* because it already indexes every field
+    in both directions automatically. Both were removed from the file — left in, they
+    would have reported as permanently "missing" and sent every future session hunting.
 - `/api/cron/mark-absentees` (12:05 PKT) and `/api/cron/recalculate-priorities` (00:30 PKT)
   need `CRON_SECRET` — currently empty, so both cron routes refuse to run.
 
@@ -279,6 +308,287 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-05 (fourth round) — a manager's own Data Bank, and two lead-pane bugs found by looking
+
+**1 · A manager could not create a folder, so their Data Bank was empty.**
+`createDataBankFolder` / `update` / `delete` were `requireAdmin` while
+`addDataBankRecord` and `importDataBankRows` were already `requireManager` —
+so a manager could fill a folder they had been handed and never make one. All
+three are now `requireManager`, with the owner taken from the **token** for a
+manager (they cannot file a folder under somebody else) and the owner field
+ignored outright on update (they cannot give one away). `assertFolderAccess`,
+the predicate every record write already used, guards edit and delete.
+
+The screen followed: New Folder, Edit fields and Delete are `isManager` on both
+the desktop grid and `MobileDataBank`, the owner select in `FolderFormModal` is
+admin-only, and the folder card's link and the workspace's Back button are now
+role-aware — both hardcoded `/admin/data-bank`, which happened to render for a
+manager because the route allows both roles, and then read as the admin's URL
+space from there on.
+
+**"New Folder" removed from Clients**, as asked. A Client folder holds leads
+that already exist, so a hand-made empty one has no way to be filled; every
+route in is a promotion from the Data Bank. Rename and delete stay.
+
+**2 · Two real bugs in the lead pane, both found by opening a lead rather than
+by reading the code.** Four hypotheses were tested against the live project
+first and all four were wrong — no leads stuck at ASSIGNED, no stale
+`latestFollowUpId`, no entries missing `occurredAt` (which `orderBy` would have
+hidden), no editable entry failing revalidation. Then the screen showed it:
+
+- **The entry numbering ran backwards and lost one.** `followUps.length - index - 1`
+  over the *chronological* array numbered five entries #4, #3, #2, #1 and then
+  nothing — and the unnumbered one was the only one with an Edit button, so the
+  entry a reader would call "the last remark" was the one showing a padlock.
+  Now: the Remark is named, and each Follow-Up after it is `#{index}`.
+- **The status dropdown offered "Deal Closed", which `setLeadStatus` always
+  refuses** — a won deal must go through Deal Entry so the customer and the
+  amounts are captured. Choosing it produced an error and the status did not
+  move, which is exactly "the status will not change". Filtered out of both
+  surfaces' P1 group.
+
+**3 · Found while there, and worse than either:** `updateFollowUp`'s
+immutability lock was `if (lead.latestFollowUpId && …)`. Six live leads have
+entries but no pointer, and on those the guard evaluated false — **every entry
+in the history was editable**, by any role, through the action. The fallback now
+resolves the newest from the subcollection by `occurredAt`, matching what the
+pane shows, and writes the pointer back so the lead is repaired on first edit.
+
+- **Validation**: `typecheck` 0 errors, `test` 378/378, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings. Verified in Chrome
+  as the admin: numbering now reads #1–#4 with Edit on #4, the status select no
+  longer contains `CLOSED_WON`, Clients shows only "Import from Data Bank", and
+  the admin Data Bank is unchanged.
+
+  **Not verified as a sub admin** — the browser session is the admin's. The
+  gating is symmetric (`isManager` on both surfaces) and the server re-checks
+  every path, but the manager's own create/import/add flow is worth one pass
+  before relying on it.
+
+  **Left alone:** no lead is currently stuck at ASSIGNED, but `vercel.json`
+  schedules `process-deadlines` **once a day** (`0 0 * * *`) against a
+  **5-minute** accept window, and `CRON_SECRET` is still empty so the route
+  refuses to run at all. A lead whose employee never accepts will sit there.
+  That is a deployment matter, not a code one, and was not touched this round.
+
+### 2026-09-05 (later still) — GPS, because a saved Wi-Fi name goes home in a pocket
+
+The owner asked the right question about the morning's work: *"what if the
+person saves the name of wifi and then checks in from home?"* It works. The
+Wi-Fi name is text on a phone; it does not know where the phone is. Wi-Fi alone
+only ever stopped the lazy case.
+
+**The browser will give up a position, and that is the check that answers it.**
+`navigator.geolocation` against the office's marked coordinates, compared
+server-side. Someone at home is four kilometres away and is refused no matter
+what they typed. It is not unfakeable — a mock-location app defeats it — but
+that is deliberate technical effort, where reusing a saved name is zero effort.
+That gap is the entire value.
+
+Rules that took the most thought, all in **Business rules → Attendance**:
+
+- **The error bar is never subtracted from the distance.** `distance - accuracy
+  <= radius` is the obvious-looking version and it silently turns a 150m rule
+  into a 400m one the admin cannot see. Accuracy does one job: readings vaguer
+  than 200m are `IMPRECISE` and retry, never `AWAY`. A laptop on Wi-Fi
+  positioning is often a kilometre out and must not be called a liar for it.
+- **The office is marked by standing in it and pressing a button.** No latitude
+  box. Somebody typing coordinates gets them transposed, and a wrong office
+  refuses the whole company — with the person who set it wrong the only one who
+  can fix it. Settings also refuses to pin the office from a vague reading.
+- **Location wins over the Wi-Fi name** wherever it has an answer
+  (`resolveNetwork`), and the name is the fallback for a device that will not
+  share a position.
+- **The prompt appears only on Check In**, and `PunchRulesHint` explains it
+  before the browser asks. An unexplained permission prompt is one people
+  decline, and a declined prompt is an employee who cannot check in at all.
+- **A failed fix is sent to the server, not swallowed.** The refusal is the
+  server's to make and to record; handling it in the browser would lose the
+  audit entry.
+
+`lib/geolocation.ts` wraps `getCurrentPosition` because every failure needs its
+own sentence — "location is blocked for this site, tap the padlock" is
+actionable, "could not get your location" is a support ticket. It also carries a
+belt-and-braces timeout: `getCurrentPosition` has been seen never to call back
+at all on some Android WebViews.
+
+- **Validation**: `typecheck` 0 errors, `test` **378/378** (360 → 378: haversine
+  against hand-checkable figures, the IMPRECISE cases, and the proof that the
+  error bar is not subtracted), `build` compiles, `eslint src` at the 7
+  pre-existing errors and 34 warnings.
+
+  **Driven in Chrome with `getCurrentPosition` stubbed**, which avoids a
+  permission prompt and makes both paths deterministic: a precise fix marks the
+  office and reports its accuracy; a 2km fix is refused with the reason and
+  **leaves the previous coordinates untouched**. Confirmed afterwards that
+  nothing reached the live config — the office still reads "Not marked yet".
+
+  **Not exercised against the live project:** a refused check-in. Doing so means
+  switching the restriction on during a working day, and every device that has
+  not yet granted location is refused until somebody taps Allow. The owner marks
+  the office and turns it on at the start of a day, having told the team first.
+
+### 2026-09-05 (later) — the IP check is gone; Wi-Fi is the whole gate
+
+The owner's call, and the right one: *"remove the ip system as it changes
+dynamically so i cant match it."* Half-measures were tried in the morning —
+CIDR ranges, two restrictions that both had to pass — and they were still
+maintenance on a value that rotates without warning.
+
+**Removed entirely.** `ipRestriction` and `officeIps` are gone from
+`AttendancePolicy`; `classifyNetwork`, `ipMatchesEntry`, `isValidIp`,
+`isValidIpOrRange` and `resolveNetwork` are gone from `lib/attendance`, with
+`networkFromWifi` in their place. The office-network card is gone from
+Attendance Settings and the IP editor from `/admin/settings`, which now says in
+one paragraph where the setting went and why. `normalizeIp` and
+`clientIpFromHeaders` stay: **the address is still recorded on every punch**,
+because it costs nothing and it is the thing an admin checks a suspicious day
+against. It is simply never compared to anything.
+
+Stale `officeIps` / `ipRestriction` values are left sitting in
+`config/attendance` untouched. `normalizePolicy` does not return them, so
+nothing can read them — and a migration that deletes configuration is a
+migration that can go wrong for no gain. A test asserts they do not survive
+`normalizePolicy`.
+
+**Three things make the declared signal worth having**, and they are the
+difference between this and security theatre:
+
+1. **The refusal message never names the office network.** It was the one place
+   the expected answer could leak, and the morning's version printed it — so
+   the first person who guessed wrong was told the right answer. It now names
+   only what *their* device claimed.
+2. **Every refusal is recorded and notified.** `recordRefusedCheckIn` writes
+   `users/{uid}.lastRefusedCheckIn` and notifies the admin, HR and the
+   employee's own manager, throttled to the first refusal per person per day.
+   Deliberately **not** written to `attendance/{uid}_{dayKey}`: that document
+   with no `firstActionAt` reads as an opened day, and `deriveStatus` grades a
+   day with no activity as absent — a refused attempt must not mark anybody
+   absent.
+3. **The requirement is re-asked after a refusal.** `getPunchRequirements` is
+   read once at mount, so a browser open since before the admin switched the
+   rule on would be refused and told to use a box that was not on its screen.
+   A failed punch now re-asks and the field appears.
+
+**Found while removing it:** the deletion anchor for `resolveNetwork` ran to
+`ATTENDANCE_STATUS_LABELS`, which took `workedMinutes`, `formatWorkedHours`,
+`formatClock` and `deriveStatus` with it. Typecheck caught it immediately and
+they were restored from `git show HEAD`. Worth remembering that a
+delete-between-two-anchors patch is only as safe as the *nearest* anchor.
+
+- **Validation**: `typecheck` 0 errors, `test` **360/360** (380 → 360: the
+  IP-matching suites went with the mechanism, replaced by the Wi-Fi predicate
+  and a test that the retired fields do not survive `normalizePolicy`), `build`
+  compiles, `eslint src` back at the 7 pre-existing errors and 34 warnings.
+  Attendance Settings and the punch strip driven in Chrome.
+
+  **Live effect, immediately:** with `officeIps` no longer read, the stale
+  `ipRestriction: true` in `config/attendance` stopped blocking anybody —
+  check-in works for the whole company again as of this change, with no gate
+  until the office Wi-Fi names are filled in.
+
+  **Not exercised end to end:** a refused check-in was not triggered against the
+  live project, because doing so means switching the restriction on during a
+  working day and every device that has not yet been told the network name is
+  refused until somebody types it. Turn it on at the start of a day, and tell
+  the team first.
+
+  **Superseded within the hour:** the owner asked what stops somebody saving the
+  network name and checking in from home. Nothing did. See the entry above —
+  the position check is the answer, and this one became the second opinion.
+
+### 2026-09-05 — Clients is workable for a manager, Wi-Fi check-in, the manager dossier, Reports rebuilt
+
+Four reports, all confirmed against the running app rather than reasoned about.
+
+**1 · A manager could open a lead in Clients and not write on it.** Both panes
+computed `isManagerView = userRole === "subadmin"` and hid the Remark, the
+follow-up, the edit and the deal form. The server never refused any of it —
+`canWorkLead` accepts a sub admin on a lead whose `subAdminUid` is theirs, and
+the follow-up transaction credits `lead.assignedUserId`, which for a Client
+promotion *is* the manager. The predicate now excludes the case it was never
+meant to cover: `userRole === "subadmin" && lead.assignedUserId !== user?.uid`.
+Desktop and phone, one line each.
+
+**2 · Check-in by Wi-Fi name, and the real reason IP stopped working.** Read
+live: `config/attendance` had `ipRestriction: true` with two **exact** addresses
+(`119.73.100.106`, `154.192.107.175`). Those are dynamic ISP leases — the day
+they rotate, the restriction refuses everybody, which is what happened.
+
+Two fixes, because they answer different halves of it:
+
+- **`officeWifiNames` + `wifiRestriction`**, what the owner asked for. The
+  honest limit is stated on the settings card and in `lib/attendance`'s module
+  note: **no browser exposes the SSID**, so the name is typed once per device
+  and checked on the server. It catches somebody checking in from home out of
+  habit; it does not survive somebody who decides to type the office network's
+  name. It is worth exactly what the punch time beside it is worth.
+- ~~**CIDR ranges in `officeIps`**~~ — built, then **removed the same day** at
+  the owner's instruction; see the entry above. A range still needs somebody to
+  know which block their ISP leases from and to notice when that changes, which
+  is the maintenance the whole complaint was about.
+
+The Wi-Fi check runs **first** when both fail, because "you are on `Cafe-Guest`,
+not the office Wi-Fi" is a sentence somebody can act on and an IP address is
+not. Check-out is still never refused. `resolveNetwork` lets either signal
+stamp a day OFFICE, while a check-in must satisfy every restriction switched on.
+22 new unit tests over the arithmetic that silently corrupts: /32 masking, an
+IPv6 client against an IPv4 range, an unconfigured list reading UNKNOWN rather
+than OTHER.
+
+**3 · The admin could open any employee and no manager.** `selectedUid` was
+resolved against `metrics` only, and the roster query is `role == "employee"`,
+so a manager could never be found. Now resolved against both rosters, and
+`EmployeeDetailModal` takes an optional `team`: present, it is a manager's
+dossier — team-scoped leads, deals, activity and analytics, plus a Team tab
+whose rows open that employee's own dossier. Same on the phone. Edit is absent
+on a manager's dossier rather than opening the wrong form; the card keeps its
+own, and both call sites `stopPropagation` so Edit does not also open the sheet
+behind it.
+
+**Found by looking at it:** the card behind said 70 leads and the dossier 78.
+`buildManagerMetrics` summed the team and not the manager, and a manager *does*
+hold leads now — a Client-section promotion is assigned to them. It now sums the
+manager and their team, which is the set `reportScope.teamOf` already used, so
+card, dossier and report finally agree. `headcount` stays the team size: how
+many people report to you is a different question from whose work is in the
+total.
+
+**4 · Reports rebuilt round the question it is opened for.** The gradient hero,
+six 252px stat cards and a separate pipeline panel were three screens of chrome
+before the first name. Now: a one-line header, a controls bar, **one** totals
+strip and the table, which starts above the fold. Added **Remarks** and
+**Follow-ups** — every entry, connected or not, which is what "what did this
+person do today" actually asks. Columns are grouped *Activity in range* /
+*Outcome in range* / *Pipeline today*, the last tinted apart because it is the
+one group that is not range-scoped. **A row opens that person's own report**,
+so drilling in is one click; only rows the server offered as subjects are
+clickable, so a click can never produce "you cannot see that".
+
+**A discrepancy that was not a bug.** Aroosa's follow-ups read 53 in the team
+view and 54 in her own. Probed with a throwaway script replaying both scopes:
+83 entries either way, zero in one and not the other — the number was simply
+climbing (53 → 54 → 55 over three minutes) because the team was working. Worth
+recording because the instinct was to go looking for a scoping bug.
+
+- **Validation**: `typecheck` 0 errors, `test` **380/380** (356 → 380), `build`
+  compiles all 70 pages, `eslint src` at the 7 pre-existing errors and 34
+  warnings. Reports, the directory, the manager dossier and Attendance Settings
+  driven in Chrome against the live project.
+
+  **Not driven**: the sub-admin Clients fix was verified from the server rules
+  and both call sites, not clicked — the browser session was the admin's. Worth
+  one pass as a manager before relying on it.
+
+  **Superseded the same day:** the two stale exact IPs no longer matter, because
+  nothing reads `officeIps` any more. What is owed instead is the office Wi-Fi
+  name — see the entry above.
+
+  **Indexes: done later the same day.** See *Operational state* — the IAM role
+  was granted, `deploy:indexes` created 13 indexes and the `followUps.dayKey`
+  override, and Reports now runs the collection-group query (~750ms) rather than
+  the per-lead fallback. Its warning banner is gone.
 
 Entries before 2026-08-31 were folded into the rules and *Lessons* above on 2026-09-04;
 the full history is in git.
@@ -624,12 +934,16 @@ would read as a team that does not exist. **All Managers is only offered when
 there are two or more**; with one manager it and that manager produce identical
 figures, and two options that do the same thing read as though they do not.
 
-Columns are the ones asked for — ID, Name, Team, New Connects, Follow-up
-Connects, Meetings Done, Site Visits Done, Deals Closed, Tokens Received, P1,
-P2, P3 — and every one is computed from records that already exist:
+Columns are the ones asked for — ID, Name, Team, **Remarks, Follow-ups**, New
+Connects, Follow-up Connects, Meetings Done, Site Visits Done, Deals Closed,
+Tokens Received, P1, P2, P3 — grouped under *Activity in range*, *Outcome in
+range* and *Pipeline today*, and every one computed from records that already
+exist:
 
 | column | read from |
 |---|---|
+| Remarks | first entries written on a lead in the range |
+| Follow-ups | every later entry written in the range |
 | New Connects | connected calls logged on a **Remark** |
 | Follow-up Connects | connected calls logged on a **Follow-up** |
 | Deals Closed | `closedDeals` settled in the range |

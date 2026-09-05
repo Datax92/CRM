@@ -20,7 +20,6 @@ import Link from "next/link";
 import { createPortal } from "react-dom";
 import {
   FolderHeart,
-  Plus,
   Pencil,
   Trash2,
   ChevronRight,
@@ -113,13 +112,15 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
             <Database size={16} strokeWidth={2.2} />
             <span>Import from Data Bank</span>
           </button>
-          <button
-            onClick={() => setFormFor({ folder: null })}
-            className="inline-flex items-center gap-2 rounded-full bg-[#3f8f8a] px-5 py-2.5 text-[13.5px] text-white transition-colors hover:bg-[#2f7d78]"
-          >
-            <Plus size={16} strokeWidth={2.2} />
-            <span>New Folder</span>
-          </button>
+          {/*
+            **No New Folder here, deliberately.** A Client folder is an
+            organisation *of leads that already exist*, so an empty one is a
+            container with no way to fill it — every route in is a promotion
+            from the Data Bank, which is where the button now lives. Offering
+            "New Folder" on both screens made them look like two places to do
+            the same thing, and this was the one where it led nowhere.
+            Renaming and deleting an existing folder stay, below.
+          */}
         </div>
       </header>
 

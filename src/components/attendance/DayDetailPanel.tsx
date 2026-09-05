@@ -15,7 +15,12 @@ import { History, ShieldCheck } from "lucide-react";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { useAuth } from "@/context/AuthContext";
 import { adjustAttendance } from "@/lib/clientActions";
-import { formatWorkedHours, NETWORK_LABELS, ATTENDANCE_STATUS_LABELS } from "@/lib/attendance";
+import {
+  formatDistance,
+  formatWorkedHours,
+  NETWORK_LABELS,
+  ATTENDANCE_STATUS_LABELS,
+} from "@/lib/attendance";
 import type { AttendanceStatus } from "@/lib/attendance";
 import type { AttendanceDay } from "@/hooks/useAttendance";
 import { A, StatusPill } from "./attendanceChrome";
@@ -154,6 +159,28 @@ export function DayDetailPanel({
             <Row label="Hours" value={formatWorkedHours(day.minutes)} />
             <Row label="Network" value={NETWORK_LABELS[day.network]} />
             {record?.checkInIp && <Row label="IP" value={record.checkInIp} />}
+            {/* What the device *said* it was on. Labelled as a claim, because
+                that is what it is — no browser reports the SSID — and shown
+                even when it was refused, since a rejected claim is as much a
+                record as an accepted one. */}
+            {record?.checkInNetworkName && (
+              <Row label="Wi-Fi (reported)" value={record.checkInNetworkName} />
+            )}
+            {/* The strong evidence, so it reads before the declared name. The
+                accuracy is shown beside it because "12 m away" from a reading
+                good to 400 m means nothing, and hiding that would let a bad fix
+                pass for a precise one. */}
+            {typeof record?.checkInDistance === "number" && (
+              <Row
+                label="Distance from office"
+                value={
+                  formatDistance(record.checkInDistance) +
+                  (record.checkInAccuracy
+                    ? ` (fix ±${formatDistance(record.checkInAccuracy)})`
+                    : "")
+                }
+              />
+            )}
             {record?.late && (
               <Row
                 label="Late by"

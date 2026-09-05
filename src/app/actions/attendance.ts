@@ -12,13 +12,17 @@ import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import {
-  classifyNetwork,
+  classifyLocation,
+  classifyWifi,
   clientIpFromHeaders,
   deriveStatus,
-  isValidIp,
-  normalizeIp,
+  formatDistance,
+  isValidCoordinate,
+  normalizeNetworkName,
+  resolveNetwork,
   type AttendanceNetwork,
   type AttendanceStatus,
+  type Fix,
 } from "@/lib/attendance";
 import {
   DEFAULT_ATTENDANCE_POLICY,
@@ -43,20 +47,22 @@ export type AttendanceConfig = AttendancePolicy;
 /**
  * Reads the policy, filling anything unset with the default.
  *
- * The document predates this module — it held only `officeIps` — so every read
- * goes through `normalizePolicy`, and an installation that has never opened
- * Attendance Settings behaves exactly as the defaults describe rather than
- * with half a policy.
+ * The document predates this module and still carries the retired `officeIps` /
+ * `ipRestriction` fields on installations that once used them. They are simply
+ * not read: `normalizePolicy` returns only the fields the policy has now, so
+ * the stale values sit in Firestore inert rather than being migrated away — a
+ * migration that deletes configuration is a migration that can go wrong, and
+ * nothing reads them.
  */
 export async function readPolicy(): Promise<AttendancePolicy> {
   const snap = await adminDb.collection("config").doc("attendance").get();
   const raw = (snap.data() ?? {}) as Partial<AttendancePolicy>;
 
-  const officeIps = Array.isArray(raw.officeIps)
-    ? raw.officeIps.map((value: unknown) => normalizeIp(String(value))).filter(Boolean)
+  const officeWifiNames = Array.isArray(raw.officeWifiNames)
+    ? raw.officeWifiNames.map((value: unknown) => normalizeNetworkName(String(value))).filter(Boolean)
     : [];
 
-  return normalizePolicy({ ...raw, officeIps }, DEFAULT_ATTENDANCE_POLICY);
+  return normalizePolicy({ ...raw, officeWifiNames }, DEFAULT_ATTENDANCE_POLICY);
 }
 
 /**
@@ -94,17 +100,74 @@ export interface AttendancePingResult {
   network: AttendanceNetwork;
   /** What the server saw the request come from — shown in Settings. */
   ip: string;
+  /** The Wi-Fi name the device reported with this punch, as typed. */
+  networkName?: string | null;
   firstActionAt: string;
   lastActionAt: string;
+}
+
+/**
+ * What the punching device sends about itself.
+ *
+ * One field today. It is a **claim**, not an observation — no browser exposes
+ * the SSID — so it is named for what it is and never confused with `ip`, which
+ * the server reads off the request and the browser cannot touch.
+ */
+export interface PunchContext {
+  /** The Wi-Fi network the employee says they are on. */
+  networkName?: string | null;
+  /**
+   * Where the browser says the device is. Absent when it would not say — the
+   * server refuses on that, rather than the browser deciding not to ask.
+   */
+  lat?: number | null;
+  lng?: number | null;
+  /** The browser's own error bar on that position, in metres. */
+  accuracy?: number | null;
+  /**
+   * Why there is no position, when there is none. Passed through so the
+   * refusal can name the thing the employee has to change — and so the attempt
+   * is still *recorded*, which it would not be if the browser gave up locally.
+   */
+  locationError?: "UNSUPPORTED" | "PERMISSION_DENIED" | "UNAVAILABLE" | "TIMEOUT" | null;
+}
+
+/**
+ * What to say when the device would not give a position at all.
+ *
+ * The browser already tells the employee this in `lib/geolocation`, but the
+ * server says it too and is the one that refuses: the client's message is a
+ * courtesy, this is the answer. Duplicated wording rather than shared, because
+ * the two run in different places and one of them must never depend on the
+ * other having been reached.
+ */
+const LOCATION_REFUSALS: Record<
+  NonNullable<PunchContext["locationError"]> | "UNAVAILABLE",
+  string
+> = {
+  UNSUPPORTED:
+    "Check-in needs to confirm you are at the office, and this browser cannot share its location. " +
+    "Use Chrome or Safari, or ask an admin or HR for an exception.",
+  PERMISSION_DENIED:
+    "Check-in needs to confirm you are at the office, and location is blocked for this site. " +
+    "Tap the padlock in the address bar, allow Location, and try again.",
+  UNAVAILABLE:
+    "Check-in needs to confirm you are at the office, and your device did not report where it is. " +
+    "Turn Location Services on and try again.",
+  TIMEOUT:
+    "Finding your location took too long, so the check-in was not recorded. Try again — the first " +
+    "fix of the day is the slow one.",
+};
+
+/** The Karachi day a moment falls in. One helper so the gate, the record and
+ *  the refusal can never disagree about which day they are talking about. */
+function dayKeyFor(at: Date): string {
+  return karachiDayKey(at);
 }
 
 /** Document id per employee per day, so a ping is a single-document upsert. */
 function attendanceDocId(uid: string, dayKey: string): string {
   return `${uid}_${dayKey}`;
-}
-
-async function readOfficeIps(): Promise<string[]> {
-  return (await readPolicy()).officeIps;
 }
 
 export type PunchKind = "IN" | "OUT";
@@ -142,63 +205,120 @@ export interface AttendancePunchResult extends AttendancePingResult {
  */
 export async function punchAttendance(
   token: string,
-  kind: PunchKind
+  kind: PunchKind,
+  context: PunchContext = {}
 ): Promise<ActionResult<AttendancePunchResult>> {
   return runAction("punchAttendance", async () => {
     const [auth, requestHeaders] = await Promise.all([verifyAuth(token), headers()]);
 
     const ip = clientIpFromHeaders(requestHeaders);
     const policy = await readPolicy();
-    const network = classifyNetwork(ip, policy.officeIps);
+
+    // The address is read and stored, never matched. See `lib/attendance`: a
+    // dynamic public IP made an allow-list a liability, but the address is
+    // still the thing an admin checks a suspicious day against.
+    const reportedName = normalizeNetworkName(context.networkName).slice(0, 64);
+    const wifi = classifyWifi(reportedName, policy.officeWifiNames);
+
+    // The position as claimed, and what it means against the office. Both the
+    // reading and the verdict are computed here, never trusted from the client.
+    const fix: Fix | null = isValidCoordinate(context.lat, context.lng)
+      ? {
+          lat: context.lat as number,
+          lng: context.lng as number,
+          accuracy: Number(context.accuracy ?? Number.POSITIVE_INFINITY),
+        }
+      : null;
+
+    const office =
+      policy.officeLat !== null && policy.officeLng !== null
+        ? {
+            lat: policy.officeLat,
+            lng: policy.officeLng,
+            radiusMeters: policy.officeRadiusMeters,
+          }
+        : null;
+
+    const place = classifyLocation(fix, office);
+    const network = resolveNetwork(place.verdict, wifi);
 
     /*
-     * §2 — the IP restriction, enforced here and nowhere else.
-     *
-     * It is **off by default and refuses to bite with an empty allow-list**:
-     * turning it on before Settings is filled in would otherwise lock the
-     * whole company out of attendance, which is a worse failure than a punch
-     * from the wrong network. An employee on the exemption list punches from
-     * anywhere, which is §2's "unless Admin/HR has explicitly allowed an
-     * exception".
-     *
-     * The check is server-side because the address is read from the request
-     * itself. A browser-side version would be bypassed in seconds.
+     * §2's exception: an employee on this list checks in from anywhere. Field
+     * staff, and anyone the admin has decided about.
      */
     const exempt = policy.ipExemptUids.includes(auth.uid);
+    // Declared before the gate, because a refusal is filed against a day too.
+    const now = new Date();
 
     /**
-     * **Check In is refused off the office network. Check Out never is.**
+     * **Two gates, on check-in only, and location goes first.**
      *
-     * They are not symmetric acts. Arriving is the claim the restriction
-     * exists to police; leaving is the employee closing a day they have
-     * already been recorded as working, and blocking that would leave open
-     * days behind whenever somebody finishes at a client site — which is
-     * worse than useless, because an open day is graded as a half day.
+     * `kind === "IN"` because arriving is the claim the restrictions exist to
+     * police; leaving is the employee closing a day they have already been
+     * recorded as working, and blocking that would strand an open day, which
+     * grades as a half day. The exemption list is §2's explicit "unless
+     * Admin/HR has allowed an exception".
      *
-     * The check is skipped when there is nothing to check against: an empty
-     * allow-list means the office IP has never been configured, and refusing
-     * every check-in on that basis would lock the whole company out of
-     * attendance until Settings is filled in. Same for anyone on the
-     * exemption list, which is §2's explicit "unless Admin/HR has allowed an
-     * exception".
+     * Each gate is skipped when there is nothing to check against — no office
+     * marked, no network named. Enforcing against an unconfigured setting is
+     * how the address allow-list locked the whole company out.
      *
-     * Server-side because the address is read from the request itself. A
-     * browser-side version would be bypassed in seconds.
+     * **Location is checked before Wi-Fi** because when both fail its message
+     * is the one that ends the conversation: "you are 4.2 km from the office"
+     * is a fact the employee cannot argue with and does not need explained,
+     * whereas a network name mismatch invites "but I *am* on the office Wi-Fi".
      */
-    const enforced =
-      kind === "IN" && policy.ipRestriction && policy.officeIps.length > 0 && !exempt;
+    const gateLocation = kind === "IN" && !exempt && policy.locationRestriction && office !== null;
 
-    if (enforced && network !== "OFFICE") {
+    if (gateLocation && place.verdict !== "OFFICE") {
+      await recordRefusedCheckIn(auth, dayKeyFor(now), reportedName, ip, place.distance);
+
       throw new UserFacingError(
-        `You are not on the office network — this request came from ${ip || "an unknown address"}, ` +
-          "which is not one of the approved office addresses, so your check-in was not recorded. " +
-          "Check in from the office, or ask an admin or HR to add this address or grant you an exception. " +
-          "You can still check out from anywhere."
+        place.verdict === "AWAY"
+          ? `Check-in is only allowed at the office, and your device puts you about ` +
+              `${formatDistance(place.distance)} away. Check in when you get there — ` +
+              "you can still check out from anywhere."
+          : place.verdict === "IMPRECISE"
+            ? "Your device could not pin down where it is accurately enough to confirm you are at " +
+                "the office. Turn on precise location, step near a window or outside, and try again."
+            : LOCATION_REFUSALS[context.locationError ?? "UNAVAILABLE"]
       );
     }
 
-    const now = new Date();
-    const dayKey = karachiDayKey(now);
+    const enforced =
+      kind === "IN" &&
+      !exempt &&
+      policy.wifiRestriction &&
+      policy.officeWifiNames.length > 0;
+
+    if (enforced && wifi !== "OFFICE") {
+      /**
+       * **The message never names the office network.**
+       *
+       * It is the one place the expected answer could leak, and printing it on
+       * the failure screen would hand it to the first person who guessed wrong
+       * — turning the check into a prompt. The employee is told what *their*
+       * device claimed, which is what they need to correct it; the office name
+       * they get from their manager, once, in person.
+       *
+       * Recorded before it is thrown: a refused attempt is exactly the event an
+       * admin needs to see, and an exception that vanishes without a trace is
+       * how a declared signal becomes theatre.
+       */
+      await recordRefusedCheckIn(auth, dayKeyFor(now), reportedName, ip, place.distance);
+
+      throw new UserFacingError(
+        reportedName
+          ? `Check-in is only allowed on the office Wi-Fi, and this device says it is on ` +
+              `"${reportedName}". Connect to the office network and try again. ` +
+              "You can still check out from anywhere."
+          : "Check-in is only allowed on the office Wi-Fi, and this device has not been told " +
+              "which network it is on. Enter your Wi-Fi network name in the box beside Check In " +
+              "and try again — you only have to do this once on this device."
+      );
+    }
+
+    const dayKey = dayKeyFor(now);
     const verdict = classifyCheckIn(now, policy);
     const ref = adminDb.collection("attendance").doc(attendanceDocId(auth.uid, dayKey));
 
@@ -258,6 +378,17 @@ export async function punchAttendance(
                 // The address the day was opened from (§2), kept beside the
                 // last one so a check-out elsewhere does not erase it.
                 checkInIp: ip || null,
+                // What the device said it was on when the day opened. Stored
+                // whether or not it matched: a record of a claim that was
+                // refused is worth as much as one that was accepted.
+                checkInNetworkName: reportedName || null,
+                // Where it said it was, and how far that is from the office.
+                // The distance is denormalised because it is what the day
+                // detail shows, and recomputing it needs the policy as it was.
+                checkInLat: fix?.lat ?? null,
+                checkInLng: fix?.lng ?? null,
+                checkInAccuracy: fix && Number.isFinite(fix.accuracy) ? Math.round(fix.accuracy) : null,
+                checkInDistance: place.distance,
               }
             : null),
           // The first network of the day is the one that counts. Someone who
@@ -265,6 +396,7 @@ export async function punchAttendance(
           network: existing?.network ?? network,
           lastNetwork: network,
           lastIp: ip || null,
+          lastNetworkName: reportedName || null,
           punchedBy: "SELF",
           updatedAt: FieldValue.serverTimestamp(),
         },
@@ -294,6 +426,7 @@ export async function punchAttendance(
       dayKey,
       network: saved.network,
       ip,
+      networkName: reportedName || null,
       late: saved.late,
       lateByMinutes: verdict.lateByMinutes,
       lateAfter: verdict.lateAfter,
@@ -301,6 +434,108 @@ export async function punchAttendance(
       lastActionAt: (saved.lastAt ?? saved.firstAt).toISOString(),
     };
   });
+}
+
+/**
+ * Files a refused check-in, and tells the admin about the first one each day.
+ *
+ * **A declared signal is only worth what its audit trail is worth.** The Wi-Fi
+ * name cannot be verified — no browser will report the SSID — so the thing that
+ * makes it a real control rather than a formality is that every attempt is
+ * recorded and a refusal is visible to somebody. An employee who genuinely
+ * cannot check in gets help; one who is trying it on from home leaves a trail.
+ *
+ * Written to `users/{uid}` rather than to the day's attendance record on
+ * purpose: creating `attendance/{uid}_{dayKey}` with no `firstActionAt` would
+ * make a *refused* attempt look like an opened day, and `deriveStatus` grades a
+ * day with no activity as absent. A refusal must not change anybody's
+ * attendance.
+ *
+ * Notified once per employee per day — the second attempt five seconds later is
+ * the same person still standing in the same place, and a notification per tap
+ * would train the admin to ignore the lot.
+ */
+async function recordRefusedCheckIn(
+  auth: DecodedAuth,
+  dayKey: string,
+  claimed: string,
+  ip: string,
+  /** How far from the office the device put them, when it said. */
+  distance: number | null
+): Promise<void> {
+  const profileRef = adminDb.collection("users").doc(auth.uid);
+  const profile = await profileRef.get();
+  const data = profile.data() ?? {};
+
+  const last = data.lastRefusedCheckIn as { dayKey?: string } | undefined;
+  const firstToday = last?.dayKey !== dayKey;
+
+  await profileRef.set(
+    {
+      lastRefusedCheckIn: {
+        dayKey,
+        networkName: claimed || null,
+        ip: ip || null,
+        distanceMeters: distance,
+        at: new Date(),
+      },
+      refusedCheckInCount: FieldValue.increment(1),
+    },
+    { merge: true }
+  );
+
+  if (!firstToday) return;
+
+  const name = (data.name as string) ?? auth.email ?? "An employee";
+  // Distance first when there is one: "4.2 km away" is the fact that decides
+  // what the admin does, and the network name is supporting detail.
+  const where =
+    distance !== null
+      ? `about ${formatDistance(distance)} from the office`
+      : "somewhere it could not confirm";
+
+  const payload = {
+    message:
+      `${name} tried to check in on ${dayKey} from ${where}` +
+      (claimed ? ` — their device reported the network "${claimed}".` : ".") +
+      " The check-in was refused.",
+    uid: auth.uid,
+    dayKey,
+    networkName: claimed || null,
+    ip: ip || null,
+    distanceMeters: distance,
+  };
+
+  const batch = adminDb.batch();
+  const notify = (targetRole: string, targetUid: string | null) =>
+    batch.set(adminDb.collection("notifications").doc(), {
+      type: "ATTENDANCE_OFF_NETWORK",
+      leadId: null,
+      attendanceId: attendanceDocId(auth.uid, dayKey),
+      targetRole,
+      targetUid,
+      payload,
+      createdAt: FieldValue.serverTimestamp(),
+      readAt: null,
+    });
+
+  notify("admin", null);
+
+  // The same audience as a late arrival: every HR manager, plus this
+  // employee's own manager whatever kind they are.
+  const managers = await adminDb.collection("users").where("role", "==", "subadmin").get();
+  const ownManager = data.subAdminUid as string | undefined;
+  const seen = new Set<string>();
+
+  for (const doc of managers.docs) {
+    const isHr = doc.data()?.managerKind === "HR";
+    if (!isHr && doc.id !== ownManager) continue;
+    if (seen.has(doc.id)) continue;
+    seen.add(doc.id);
+    notify("subadmin", doc.id);
+  }
+
+  await batch.commit();
 }
 
 /**
@@ -400,7 +635,9 @@ export async function recordAttendancePing(
 
     const requestHeaders = await headers();
     const ip = clientIpFromHeaders(requestHeaders);
-    const network = classifyNetwork(ip, await readOfficeIps());
+    // Kept compiling, not kept meaningful: this writer is no longer called, and
+    // a heartbeat carries no Wi-Fi claim to classify.
+    const network: AttendanceNetwork = "UNKNOWN";
 
     const now = new Date();
     const dayKey = karachiDayKey(now);
@@ -515,6 +752,37 @@ export async function getAttendanceConfig(
 }
 
 /**
+ * What the Check In control needs to know, for **any** signed-in employee.
+ *
+ * `config/attendance` is admin-only in the Security Rules and stays that way:
+ * the office addresses and network names are not an employee's business, and a
+ * dropdown of accepted Wi-Fi names would turn a declaration into a guess with
+ * the answer printed on it. So this returns the one bit the punch control
+ * needs — *is a network name required of me* — and nothing else.
+ *
+ * The exemption is applied here rather than on the client, so somebody the
+ * admin has excused is never asked for a name they do not need.
+ */
+export async function getPunchRequirements(
+  token: string
+): Promise<ActionResult<{ wifiRequired: boolean; locationRequired: boolean; exempt: boolean }>> {
+  return runAction("getPunchRequirements", async () => {
+    const auth = await verifyAuth(token);
+    const policy = await readPolicy();
+    const exempt = policy.ipExemptUids.includes(auth.uid);
+    const hasOffice = policy.officeLat !== null && policy.officeLng !== null;
+
+    return {
+      wifiRequired: !exempt && policy.wifiRestriction && policy.officeWifiNames.length > 0,
+      // Says only *whether* to ask for a position — never where the office is.
+      // A client that knew the coordinates could send them straight back.
+      locationRequired: !exempt && policy.locationRestriction && hasOffice,
+      exempt,
+    };
+  });
+}
+
+/**
  * Saves the policy.
  *
  * **Every value here is a setting, not a constant** — §5 is explicit that the
@@ -532,24 +800,47 @@ export async function setAttendanceConfig(
     const auth = await requireHr(token);
     const current = await readPolicy();
 
-    const cleanedIps = Array.from(
-      new Set((input.officeIps ?? current.officeIps).map((ip) => normalizeIp(String(ip))).filter(Boolean))
+    // Case and spacing are the admin's; the comparison folds both (see
+    // `networkNameKey`). What is stored is what they typed, because it is read
+    // back to an employee in an error message and has to match the name on
+    // their screen.
+    const cleanedWifi = Array.from(
+      new Set(
+        (input.officeWifiNames ?? current.officeWifiNames)
+          .map((name) => normalizeNetworkName(String(name)))
+          .filter(Boolean)
+      )
     );
 
-    for (const ip of cleanedIps) {
-      if (!isValidIp(ip)) throw new UserFacingError(`"${ip}" is not a valid IP address.`);
+    for (const name of cleanedWifi) {
+      if (name.length > 64) {
+        throw new UserFacingError(`"${name.slice(0, 24)}…" is too long for a Wi-Fi network name.`);
+      }
     }
-    if (cleanedIps.length > 20) {
-      throw new UserFacingError("Twenty office addresses is the maximum.");
+    if (cleanedWifi.length > 20) {
+      throw new UserFacingError("Twenty office Wi-Fi networks is the maximum.");
     }
 
-    const next = normalizePolicy({ ...input, officeIps: cleanedIps }, current);
+    if (
+      input.officeLat !== undefined &&
+      input.officeLat !== null &&
+      !isValidCoordinate(input.officeLat, input.officeLng)
+    ) {
+      throw new UserFacingError("That is not a valid office location.");
+    }
 
-    // Turning the restriction on with nothing to allow would lock every
+    const next = normalizePolicy({ ...input, officeWifiNames: cleanedWifi }, current);
+
+    // Turning a restriction on with nothing to enforce would lock every
     // employee out of attendance — refused rather than saved and regretted.
-    if (next.ipRestriction && next.officeIps.length === 0) {
+    if (next.locationRestriction && (next.officeLat === null || next.officeLng === null)) {
       throw new UserFacingError(
-        "Add at least one office IP before switching the restriction on, or nobody will be able to check in."
+        "Mark the office location before switching that restriction on, or nobody will be able to check in."
+      );
+    }
+    if (next.wifiRestriction && next.officeWifiNames.length === 0) {
+      throw new UserFacingError(
+        "Add at least one office Wi-Fi name before switching that restriction on, or nobody will be able to check in."
       );
     }
 
@@ -984,7 +1275,10 @@ export interface AttendanceRules {
   allowedLates: number;
   deductionMode: AttendancePolicy["deductionMode"];
   deductionValue: number;
-  ipRestriction: boolean;
+  /** Whether check-in is gated on the office Wi-Fi name. */
+  wifiRestriction: boolean;
+  /** Whether check-in is gated on being at the office. */
+  locationRestriction: boolean;
 }
 
 export interface AttendanceSummary {
@@ -1107,7 +1401,8 @@ export async function getAttendanceSummary(
         allowedLates: policy.allowedLates,
         deductionMode: policy.deductionMode,
         deductionValue: policy.deductionValue,
-        ipRestriction: policy.ipRestriction,
+        wifiRestriction: policy.wifiRestriction,
+        locationRestriction: policy.locationRestriction,
       },
     };
   });

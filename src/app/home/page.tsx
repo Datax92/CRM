@@ -31,7 +31,7 @@ import { FullPageSpinner } from "@/components/admin/AdminShared";
 import { useLeads, type Lead } from "@/hooks/useLeads";
 import { useEmployeeKpi, useTeamKpi } from "@/hooks/useKpi";
 import { useMyProfile } from "@/hooks/useEmployees";
-import { useAttendance } from "@/hooks/useAttendance";
+import { useAttendance, usePunchRequirements } from "@/hooks/useAttendance";
 import { formatMoney } from "@/lib/money";
 import { DEAL_CATEGORIES } from "@/lib/constants/deals";
 import { MONTH_SHORT_LABELS } from "@/lib/kpi";
@@ -176,10 +176,19 @@ export default function HomePage() {
   const ownKpi = useEmployeeKpi(isManager ? undefined : user?.uid, profile.targets);
   const kpi = isManager ? teamKpi : ownKpi;
   const attendance = useAttendance(user?.uid, getIdToken);
+  const { wifiRequired, locationRequired, refreshPunchRules } = usePunchRequirements(getIdToken);
   const [punchNote, setPunchNote] = useState<{ ok: boolean; message: string } | null>(null);
 
   const runPunch = async (kind: "IN" | "OUT") => {
-    setPunchNote(await attendance.punch(kind));
+    // Only the check-in is gated, so only the check-in asks for a position.
+    const result = await attendance.punch(kind, {
+      withLocation: locationRequired && kind === "IN",
+    });
+    setPunchNote(result);
+    // A refusal may be the first this browser hears that the office now checks
+    // the network name — re-ask, so the box the message tells them to use
+    // actually appears.
+    if (!result.ok) refreshPunchRules();
   };
 
   const { ref: frameRef, width: frameWidth } = useElementWidth<HTMLDivElement>();
@@ -424,6 +433,8 @@ export default function HomePage() {
           onPunch={(kind) => void runPunch(kind)}
           punching={attendance.punching}
           checkedOut={attendance.checkedOut}
+          wifiRequired={wifiRequired}
+          locationRequired={locationRequired}
         />
         <GaugeCard label="MTD" percent={kpi.mtdOverall * 100} background={D.mtdBg} />
         <GaugeCard label="YTD" percent={kpi.ytdOverall * 100} background={D.ytdBg} />

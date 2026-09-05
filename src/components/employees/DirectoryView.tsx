@@ -156,8 +156,32 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
     return { handled, winRate: handled > 0 ? Math.round((won / handled) * 100) : 0 };
   }, [metrics]);
 
-  // Read live, so an edit saved from the dossier is reflected without reopening.
-  const selected = selectedUid ? (metrics.find((m) => m.uid === selectedUid) ?? null) : null;
+  /**
+   * Read live, so an edit saved from the dossier is reflected without
+   * reopening — and resolved against **both** rosters, because a manager is
+   * not in `metrics`: the roster query is `role == "employee"` and always has
+   * been. Looking a manager up in the employee list is what made their card
+   * unopenable rather than merely unstyled.
+   */
+  const selected = selectedUid
+    ? (metrics.find((m) => m.uid === selectedUid) ??
+      subAdminMetrics.find((m) => m.uid === selectedUid) ??
+      null)
+    : null;
+
+  /** True when the open dossier is a manager's rather than an employee's. */
+  const selectedIsManager = Boolean(
+    selected && subAdminMetrics.some((m) => m.uid === selected.uid)
+  );
+
+  /** The employees whose figures a manager's dossier is the sum of. */
+  const selectedTeam = useMemo(
+    () =>
+      selectedIsManager && selected
+        ? metrics.filter((member) => member.subAdminUid === selected.uid)
+        : undefined,
+    [selectedIsManager, selected, metrics]
+  );
 
   /** The phone header's account chip. The design draws a single letter. */
   const accountInitial = (user?.email ?? "A").trim().charAt(0).toUpperCase() || "A";
@@ -210,11 +234,20 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           employee={selected}
           leads={leads}
           deals={allDeals}
+          // Present only for a manager. Its presence is what makes the dossier
+          // a manager's; `undefined` is an employee, `[]` is a manager with
+          // nobody under them yet.
+          team={selectedTeam}
+          onOpenMember={(member) => setSelectedUid(member.uid)}
           onClose={() => setSelectedUid(null)}
           // The dossier renders at z-110 and the form at z-120, but leaving both
           // mounted stacks two backdrops over the page. Close the dossier first.
           onEdit={
-            canManage
+            // A manager is edited by the Add Manager form, not the employee
+            // one — no lane priority, no KPI targets, no job title. Rather than
+            // open the wrong form, the manager's dossier has no Edit and the
+            // card behind it keeps its own.
+            canManage && !selectedIsManager
               ? () => {
                   setSelectedUid(null);
                   setFormFor({ employee: selected });
@@ -453,6 +486,7 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           their revenue is exactly the cross-team visibility §22 forbids. */}
       {canManage && (
         <SubAdminPanel
+          onOpen={(manager) => setSelectedUid(manager.uid)}
           subAdmins={subAdminMetrics}
           employees={metrics}
           folders={folders}

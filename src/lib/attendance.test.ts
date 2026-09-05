@@ -2,12 +2,17 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   attendanceRate,
-  classifyNetwork,
+  classifyWifi,
   clientIpFromHeaders,
   deriveStatus,
   formatWorkedHours,
-  isValidIp,
+  classifyLocation,
+  distanceMeters,
+  formatDistance,
+  isValidCoordinate,
+  resolveNetwork,
   normalizeIp,
+  normalizeNetworkName,
   workedMinutes,
 } from './attendance.ts';
 
@@ -51,55 +56,6 @@ describe('reading the client address from a proxy chain', () => {
 
   test('no headers yields no address', () => {
     assert.equal(clientIpFromHeaders(headers({})), '');
-  });
-});
-
-describe('office / remote classification', () => {
-  test('an address on the list is the office', () => {
-    assert.equal(classifyNetwork('198.51.100.7', ['198.51.100.7']), 'OFFICE');
-  });
-
-  test('anything else is remote', () => {
-    assert.equal(classifyNetwork('203.0.113.9', ['198.51.100.7']), 'REMOTE');
-  });
-
-  test('matches through the IPv6-mapped form', () => {
-    assert.equal(classifyNetwork('::ffff:198.51.100.7', ['198.51.100.7']), 'OFFICE');
-  });
-
-  test('an unconfigured allow-list reports UNKNOWN, not REMOTE', () => {
-    // A month of "Remote" must not be indistinguishable from a setting nobody
-    // has filled in yet.
-    assert.equal(classifyNetwork('203.0.113.9', []), 'UNKNOWN');
-  });
-
-  test('a missing address reports UNKNOWN even with a list configured', () => {
-    assert.equal(classifyNetwork('', ['198.51.100.7']), 'UNKNOWN');
-  });
-
-  test('several office lines are all accepted', () => {
-    const office = ['198.51.100.7', '203.0.113.1'];
-    assert.equal(classifyNetwork('203.0.113.1', office), 'OFFICE');
-  });
-});
-
-describe('IP validation', () => {
-  test('accepts ordinary IPv4 and IPv6', () => {
-    assert.equal(isValidIp('198.51.100.7'), true);
-    assert.equal(isValidIp('2001:db8::1'), true);
-  });
-
-  test('rejects out-of-range octets', () => {
-    assert.equal(isValidIp('256.1.1.1'), false);
-  });
-
-  test('rejects leading zeros, which some parsers read as octal', () => {
-    assert.equal(isValidIp('01.2.3.4'), false);
-  });
-
-  test('rejects text and empties', () => {
-    assert.equal(isValidIp('office-wifi'), false);
-    assert.equal(isValidIp(''), false);
   });
 });
 
@@ -242,4 +198,212 @@ test('punch: a day checked in but not out is never graded absent', () => {
   // must still count as attendance — otherwise everyone reads absent all morning.
   assert.equal(deriveStatus(0, true), 'HALF_DAY');
   assert.notEqual(deriveStatus(0, true), 'ABSENT');
+});
+
+
+/* -------------------------------------------------------------------------- */
+/* The Wi-Fi name — a declared signal                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('office Wi-Fi classification', () => {
+  test('case and stray whitespace do not matter', () => {
+    assert.equal(classifyWifi('  leadway   office ', ['Leadway Office']), 'OFFICE');
+  });
+
+  test('punctuation does matter — two radios are two networks', () => {
+    assert.equal(classifyWifi('Office 5G', ['Office-5G']), 'OTHER');
+  });
+
+  test('an unconfigured list is UNKNOWN, not OTHER', () => {
+    assert.equal(classifyWifi('Anything', []), 'UNKNOWN');
+  });
+
+  test('a device that reported nothing is UNKNOWN, not OTHER', () => {
+    assert.equal(classifyWifi('', ['Leadway-Office']), 'UNKNOWN');
+    assert.equal(classifyWifi(null, ['Leadway-Office']), 'UNKNOWN');
+  });
+
+  test('any one of several office networks is accepted', () => {
+    const office = ['Leadway-Office', 'Leadway-Office 5G'];
+    assert.equal(classifyWifi('Leadway-Office 5G', office), 'OFFICE');
+    assert.equal(classifyWifi('Cafe-Guest', office), 'OTHER');
+  });
+
+  test('normalising keeps what the admin typed, minus the noise', () => {
+    assert.equal(normalizeNetworkName('  Leadway   Office  '), 'Leadway Office');
+    assert.equal(normalizeNetworkName(undefined), '');
+  });
+});
+
+describe('the badge a day carries', () => {
+  test('location decides it whenever location has an answer', () => {
+    // The strong signal wins outright: a Wi-Fi name is text somebody typed and
+    // can carry home, a position is where the phone actually was.
+    assert.equal(resolveNetwork('OFFICE', 'UNKNOWN'), 'OFFICE');
+    assert.equal(resolveNetwork('OFFICE', 'OTHER'), 'OFFICE');
+    assert.equal(resolveNetwork('AWAY', 'OFFICE'), 'REMOTE');
+  });
+
+  test('the network name is the fallback when location knows nothing', () => {
+    assert.equal(resolveNetwork('UNKNOWN', 'OFFICE'), 'OFFICE');
+    assert.equal(resolveNetwork('UNKNOWN', 'OTHER'), 'REMOTE');
+    assert.equal(resolveNetwork('IMPRECISE', 'OFFICE'), 'OFFICE');
+  });
+
+  test('nothing configured, or nothing reported, stays unverified', () => {
+    // A month of "Remote" must stay distinguishable from a month of nobody
+    // having filled the settings in.
+    assert.equal(resolveNetwork('UNKNOWN', 'UNKNOWN'), 'UNKNOWN');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The address is recorded, never matched                                      */
+/* -------------------------------------------------------------------------- */
+
+describe('the address after the allow-list was removed', () => {
+  test('it is still read off the request, first hop first', () => {
+    // Still recorded on every punch, and still the thing an admin checks a
+    // suspicious day against — there is simply nothing to compare it to.
+    assert.equal(
+      clientIpFromHeaders({
+        get: (name: string) =>
+          name.toLowerCase() === 'x-forwarded-for'
+            ? '203.0.113.9, 70.41.3.18, 150.172.238.178'
+            : null,
+      }),
+      '203.0.113.9'
+    );
+  });
+
+  test('normalising still unwraps the dual-stack form', () => {
+    assert.equal(normalizeIp('::ffff:203.0.113.9'), '203.0.113.9');
+  });
+});
+
+
+/* -------------------------------------------------------------------------- */
+/* Where the device says it is                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** A real office, and points measured off it. Karachi, so the maths is real. */
+const OFFICE = { lat: 24.8607, lng: 67.0011, radiusMeters: 150 };
+
+describe('distance between two points', () => {
+  test('the same point is zero', () => {
+    assert.equal(Math.round(distanceMeters(OFFICE, OFFICE)), 0);
+  });
+
+  test('a tenth of a degree of latitude is about 11 km', () => {
+    // Latitude is the one axis with a constant scale, so this pins the formula
+    // against a number that can be checked by hand: 1 degree = 111.19 km.
+    const north = { lat: OFFICE.lat + 0.1, lng: OFFICE.lng };
+    const metres = distanceMeters(OFFICE, north);
+    assert.ok(metres > 11_000 && metres < 11_200, `got ${metres}`);
+  });
+
+  test('longitude shrinks with latitude, and the formula knows it', () => {
+    // At 24.86 N a degree of longitude is cos(24.86) = 0.907 of a degree of
+    // latitude. Subtracting coordinates flat would miss this entirely.
+    const east = { lat: OFFICE.lat, lng: OFFICE.lng + 0.1 };
+    const metres = distanceMeters(OFFICE, east);
+    assert.ok(metres > 10_000 && metres < 10_200, `got ${metres}`);
+  });
+
+  test('it is symmetric', () => {
+    const other = { lat: 24.9, lng: 67.1 };
+    assert.equal(
+      Math.round(distanceMeters(OFFICE, other)),
+      Math.round(distanceMeters(other, OFFICE))
+    );
+  });
+});
+
+describe('is this person at the office', () => {
+  test('standing in it is at it', () => {
+    const at = classifyLocation({ lat: 24.8607, lng: 67.0011, accuracy: 20 }, OFFICE);
+    assert.equal(at.verdict, 'OFFICE');
+    assert.equal(at.distance, 0);
+  });
+
+  test('just inside the radius is still at it', () => {
+    // ~110m north.
+    const near = classifyLocation({ lat: 24.8617, lng: 67.0011, accuracy: 20 }, OFFICE);
+    assert.equal(near.verdict, 'OFFICE');
+  });
+
+  test('home is away, and the distance is reported for the message', () => {
+    const home = classifyLocation({ lat: 24.9, lng: 67.05, accuracy: 20 }, OFFICE);
+    assert.equal(home.verdict, 'AWAY');
+    assert.ok((home.distance ?? 0) > 4_000);
+  });
+
+  test('a vague reading is IMPRECISE, never AWAY', () => {
+    // A laptop positioning itself from surrounding Wi-Fi can be a kilometre
+    // out. Refusing that person as though they were at home would be wrong;
+    // accepting them would make the check meaningless. They retry.
+    const vague = classifyLocation({ lat: 24.8607, lng: 67.0011, accuracy: 1_500 }, OFFICE);
+    assert.equal(vague.verdict, 'IMPRECISE');
+  });
+
+  test('a vague reading from far away is still only IMPRECISE', () => {
+    const vague = classifyLocation({ lat: 24.9, lng: 67.05, accuracy: 1_500 }, OFFICE);
+    assert.equal(vague.verdict, 'IMPRECISE');
+  });
+
+  test('the error bar is never subtracted from the distance', () => {
+    // ~300m away with a 190m error bar. Allowing `distance - accuracy <= radius`
+    // would pass this, quietly turning a 150m rule into a 340m one that the
+    // admin who typed 150 has no way to see.
+    const away = classifyLocation({ lat: 24.8634, lng: 67.0011, accuracy: 190 }, OFFICE);
+    assert.equal(away.verdict, 'AWAY');
+  });
+
+  test('no office marked refuses nobody', () => {
+    // Enforcing against an unconfigured setting is how the address allow-list
+    // locked the whole company out.
+    assert.equal(
+      classifyLocation({ lat: 24.8607, lng: 67.0011, accuracy: 10 }, null).verdict,
+      'UNKNOWN'
+    );
+  });
+
+  test('no position given is UNKNOWN, not AWAY', () => {
+    assert.equal(classifyLocation(null, OFFICE).verdict, 'UNKNOWN');
+  });
+
+  test('a wider radius accepts a wider area', () => {
+    const wide = { ...OFFICE, radiusMeters: 1_000 };
+    const near = classifyLocation({ lat: 24.8657, lng: 67.0011, accuracy: 20 }, wide);
+    assert.equal(near.verdict, 'OFFICE');
+  });
+});
+
+describe('coordinate validation', () => {
+  test('accepts a real place', () => {
+    assert.equal(isValidCoordinate(24.8607, 67.0011), true);
+  });
+
+  test('rejects null island, which is what an unset field looks like', () => {
+    assert.equal(isValidCoordinate(0, 0), false);
+  });
+
+  test('rejects out-of-range values and non-numbers', () => {
+    assert.equal(isValidCoordinate(91, 0), false);
+    assert.equal(isValidCoordinate(0, 181), false);
+    assert.equal(isValidCoordinate('24.8', 67), false);
+    assert.equal(isValidCoordinate(Number.NaN, 67), false);
+  });
+});
+
+describe('distance, as somebody reads it', () => {
+  test('metres below a kilometre, kilometres above', () => {
+    assert.equal(formatDistance(420), '420 m');
+    assert.equal(formatDistance(4_200), '4.2 km');
+    assert.equal(formatDistance(42_000), '42 km');
+  });
+
+  test('no distance says so rather than reading zero', () => {
+    assert.equal(formatDistance(null), 'an unknown distance');
+  });
 });

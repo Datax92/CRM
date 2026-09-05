@@ -12,6 +12,8 @@
  *
  * | column | read from |
  * |---|---|
+ * | Remarks | first entries written on a lead in the range |
+ * | Follow-ups | every later entry written in the range |
  * | New Connects | connected calls logged on a **Remark** — the first contact on a lead |
  * | Follow-Up Connects | connected calls logged on a **Follow-Up** — every contact after |
  * | Meetings Done | entries with `meetingHeld` |
@@ -288,6 +290,22 @@ export async function buildTeamReport(
       const row = tally.get(uid);
       if (!row) continue;
 
+      /**
+       * **The work, then the work that connected.**
+       *
+       * Remarks and Follow-ups count every entry; the two connect columns count
+       * the subset where somebody actually got through. They are deliberately
+       * not the same number and are not meant to add up — a day of unanswered
+       * calls is real work and shows here as remarks with no connects, which is
+       * exactly what a manager needs to be able to see.
+       *
+       * `kind` is stored by the follow-up transaction. Entries written before
+       * that field existed count as follow-ups, which is what all but the first
+       * of them were.
+       */
+      if (entry.kind === "REMARK") row.remarks += 1;
+      else row.followUps += 1;
+
       if (entry.connect) {
         // **The two connect columns are disjoint**, and that is the point of
         // having both: New Connects is the first time somebody got through to
@@ -353,6 +371,8 @@ export async function buildTeamReport(
 
 function pick(row: ReportRow): PersonMetrics {
   return {
+    remarks: row.remarks,
+    followUps: row.followUps,
     newConnects: row.newConnects,
     followUpConnects: row.followUpConnects,
     meetings: row.meetings,

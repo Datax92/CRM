@@ -31,6 +31,18 @@
 
 /** The metrics every subject reports, in column order. */
 export interface PersonMetrics {
+  /**
+   * Remarks written in the range — the **first** entry on a lead.
+   *
+   * Every entry, not only the ones where a call connected. "How many leads did
+   * this person open this week" and "how many of those calls were answered" are
+   * different questions, and the connect columns already answer the second; a
+   * report that only counted connected work would show a zero for somebody who
+   * spent the day on numbers that did not pick up.
+   */
+  remarks: number;
+  /** Follow-ups written in the range — every entry after the first on a lead. */
+  followUps: number;
   /** Connected calls recorded on a Remark — the first contact on a lead. */
   newConnects: number;
   /** Connected calls recorded on a Follow-Up — every contact after the first. */
@@ -45,6 +57,8 @@ export interface PersonMetrics {
 }
 
 export const METRIC_KEYS: (keyof PersonMetrics)[] = [
+  'remarks',
+  'followUps',
   'newConnects',
   'followUpConnects',
   'meetings',
@@ -58,6 +72,8 @@ export const METRIC_KEYS: (keyof PersonMetrics)[] = [
 
 export function blankMetrics(): PersonMetrics {
   return {
+    remarks: 0,
+    followUps: 0,
     newConnects: 0,
     followUpConnects: 0,
     meetings: 0,

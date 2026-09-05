@@ -62,7 +62,7 @@ import { MobileBody, useMobileCentre } from "./MobileShell";
 import { MobileLeadDetail, Sheet, SheetAction } from "./MobileLeadDetail";
 import { useAuth } from "@/context/AuthContext";
 import { ManagerFormModal } from "@/components/employees/ManagerFormModal";
-import { buildAllManagerMetrics } from "@/lib/managerMetrics";
+import { buildAllManagerMetrics, buildManagerMetrics } from "@/lib/managerMetrics";
 import type { DataBankFolder } from "@/hooks/useDataBank";
 import type { CentreAction } from "./MobileTabBar";
 
@@ -84,7 +84,13 @@ const PROFILE_TABS = [
   { key: "activity", label: "Activity" },
 ] as const;
 
-type ProfileTab = (typeof PROFILE_TABS)[number]["key"];
+type ProfileTab = (typeof PROFILE_TABS)[number]["key"] | "team";
+
+/** A manager's roll-call sits first: it is what the figures above are made of. */
+const MANAGER_PROFILE_TABS = [
+  { key: "team", label: "Team" },
+  ...PROFILE_TABS,
+] as const;
 
 export function MobileEmployees({
   metrics,
@@ -171,6 +177,24 @@ export function MobileEmployees({
   const managerTotals = useMemo(
     () => buildAllManagerMetrics(subAdmins, metrics),
     [subAdmins, metrics]
+  );
+
+  /**
+   * Whether the open dossier belongs to a manager, and who reports to them.
+   *
+   * The same switch the desktop uses: `team` present means manager mode. A
+   * manager is never in `metrics` — that roster query is `role == "employee"` —
+   * so the check is against `subAdmins`.
+   */
+  const selectedIsManager = Boolean(
+    selected && subAdmins.some((person) => person.uid === selected.uid)
+  );
+  const selectedTeam = useMemo(
+    () =>
+      selectedIsManager && selected
+        ? metrics.filter((member) => member.subAdminUid === selected.uid)
+        : undefined,
+    [selectedIsManager, selected, metrics]
   );
 
   const totals = useMemo(() => {
@@ -522,6 +546,10 @@ export function MobileEmployees({
                 manager={manager}
                 folders={folders.filter((folder) => folder.subAdminUid === manager.uid).length}
                 index={index}
+                onOpen={() => {
+                  const record = subAdmins.find((person) => person.uid === manager.uid) ?? null;
+                  if (record) onSelect(record);
+                }}
                 onEdit={
                   canManage
                     ? () => {
@@ -558,12 +586,17 @@ export function MobileEmployees({
           employee={selected}
           leads={leads}
           deals={deals}
+          team={selectedTeam}
+          onOpenMember={(member) => onSelect(member)}
           onClose={() => onSelect(null)}
           onEdit={
             canManage
               ? () => {
                   onSelect(null);
-                  setFormFor(selected);
+                  // A manager is edited by the Add Manager form, not the
+                  // employee one — different fields entirely.
+                  if (selectedIsManager) setManagerFormFor(selected);
+                  else setFormFor(selected);
                 }
               : undefined
           }
@@ -617,22 +650,40 @@ function ManagerCard({
   folders,
   index,
   onEdit,
+  onOpen,
 }: {
   manager: ReturnType<typeof buildAllManagerMetrics>[number];
   folders: number;
   index: number;
   /** Absent for a sub admin — editing is `requireAdmin` on the server. */
   onEdit?: () => void;
+  /** Opens the manager's dossier — the same sheet an employee card opens. */
+  onOpen?: () => void;
 }) {
   return (
     <div
       className="mob-rise"
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? `Open ${manager.name}'s record` : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
       style={{
         animationDelay: `${Math.min(index, 8) * 42}ms`,
         background: "#fbfdfd",
         border: "1px solid #dceae8",
         borderRadius: 18,
         padding: "14px 15px",
+        cursor: onOpen ? "pointer" : "default",
       }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
@@ -688,7 +739,12 @@ function ManagerCard({
         {onEdit && (
         <button
           type="button"
-          onClick={onEdit}
+          onClick={(event) => {
+            // The card opens the dossier now; without this, Edit would open it
+            // behind the form and stack two overlays.
+            event.stopPropagation();
+            onEdit();
+          }}
           className="mob-press"
           style={{
             flexShrink: 0,
@@ -936,15 +992,26 @@ function ProfileOverlay({
   employee,
   leads,
   deals,
+  team,
   onClose,
   onEdit,
+  onOpenMember,
 }: {
   employee: EmployeeMetrics;
   leads: Lead[];
   deals: DealRecord[];
+  /**
+   * Present when the subject is a **manager**: their employees. Its presence is
+   * what makes this a manager's dossier — the same switch the desktop modal
+   * uses, so the two surfaces cannot decide differently what a manager's record
+   * contains.
+   */
+  team?: EmployeeMetrics[];
   onClose: () => void;
   /** Absent for a sub admin — editing is `requireAdmin` on the server. */
   onEdit?: () => void;
+  /** Open one of the manager's employees. Manager mode only. */
+  onOpenMember?: (member: EmployeeMetrics) => void;
 }) {
   // Read from the context rather than threaded down: the directory is already
   // behind a role guard, and the lead sheet needs both of these.
@@ -961,22 +1028,68 @@ function ProfileOverlay({
    */
   const [openLead, setOpenLead] = useState<Lead | null>(null);
 
+  const isManager = team !== undefined;
+
+  /** The manager and their team — a manager can hold leads of their own. */
+  const owners = useMemo(
+    () => new Set<string>([employee.uid, ...(team ?? []).map((member) => member.uid)]),
+    [employee.uid, team]
+  );
+
+  /** A manager's figures are their team's, summed by the shared builder. */
+  const figures = useMemo(
+    () => (isManager ? buildManagerMetrics(employee, team ?? []) : null),
+    [isManager, employee, team]
+  );
+
+  /**
+   * One shape for both subjects. The manager's own record keeps the fields a
+   * total cannot have — the KPI targets Analytics measures against, the joining
+   * date — with the team counts laid over them.
+   */
+  const subject: EmployeeMetrics = useMemo(
+    () =>
+      figures
+        ? {
+            ...employee,
+            assigned: figures.assigned,
+            accepted: figures.accepted,
+            missed: figures.missed,
+            active: figures.active,
+            closedWon: figures.closedWon,
+            lost: figures.lost,
+            followUps: figures.followUps,
+            calls: figures.calls,
+            revenue: figures.revenue,
+            payable: figures.payable,
+            profit: figures.profit,
+          }
+        : employee,
+    [figures, employee]
+  );
+
   const ownLeads = useMemo(
     () =>
       leads
-        .filter((l) => l.assignedUserId === employee.uid)
+        .filter((l) => (l.assignedUserId ? owners.has(l.assignedUserId) : false))
         .sort((a, b) => toMillis(lastTouchAt(b)) - toMillis(lastTouchAt(a))),
-    [leads, employee.uid]
+    [leads, owners]
   );
   const ownDeals = useMemo(
     () =>
       deals
-        .filter((d) => d.userId === employee.uid)
+        .filter((d) => (d.userId ? owners.has(d.userId) : false))
         .sort((a, b) => toMillis(b.dealDate ?? b.enteredAt) - toMillis(a.dealDate ?? a.enteredAt)),
-    [deals, employee.uid]
+    [deals, owners]
   );
-  const analytics = useMemo(() => buildDirectoryAnalytics(employee, leads, deals), [employee, leads, deals]);
-  const activity = useMemo(() => buildActivity(employee, leads, deals), [employee, leads, deals]);
+  const analytics = useMemo(
+    () => buildDirectoryAnalytics(subject, leads, deals, owners),
+    [subject, leads, deals, owners]
+  );
+  const activity = useMemo(
+    () => buildActivity(employee, leads, deals, owners),
+    [employee, leads, deals, owners]
+  );
 
   // The filters cut the tab bodies only — the hero figures keep describing the
   // employee's whole record, exactly as on the desktop dossier.
@@ -1019,7 +1132,7 @@ function ProfileOverlay({
     <div
       className="mob-slide-in"
       role="dialog"
-      aria-label={`Employee: ${employee.name}`}
+      aria-label={`${isManager ? "Manager" : "Employee"}: ${employee.name}`}
       style={{
         position: "absolute",
         inset: 0,
@@ -1048,10 +1161,10 @@ function ProfileOverlay({
             </svg>
           </HeaderCircle>
           <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", opacity: 0.82 }}>
-            Employee
+            {isManager ? "Manager" : "Employee"}
           </span>
           {onEdit ? (
-            <HeaderCircle onClick={onEdit} label="Edit this employee" size={36}>
+            <HeaderCircle onClick={onEdit} label={isManager ? "Edit this manager" : "Edit this employee"} size={36}>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
                 <path d="M4 20h4l11-11-4-4L4 16v4Z" />
               </svg>
@@ -1109,10 +1222,14 @@ function ProfileOverlay({
               >
                 {employee.status === "ACTIVE" ? "Active" : "Inactive"}
               </span>
+              {/* A manager is not in the distribution lane, so a priority for
+                  them would be a rank they do not hold. */}
               <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, whiteSpace: "nowrap" }}>
-                Priority {employee.priority}
+                {isManager
+                  ? `${(team ?? []).length} ${(team ?? []).length === 1 ? "employee" : "employees"}`
+                  : `Priority ${employee.priority}`}
               </span>
-              {employee.autoAssign === false && (
+              {!isManager && employee.autoAssign === false && (
                 <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, whiteSpace: "nowrap" }}>
                   · Manual only
                 </span>
@@ -1136,9 +1253,11 @@ function ProfileOverlay({
 
         <div style={{ position: "relative", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 9, marginTop: 16 }}>
           {[
-            { label: "HANDLED", value: String(employee.assigned) },
-            { label: "WON / LOST", value: `${employee.closedWon} / ${employee.lost}` },
-            { label: "PROFIT", value: compactRupees(employee.profit) },
+            { label: isManager ? "TEAM HANDLED" : "HANDLED", value: String(subject.assigned) },
+            { label: "WON / LOST", value: `${subject.closedWon} / ${subject.lost}` },
+            isManager
+              ? { label: "REVENUE", value: compactRupees(subject.revenue) }
+              : { label: "PROFIT", value: compactRupees(subject.profit) },
           ].map((stat) => (
             <div
               key={stat.label}
@@ -1192,7 +1311,7 @@ function ProfileOverlay({
           background: "#dceae8",
         }}
       >
-        {PROFILE_TABS.map((option) => {
+        {(isManager ? MANAGER_PROFILE_TABS : PROFILE_TABS).map((option) => {
           const active = option.key === tab;
           return (
             <button
@@ -1257,8 +1376,9 @@ function ProfileOverlay({
               <Pager pagination={dealPages} variant="mobile" noun="deals" />
             </>
           )}
+          {tab === "team" && <MobileTeamRoster team={team ?? []} onOpen={onOpenMember} />}
           {tab === "analytics" && (
-            <AnalyticsPanels analytics={analytics} handled={employee.assigned} variant="mobile" />
+            <AnalyticsPanels analytics={analytics} handled={subject.assigned} variant="mobile" />
           )}
           {tab === "activity" && (
             <>
@@ -1289,9 +1409,172 @@ function ProfileOverlay({
           onClose={() => setOpenLead(null)}
           userRole={viewerRole}
           getIdToken={getIdToken}
-          assigneeName={employee.name}
+          /* On a manager's dossier the leads belong to several people, so the
+             name has to come from the lead rather than from the subject —
+             printing the manager here would label every lead as theirs. */
+          assigneeName={
+            isManager
+              ? ([employee, ...(team ?? [])].find(
+                  (person) => person.uid === openLead.assignedUserId
+                )?.name ?? "Assigned")
+              : employee.name
+          }
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * A manager's team, on the phone.
+ *
+ * The roll-call that explains the figures above it: two numbers per person and
+ * a tap into their own dossier for the rest. The manager themselves is not a
+ * row here — they are the subject, not a member of their own team.
+ */
+function MobileTeamRoster({
+  team,
+  onOpen,
+}: {
+  team: EmployeeMetrics[];
+  onOpen?: (member: EmployeeMetrics) => void;
+}) {
+  if (team.length === 0) {
+    return (
+      <div
+        style={{
+          padding: "40px 16px",
+          textAlign: "center",
+          fontSize: 13,
+          fontWeight: 500,
+          color: E.label,
+          lineHeight: 1.55,
+        }}
+      >
+        No employees on this team yet. Somebody joins it from their own record, in the Reports To
+        field.
+      </div>
+    );
+  }
+
+  const sorted = [...team].sort((a, b) => b.assigned - a.assigned || a.name.localeCompare(b.name));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      {sorted.map((member, index) => (
+        <button
+          key={member.uid}
+          type="button"
+          className="mob-rise mob-press"
+          onClick={onOpen ? () => onOpen(member) : undefined}
+          style={{
+            animationDelay: `${Math.min(index, 8) * 42}ms`,
+            display: "grid",
+            gridTemplateColumns: "38px minmax(0,1fr) auto",
+            alignItems: "center",
+            gap: 11,
+            width: "100%",
+            textAlign: "left",
+            background: "#fbfdfd",
+            border: "1px solid #dceae8",
+            borderRadius: 16,
+            padding: "12px 13px",
+            cursor: onOpen ? "pointer" : "default",
+            fontFamily: "inherit",
+            WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              background: "#e8f5f3",
+              color: E.tealInk,
+              fontSize: 13,
+              fontWeight: 800,
+            }}
+          >
+            {initialsOf(member.name)}
+          </span>
+
+          <span style={{ minWidth: 0 }}>
+            <span
+              style={{
+                display: "block",
+                fontSize: 13.5,
+                fontWeight: 700,
+                color: E.ink,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {member.name}
+              {member.status === "DISABLED" && (
+                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: "#a4682a" }}>
+                  INACTIVE
+                </span>
+              )}
+            </span>
+            <span
+              style={{
+                display: "block",
+                fontSize: 11.5,
+                color: E.label,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {member.jobTitle || member.email}
+            </span>
+          </span>
+
+          <span style={{ display: "flex", gap: 14, flexShrink: 0, textAlign: "right" }}>
+            <span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 15,
+                  fontWeight: 800,
+                  color: E.ink,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {member.assigned}
+              </span>
+              <span
+                style={{ display: "block", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.6px", color: E.label }}
+              >
+                LEADS
+              </span>
+            </span>
+            <span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 15,
+                  fontWeight: 800,
+                  color: E.tealInk,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {member.closedWon}
+              </span>
+              <span
+                style={{ display: "block", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.6px", color: E.label }}
+              >
+                WON
+              </span>
+            </span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }

@@ -48,6 +48,7 @@ test('a blank row is zero in every column, and there are no columns missing', ()
 
 test('adding two rows adds every column', () => {
   const a: PersonMetrics = {
+    remarks: 10, followUps: 11,
     newConnects: 1, followUpConnects: 2, meetings: 3, siteVisits: 4,
     dealsClosed: 5, tokensReceived: 6, p1: 7, p2: 8, p3: 9,
   };

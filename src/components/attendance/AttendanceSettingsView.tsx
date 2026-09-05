@@ -8,13 +8,34 @@
  * that it means "late from 09:16". A settings page that lists parameters
  * without saying what they do is a settings page nobody dares touch.
  *
- * The office IP list is checked **server-side** against the request's own
- * address; the "Use my current IP" button asks the server what it saw rather
- * than reading anything in the browser, which could be edited in seconds.
+ * **The office is recognised by where the device is, and by its Wi-Fi network
+ * name.** Location is the check that answers the question an owner is actually
+ * asking — a saved network name travels home in somebody's pocket, a position
+ * does not — and the network name corroborates it and covers the device that
+ * will not share a position at all.
+ *
+ * The office is marked by **standing in it and pressing a button**, not by
+ * typing coordinates: an admin who has to look up their own latitude will get
+ * it wrong, and a wrong office refuses the entire company.
+ *
+ * The older idea, kept because the reasoning still holds:
+ * The IP allow-list that used to sit under this card is gone: a business line's
+ * public address is dynamic, so a list built from it stops matching without
+ * warning and the restriction then refuses the whole company. That is the
+ * mechanism being wrong for the network, not a value needing tuning.
+ *
+ * What the Wi-Fi check is worth is stated on the card in the same words as
+ * `lib/attendance`: no browser exposes the SSID, so the name is typed once per
+ * device and compared **on the server**. It stops the ordinary case and not a
+ * determined one — so the card also says what makes it hold up in practice:
+ * the expected names are never shown to an employee, and a refused check-in
+ * notifies the admin.
  */
 
 import { useEffect, useState } from "react";
-import { Globe, Save, ShieldCheck } from "lucide-react";
+import { MapPin, Save, ShieldCheck, Wifi } from "lucide-react";
+import { readPosition, FIX_FAILURE_MESSAGES } from "@/lib/geolocation";
+import { formatDistance, MAX_FIX_ACCURACY_METERS } from "@/lib/attendance";
 import { useAuth } from "@/context/AuthContext";
 import { useEmployees } from "@/hooks/useEmployees";
 import { getAttendanceConfig, setAttendanceConfig } from "@/lib/clientActions";
@@ -36,7 +57,10 @@ export function AttendanceSettingsView() {
 
   const [policy, setPolicy] = useState<AttendancePolicy>(DEFAULT_ATTENDANCE_POLICY);
   const [serverIp, setServerIp] = useState<string>("");
-  const [ipText, setIpText] = useState("");
+  const [wifiText, setWifiText] = useState("");
+  /** Set while the browser is finding the admin's position. */
+  const [locating, setLocating] = useState(false);
+  const [locateNote, setLocateNote] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
@@ -54,7 +78,7 @@ export function AttendanceSettingsView() {
       if (result.ok) {
         const { yourIp, ...stored } = result.data;
         setPolicy(stored);
-        setIpText(stored.officeIps.join("\n"));
+        setWifiText(stored.officeWifiNames.join("\n"));
         setServerIp(yourIp);
       } else {
         setBanner({ ok: false, text: result.error });
@@ -77,8 +101,11 @@ export function AttendanceSettingsView() {
     const token = await getIdToken();
     const result = await setAttendanceConfig(token, {
       ...policy,
-      officeIps: ipText
-        .split(/[\s,]+/)
+      // Split on newlines only, never on spaces: "Leadway Office 5G" is one
+      // network, and the whitespace split the IP field uses would save it as
+      // four networks that match nothing.
+      officeWifiNames: wifiText
+        .split(/\r?\n/)
         .map((value) => value.trim())
         .filter(Boolean),
     });
@@ -89,11 +116,52 @@ export function AttendanceSettingsView() {
       return;
     }
     setPolicy(result.data);
-    setIpText(result.data.officeIps.join("\n"));
+    setWifiText(result.data.officeWifiNames.join("\n"));
     setBanner({ ok: true, text: "Attendance rules saved. They apply from the next check-in." });
   };
 
   const lateAfter = formatClockValue((parseClock(policy.startTime) ?? 0) + policy.graceMinutes);
+
+  /**
+   * Marks the office at wherever this browser currently is.
+   *
+   * The only sane way to set it. Coordinates typed from a map are transposed,
+   * truncated or hemisphere-flipped often enough that a screen offering a
+   * latitude box is a screen that will eventually lock a company out of its own
+   * attendance — and the person who can fix it is the one who set it wrong.
+   *
+   * The reading is refused if it is too vague to trust: an office pinned from a
+   * 2km estimate is not an office, and every employee would then be measured
+   * against a point in the wrong suburb.
+   */
+  const markOffice = async () => {
+    setLocating(true);
+    setLocateNote(null);
+
+    const { fix, failure } = await readPosition();
+    setLocating(false);
+
+    if (!fix) {
+      setLocateNote(FIX_FAILURE_MESSAGES[failure ?? "UNAVAILABLE"]);
+      return;
+    }
+    if (fix.accuracy > MAX_FIX_ACCURACY_METERS) {
+      setLocateNote(
+        `This browser only knows where it is to within ${formatDistance(fix.accuracy)}, which is ` +
+          "too vague to pin the office to. Try from a phone while you are in the office, or turn " +
+          "on precise location."
+      );
+      return;
+    }
+
+    setPolicy((current) => ({ ...current, officeLat: fix.lat, officeLng: fix.lng }));
+    setLocateNote(
+      `Office set to where this browser is now, accurate to about ${formatDistance(fix.accuracy)}. ` +
+        "Press Save rules to keep it."
+    );
+  };
+
+  const officeMarked = policy.officeLat !== null && policy.officeLng !== null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -258,12 +326,12 @@ export function AttendanceSettingsView() {
       </AttendanceCard>
 
       {/* ---------------------------------------------------------------- */}
-      {/* §2 — the office network                                           */}
+      {/* §2 — where the office is                                          */}
       {/* ---------------------------------------------------------------- */}
       <AttendanceCard
-        title="Office network"
-        icon={<Globe size={14} color={A.teal} />}
-        hint={serverIp ? `This request came from ${serverIp}` : undefined}
+        title="Office location"
+        icon={<MapPin size={14} color={A.teal} />}
+        hint="Checked on check-in only"
       >
         <label
           style={{
@@ -271,8 +339,8 @@ export function AttendanceSettingsView() {
             alignItems: "flex-start",
             gap: 10,
             borderRadius: 12,
-            border: `1px solid ${policy.ipRestriction ? A.teal : A.line}`,
-            background: policy.ipRestriction ? A.tealSoft : A.surface,
+            border: `1px solid ${policy.locationRestriction ? A.teal : A.line}`,
+            background: policy.locationRestriction ? A.tealSoft : A.surface,
             padding: "11px 13px",
             cursor: "pointer",
             marginBottom: 12,
@@ -280,63 +348,242 @@ export function AttendanceSettingsView() {
         >
           <input
             type="checkbox"
-            checked={policy.ipRestriction}
-            onChange={(event) => patch("ipRestriction", event.target.checked)}
+            checked={policy.locationRestriction}
+            onChange={(event) => patch("locationRestriction", event.target.checked)}
             style={{ marginTop: 3, width: 16, height: 16, accentColor: A.teal }}
           />
           <span>
             <span style={{ display: "block", fontSize: 13.5, fontWeight: 700, color: A.ink }}>
-              Only allow check-in from the office network
+              Only allow check-in at the office
             </span>
             <span style={{ display: "block", fontSize: 12, color: A.muted, marginTop: 2 }}>
-              Off by default. With it off, a punch from anywhere is still recorded — it is simply
-              stamped Remote rather than Office, and the admin can see which.
+              The employee&rsquo;s browser asks to share its location when they press Check In, and
+              the distance is worked out here. Check-<em>out</em> is never refused.
             </span>
           </span>
         </label>
 
-        <Field label="Office IP addresses — one per line">
-          <textarea
-            value={ipText}
-            onChange={(event) => setIpText(event.target.value)}
-            rows={3}
-            placeholder="203.0.113.42"
-            style={{ ...fieldStyle, width: "100%", resize: "vertical", fontFamily: "monospace" }}
-          />
-        </Field>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 12,
+            borderRadius: 12,
+            border: `1px solid ${A.line}`,
+            background: A.surface,
+            padding: "12px 14px",
+          }}
+        >
+          <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: A.faint }}>
+              The office
+            </div>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: officeMarked ? A.ink : A.faint, marginTop: 3 }}>
+              {officeMarked
+                ? `${policy.officeLat!.toFixed(5)}, ${policy.officeLng!.toFixed(5)}`
+                : "Not marked yet"}
+            </div>
+          </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
           <button
             type="button"
-            disabled={!serverIp}
-            onClick={() =>
-              setIpText((current) =>
-                current
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .includes(serverIp)
-                  ? current
-                  : `${current ? `${current}\n` : ""}${serverIp}`
-              )
-            }
+            onClick={() => void markOffice()}
+            disabled={locating}
             style={{
               borderRadius: 999,
               border: `1px solid ${A.line}`,
               background: A.surface,
-              color: serverIp ? A.teal : A.faint,
-              padding: "7px 15px",
+              color: A.teal,
+              padding: "8px 16px",
               fontSize: 12.5,
               fontWeight: 700,
-              cursor: serverIp ? "pointer" : "not-allowed",
+              cursor: locating ? "progress" : "pointer",
+              fontFamily: "inherit",
             }}
           >
-            Use my current IP
+            {locating ? "Finding…" : officeMarked ? "Move it to where I am" : "Use my current location"}
           </button>
-          <span style={{ fontSize: 11.5, color: A.faint, alignSelf: "center" }}>
-            Add a second address if the office has a backup line — a changed IP with restriction on
-            locks everybody out.
-          </span>
+
+          {officeMarked && (
+            <button
+              type="button"
+              onClick={() => {
+                setPolicy((current) => ({
+                  ...current,
+                  officeLat: null,
+                  officeLng: null,
+                  // Clearing the office while the restriction is on would save
+                  // a rule with nothing behind it, which the server refuses.
+                  // Switching it off here means the two always agree.
+                  locationRestriction: false,
+                }));
+                setLocateNote("Office cleared. The location check is switched off with it.");
+              }}
+              style={{
+                borderRadius: 999,
+                border: `1px solid ${A.line}`,
+                background: A.surface,
+                color: A.muted,
+                padding: "8px 14px",
+                fontSize: 12.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Clear
+            </button>
+          )}
         </div>
+
+        {locateNote && (
+          <p
+            role="status"
+            style={{
+              marginTop: 10,
+              borderRadius: 10,
+              border: `1px solid ${A.line}`,
+              background: A.tealSoft,
+              padding: "9px 12px",
+              fontSize: 12,
+              color: A.ink,
+              lineHeight: 1.5,
+            }}
+          >
+            {locateNote}
+          </p>
+        )}
+
+        <div style={{ marginTop: 14, maxWidth: 280 }}>
+          <Field label="How far from it still counts (metres)">
+            <input
+              type="number"
+              min={20}
+              max={20000}
+              step={10}
+              value={policy.officeRadiusMeters}
+              onChange={(event) => patch("officeRadiusMeters", Number(event.target.value))}
+              style={fieldStyle}
+            />
+          </Field>
+        </div>
+
+        <p style={{ fontSize: 11.5, color: A.muted, marginTop: 10, lineHeight: 1.55 }}>
+          <strong style={{ color: A.ink }}>Set this generously.</strong> Indoors a phone is routinely
+          20&ndash;60 metres out and a laptop further, so a radius tight enough to catch somebody in
+          the car park will refuse people at their own desk. 150m covers a small office and its
+          street; widen it rather than fight the error bars. A reading vaguer than{" "}
+          {formatDistance(MAX_FIX_ACCURACY_METERS)} is never accepted either way &mdash; the employee
+          is asked to try again rather than being marked away.
+        </p>
+
+        <p
+          style={{
+            marginTop: 10,
+            borderRadius: 10,
+            border: `1px solid ${A.line}`,
+            background: A.surface,
+            padding: "10px 12px",
+            fontSize: 11.5,
+            color: A.muted,
+            lineHeight: 1.55,
+          }}
+        >
+          <strong style={{ color: A.ink }}>What this proves, and what to tell your team.</strong>{" "}
+          This is the check that a saved Wi-Fi name cannot pass from home. Location is read{" "}
+          <em>only</em> at the moment somebody presses Check In &mdash; never in the background, never
+          on any other screen &mdash; and what is stored is the distance from the office and the
+          reading itself, on that day&rsquo;s record. Say that to your team before you switch it on:
+          an unexplained permission prompt is one people decline, and somebody who has declined it
+          cannot check in at all.
+        </p>
+      </AttendanceCard>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* §2 — the office Wi-Fi                                             */}
+      {/* ---------------------------------------------------------------- */}
+      <AttendanceCard
+        title="Office Wi-Fi"
+        icon={<Wifi size={14} color={A.teal} />}
+        hint="Checked on check-in only"
+      >
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            borderRadius: 12,
+            border: `1px solid ${policy.wifiRestriction ? A.teal : A.line}`,
+            background: policy.wifiRestriction ? A.tealSoft : A.surface,
+            padding: "11px 13px",
+            cursor: "pointer",
+            marginBottom: 12,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={policy.wifiRestriction}
+            onChange={(event) => patch("wifiRestriction", event.target.checked)}
+            style={{ marginTop: 3, width: 16, height: 16, accentColor: A.teal }}
+          />
+          <span>
+            <span style={{ display: "block", fontSize: 13.5, fontWeight: 700, color: A.ink }}>
+              Only allow check-in on the office Wi-Fi
+            </span>
+            <span style={{ display: "block", fontSize: 12, color: A.muted, marginTop: 2 }}>
+              A check-in from any other network is refused and the employee is told which network
+              they are on. Useful alongside the location check above, and the answer for a device
+              that will not share a position at all. Check-<em>out</em> is never refused — blocking
+              it would strand an open day, and an open day is graded as a half day.
+            </span>
+          </span>
+        </label>
+
+        <Field label="Office Wi-Fi network names — one per line">
+          <textarea
+            value={wifiText}
+            onChange={(event) => setWifiText(event.target.value)}
+            rows={3}
+            placeholder={"Leadway-Office\nLeadway-Office 5G"}
+            style={{ ...fieldStyle, width: "100%", resize: "vertical" }}
+          />
+        </Field>
+
+        <p style={{ fontSize: 11.5, color: A.faint, marginTop: 10, lineHeight: 1.5 }}>
+          Type each name exactly as the router broadcasts it. Case and extra spaces do not matter;
+          punctuation does — <code>Office-5G</code> and <code>Office 5G</code> are usually two
+          different radios, so add both if the office runs both bands.
+        </p>
+
+        <p style={{ fontSize: 11.5, color: A.faint, marginTop: 8, lineHeight: 1.5 }}>
+          The office address is <em>recorded</em> on every punch and shown on the day&rsquo;s record,
+          but nothing is matched against it — {serverIp ? `this request came from ${serverIp}` : "it is read from the request itself"}.
+        </p>
+
+        <p
+          style={{
+            marginTop: 10,
+            borderRadius: 10,
+            border: `1px solid ${A.line}`,
+            background: A.surface,
+            padding: "10px 12px",
+            fontSize: 11.5,
+            color: A.muted,
+            lineHeight: 1.55,
+          }}
+        >
+          <strong style={{ color: A.ink }}>Worth knowing what this proves.</strong> No browser will
+          tell a website which Wi-Fi it is on — there is no such web API — so the employee types the
+          network name once on each device and the server checks it against this list. That stops
+          somebody checking in from home by habit; it does not stop somebody who decides to type
+          your network name instead. It is exactly as trustworthy as the check-in time beside it.
+          That is why the location check above exists, and why this one is the second opinion rather
+          than the rule. What does hold up here: the accepted names are never shown to an employee — not here, not in
+          the box beside Check In, not in the message they get when a check-in is refused — and{" "}
+          <strong style={{ color: A.ink }}>every refused check-in notifies you</strong>, naming the
+          network the device claimed. Bypassable but visible is the achievable goal.
+        </p>
 
         {/* §2's explicit exception. */}
         <div style={{ marginTop: 14 }}>

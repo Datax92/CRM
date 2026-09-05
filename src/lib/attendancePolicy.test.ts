@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -215,11 +215,11 @@ test('out-of-range numbers are refused rather than clamped into nonsense', () =>
   assert.equal(saved.deductionValue, DEFAULT_ATTENDANCE_POLICY.deductionValue);
 });
 
-test('IP restriction is off until somebody turns it on', () => {
-  // Defaulting it on with an empty allow-list would lock the whole company out
-  // of attendance the moment the module ships.
-  assert.equal(DEFAULT_ATTENDANCE_POLICY.ipRestriction, false);
-  assert.deepEqual(DEFAULT_ATTENDANCE_POLICY.officeIps, []);
+test('the Wi-Fi restriction is off until somebody turns it on', () => {
+  // Defaulting it on with an empty list would lock the whole company out of
+  // attendance the moment the module ships.
+  assert.equal(DEFAULT_ATTENDANCE_POLICY.wifiRestriction, false);
+  assert.deepEqual(DEFAULT_ATTENDANCE_POLICY.officeWifiNames, []);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -227,20 +227,20 @@ test('IP restriction is off until somebody turns it on', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * `punchAttendance` decides this from the request's own IP, which a unit test
- * cannot supply — so the predicate itself is pulled out here and asserted.
- * The asymmetry is the whole point and is the thing most likely to be
- * "simplified" back into a bug later.
+ * `punchAttendance` decides this from a claim only the request carries, so the
+ * predicate itself is pulled out here and asserted. The asymmetry between
+ * checking in and checking out is the whole point, and is the thing most likely
+ * to be "simplified" back into a bug later.
  */
 function enforcesNetwork(
   kind: 'IN' | 'OUT',
-  policy: { ipRestriction: boolean; officeIps: string[] },
+  policy: { wifiRestriction: boolean; officeWifiNames: string[] },
   exempt: boolean
 ): boolean {
-  return kind === 'IN' && policy.ipRestriction && policy.officeIps.length > 0 && !exempt;
+  return kind === 'IN' && !exempt && policy.wifiRestriction && policy.officeWifiNames.length > 0;
 }
 
-const restricted = { ipRestriction: true, officeIps: ['203.0.113.9'] };
+const restricted = { wifiRestriction: true, officeWifiNames: ['Leadway-Office'] };
 
 test('check-in is policed off the office network; check-out never is', () => {
   assert.equal(enforcesNetwork('IN', restricted, false), true);
@@ -249,14 +249,18 @@ test('check-in is policed off the office network; check-out never is', () => {
   assert.equal(enforcesNetwork('OUT', restricted, false), false);
 });
 
-test('an unconfigured allow-list polices nothing', () => {
-  // Otherwise turning the restriction on with no address recorded would lock
-  // the entire company out of attendance.
-  assert.equal(enforcesNetwork('IN', { ipRestriction: true, officeIps: [] }, false), false);
+test('an unconfigured list polices nothing', () => {
+  // Otherwise turning the restriction on with no network named would lock the
+  // entire company out of attendance — the exact failure the IP allow-list
+  // produced when the office address rotated.
+  assert.equal(enforcesNetwork('IN', { wifiRestriction: true, officeWifiNames: [] }, false), false);
 });
 
 test('the restriction switched off polices nothing', () => {
-  assert.equal(enforcesNetwork('IN', { ipRestriction: false, officeIps: ['203.0.113.9'] }, false), false);
+  assert.equal(
+    enforcesNetwork('IN', { wifiRestriction: false, officeWifiNames: ['Leadway-Office'] }, false),
+    false
+  );
 });
 
 test('an exempt employee checks in from anywhere', () => {
@@ -264,39 +268,65 @@ test('an exempt employee checks in from anywhere', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Configuring an office IP is the decision to enforce it                      */
+/* The Wi-Fi restriction                                                       */
 /* -------------------------------------------------------------------------- */
 
-test('a stored policy with office IPs but no flag enforces them', () => {
-  // The bug this fixes: `config/attendance` written before `ipRestriction`
-  // existed held only `officeIps`, fell through to the default `false`, and
-  // accepted every check-in from anywhere while the addresses sat in Settings
-  // looking as though they were doing something.
-  const policy = normalizePolicy({ officeIps: ['119.73.100.106'] }, DEFAULT_ATTENDANCE_POLICY);
-  assert.equal(policy.ipRestriction, true);
-});
+describe('office Wi-Fi policy', () => {
+  test('naming a network is the decision to enforce it', () => {
+    // The same rule the IP restriction follows, and the bug it was written for:
+    // a stored document with networks configured and no flag must not read as
+    // "recorded but not policed".
+    const next = normalizePolicy(
+      { officeWifiNames: ['Leadway-Office'] },
+      { ...DEFAULT_ATTENDANCE_POLICY }
+    );
+    assert.equal(next.wifiRestriction, true);
+  });
 
-test('no office IPs means nothing to enforce, so nothing is enforced', () => {
-  // Refusing every check-in because nobody has configured an address yet
-  // would lock the whole company out of attendance.
-  const policy = normalizePolicy({ officeIps: [] }, DEFAULT_ATTENDANCE_POLICY);
-  assert.equal(policy.ipRestriction, false);
-});
+  test('an explicit false always wins over the inference', () => {
+    const next = normalizePolicy(
+      { officeWifiNames: ['Leadway-Office'], wifiRestriction: false },
+      { ...DEFAULT_ATTENDANCE_POLICY }
+    );
+    assert.equal(next.wifiRestriction, false);
+  });
 
-test('an explicit false wins, even with addresses configured', () => {
-  // Settings always sends the field, so an admin who wants the network
-  // recorded but not policed makes that choice once and it sticks.
-  const policy = normalizePolicy(
-    { officeIps: ['119.73.100.106'], ipRestriction: false },
-    DEFAULT_ATTENDANCE_POLICY
-  );
-  assert.equal(policy.ipRestriction, false);
-});
+  test('an empty list leaves nothing to enforce', () => {
+    const next = normalizePolicy({ officeWifiNames: [] }, { ...DEFAULT_ATTENDANCE_POLICY });
+    assert.equal(next.wifiRestriction, false);
+    assert.deepEqual(next.officeWifiNames, []);
+  });
 
-test('an explicit true wins with no addresses — and still polices nothing', () => {
-  const policy = normalizePolicy({ officeIps: [], ipRestriction: true }, DEFAULT_ATTENDANCE_POLICY);
-  assert.equal(policy.ipRestriction, true);
-  // `punchAttendance` also requires a non-empty list before it refuses
-  // anybody, which is what stops this combination locking people out.
-  assert.equal(policy.officeIps.length, 0);
+  test('the retired address fields are not carried forward', () => {
+    // A stored `config/attendance` written before the allow-list was removed
+    // still holds `officeIps` and `ipRestriction`. They must come out of
+    // `normalizePolicy` gone rather than preserved: a policy object carrying a
+    // dead restriction is one somebody will eventually read and act on.
+    const next = normalizePolicy(
+      {
+        officeWifiNames: ['Leadway-Office'],
+        wifiRestriction: true,
+        // Exactly what a pre-existing installation has in Firestore.
+        officeIps: ['119.73.100.106'],
+        ipRestriction: true,
+      } as Partial<AttendancePolicy> & Record<string, unknown>,
+      { ...DEFAULT_ATTENDANCE_POLICY }
+    );
+
+    assert.equal(next.wifiRestriction, true);
+    assert.deepEqual(next.officeWifiNames, ['Leadway-Office']);
+    assert.equal('officeIps' in next, false);
+    assert.equal('ipRestriction' in next, false);
+  });
+
+  test('a mistyped field does not reset the networks', () => {
+    const current = {
+      ...DEFAULT_ATTENDANCE_POLICY,
+      officeWifiNames: ['Leadway-Office'],
+      wifiRestriction: true,
+    };
+    const next = normalizePolicy({ graceMinutes: -5 }, current);
+    assert.deepEqual(next.officeWifiNames, ['Leadway-Office']);
+    assert.equal(next.wifiRestriction, true);
+  });
 });

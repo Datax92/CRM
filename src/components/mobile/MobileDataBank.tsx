@@ -139,10 +139,10 @@ export function MobileDataBankFolders() {
             <h1 style={TITLE}>Sources</h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            {/* Creating a folder is the admin's decision, and the Server
-                Action refuses it for a sub admin — so the control is absent
-                rather than present and broken. */}
-            {isAdmin && (
+            {/* Both managing roles: a manager's own cold list is theirs to
+                create. Whose folder it is still comes from the token, not from
+                this screen — see `createDataBankFolder`. */}
+            {isManager && (
               <HeaderCircle label="New folder" onClick={() => setFormFor({ folder: null })}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
                   <path d="M12 5v14M5 12h14" />
@@ -311,9 +311,9 @@ export function MobileDataBankFolders() {
               </button>
 
               {/* Outside the navigating button, so they are separate targets.
-                  A sub admin gets neither, so the row is not rendered at all
-                  rather than showing two buttons that would be refused. */}
-              {isAdmin && (
+                  A manager owns every folder their query returns, so both are
+                  theirs; the Server Action re-checks it. */}
+              {isManager && (
               <div
                 style={{
                   display: "flex",

@@ -517,11 +517,22 @@ export function compactRupees(value: number): string {
 export function buildDirectoryAnalytics(
   employee: EmployeeMetrics,
   leads: Lead[],
-  deals: DealRecord[]
+  deals: DealRecord[],
+  /**
+   * Whose work this describes. Defaults to the subject alone, which is every
+   * employee; a **manager** passes their whole team, because a manager has no
+   * figures of their own — theirs are the sum of the people they run (see
+   * `lib/managerMetrics`). The headline figures on `employee` are summed the
+   * same way by `buildManagerMetrics`, so the chart and the strip agree.
+   */
+  owners?: Set<string>
 ): DirectoryAnalytics {
   const now = monthOf(new Date())!;
-  const own = leads.filter((lead) => lead.assignedUserId === employee.uid);
-  const ownDeals = deals.filter((deal) => deal.userId === employee.uid);
+  const covers = (uid: string | null | undefined) =>
+    owners ? (uid ? owners.has(uid) : false) : uid === employee.uid;
+
+  const own = leads.filter((lead) => covers(lead.assignedUserId));
+  const ownDeals = deals.filter((deal) => covers(deal.userId));
 
   // Six buckets ending on this month, oldest first.
   const window: Array<{ y: number; m: number; label: string; leads: number; won: number }> = [];
@@ -658,14 +669,19 @@ const ICON_CLOCK = "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7.5V12l3.5 2";
 export function buildActivity(
   employee: EmployeeMetrics,
   leads: Lead[],
-  deals: DealRecord[]
+  deals: DealRecord[],
+  /** Whose work to feed. See `buildDirectoryAnalytics` — a manager's is their team's. */
+  owners?: Set<string>
 ): ActivityEntry[] {
   const toDate = (v: { toDate?: () => Date } | undefined | null) =>
     typeof v?.toDate === "function" ? v.toDate() : null;
 
+  const covers = (uid: string | null | undefined) =>
+    owners ? (uid ? owners.has(uid) : false) : uid === employee.uid;
+
   const entries: ActivityEntry[] = [];
 
-  for (const deal of deals.filter((d) => d.userId === employee.uid)) {
+  for (const deal of deals.filter((d) => covers(d.userId))) {
     entries.push({
       action: `Closed deal with ${deal.customer?.name ?? "a client"}`,
       detail: `Rs ${Math.round(Number(deal.profit) || 0).toLocaleString()} profit settled`,
@@ -674,7 +690,7 @@ export function buildActivity(
     });
   }
 
-  for (const lead of leads.filter((l) => l.assignedUserId === employee.uid)) {
+  for (const lead of leads.filter((l) => covers(l.assignedUserId))) {
     if (lead.status === "CLOSED_LOST" || lead.status === "NOT_INTERESTED") {
       entries.push({
         action: `Lost ${lead.name}`,
@@ -694,7 +710,12 @@ export function buildActivity(
 
   entries.push({
     action: "Account created",
-    detail: `${employee.jobTitle}, priority ${employee.priority}`,
+    // A manager has no job title and no lane priority — the Add Manager form
+    // does not offer either, because they take no leads. Restating an employee
+    // line for them would print "undefined, priority 0".
+    detail: employee.jobTitle
+      ? `${employee.jobTitle}, priority ${employee.priority}`
+      : "Manager account",
     at: toDate(employee.joinedAt ?? employee.createdAt),
     icon: ICON_JOINED,
   });

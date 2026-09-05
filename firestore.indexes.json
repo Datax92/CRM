@@ -639,26 +639,6 @@
       ]
     },
     {
-      "collectionGroup": "dealPayouts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "finalizedAt",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "expenses",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "dayKey",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "expenses",
       "queryScope": "COLLECTION",
       "fields": [

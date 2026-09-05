@@ -26,7 +26,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useLeads } from "@/hooks/useLeads";
 import { useEmployeeKpi, useTeamKpi } from "@/hooks/useKpi";
 import { useMyProfile } from "@/hooks/useEmployees";
-import { useAttendance } from "@/hooks/useAttendance";
+import { useAttendance, usePunchRequirements } from "@/hooks/useAttendance";
+import { NetworkNameField, PunchRulesHint } from "@/components/attendance/NetworkNameField";
 import { formatClock, formatWorkedHours } from "@/lib/attendance";
 import { DEAL_CATEGORIES } from "@/lib/constants/deals";
 import { telUrl } from "@/lib/phone";
@@ -98,8 +99,16 @@ export function MobileDashboard() {
   const dataError = kpi.error ?? attendance.error;
   const [punchNote, setPunchNote] = useState<{ ok: boolean; message: string } | null>(null);
 
+  const { wifiRequired, locationRequired, refreshPunchRules } = usePunchRequirements(getIdToken);
+
   const runPunch = async (kind: "IN" | "OUT") => {
-    setPunchNote(await attendance.punch(kind));
+    const result = await attendance.punch(kind, {
+      withLocation: locationRequired && kind === "IN",
+    });
+    setPunchNote(result);
+    // Same reason as the desktop strip: the field has to be there when the
+    // refusal tells them to use it.
+    if (!result.ok) refreshPunchRules();
   };
   const today = attendance.today;
 
@@ -258,6 +267,15 @@ export function MobileDashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Same control the desktop strip renders, phone-sized — so the
+                two surfaces cannot end up asking for different things. */}
+            {(wifiRequired || locationRequired) && (
+              <div style={{ display: "grid", gap: 7, marginTop: 13 }}>
+                {wifiRequired && <NetworkNameField variant="phone" />}
+                <PunchRulesHint wifi={wifiRequired} location={locationRequired} />
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: 9, marginTop: 13 }}>
               <PunchButton

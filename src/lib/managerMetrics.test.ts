@@ -114,3 +114,41 @@ test('a disabled team member still counts — their history did happen', () => {
   assert.equal(totals.closedWon, 4);
   assert.equal(totals.revenue, 900);
 });
+
+test("a manager's own leads count in their total, and headcount stays the team", () => {
+  // A manager can hold leads: a Data Bank record promoted into their Client
+  // section is assigned to them and credited to them. Leaving it out made the
+  // directory card and the manager's dossier disagree about the same manager —
+  // 70 leads on one, 78 on the other.
+  const working = {
+    uid: 'm1',
+    name: 'm1',
+    email: 'm1@crm.com',
+    status: 'ACTIVE' as const,
+    assigned: 8,
+    closedWon: 1,
+    revenue: 100_000,
+  };
+
+  const team = [
+    member('e1', 'm1', { assigned: 10, closedWon: 3, revenue: 300_000 }),
+    member('e2', 'm1', { assigned: 60, closedWon: 0, revenue: 0 }),
+  ];
+
+  const totals = buildManagerMetrics(working, team);
+
+  assert.equal(totals.assigned, 78);
+  assert.equal(totals.closedWon, 4);
+  assert.equal(totals.revenue, 400_000);
+  // Three people's work, two people on the team. The two questions have two
+  // answers and must not be given the same one.
+  assert.equal(totals.headcount, 2);
+});
+
+test('an identity-only manager contributes nothing, as before', () => {
+  const team = [member('e1', 'm1', { assigned: 10, closedWon: 3 })];
+  const totals = buildManagerMetrics(manager('m1'), team);
+
+  assert.equal(totals.assigned, 10);
+  assert.equal(totals.closedWon, 3);
+});

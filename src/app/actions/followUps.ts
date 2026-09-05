@@ -263,7 +263,10 @@ export async function addFollowUp(
  * and the reason the log is worth anything: a history somebody can go back and
  * tidy is not a history. The lead names its editable entry in
  * `latestFollowUpId`, so "is this the newest" is one field comparison rather
- * than an ordering read.
+ * than an ordering read — and where that field is **missing**, on leads whose
+ * entries predate it, the newest is resolved from the subcollection and the
+ * pointer is written back, so each such lead is repaired the first time
+ * anybody edits it.
  *
  * **Nothing is overwritten.** Every edit appends the previous values to a
  * `revisions` array on the entry, with who changed it and when, so the pane can
@@ -296,9 +299,22 @@ export async function updateFollowUp(
 
     return adminDb.runTransaction(async (t: Transaction) => {
       const leadRef = adminDb.collection("leads").doc(leadId);
-      const entryRef = leadRef.collection("followUps").doc(followUpId);
+      const followUpsRef = leadRef.collection("followUps");
+      const entryRef = followUpsRef.doc(followUpId);
 
-      const [leadSnap, entrySnap] = await Promise.all([t.get(leadRef), t.get(entryRef)]);
+      /**
+       * The newest entry, read the same way the pane orders the list.
+       *
+       * Only needed when the lead carries no `latestFollowUpId` — see below —
+       * but Firestore transactions require **every read before any write**, so
+       * it cannot be fetched conditionally after the pointer has been checked.
+       * One extra read on the edit path is the price of that rule.
+       */
+      const [leadSnap, entrySnap, newestSnap] = await Promise.all([
+        t.get(leadRef),
+        t.get(entryRef),
+        t.get(followUpsRef.orderBy("occurredAt", "desc").limit(1)),
+      ]);
 
       if (!leadSnap.exists) throw new UserFacingError("That lead no longer exists.");
       if (!entrySnap.exists) throw new UserFacingError("That entry no longer exists.");
@@ -310,8 +326,27 @@ export async function updateFollowUp(
         throw new UserFacingError("This lead is not assigned to you.");
       }
 
-      // The lock. Deliberately not role-exempt.
-      if (lead.latestFollowUpId && lead.latestFollowUpId !== followUpId) {
+      /**
+       * The lock. Deliberately not role-exempt.
+       *
+       * **`latestFollowUpId` is not always there.** Entries written before that
+       * field existed left the lead without one, and the guard used to read
+       * `if (lead.latestFollowUpId && …)` — so on exactly those leads it
+       * evaluated to false and the rule stopped existing: every entry in the
+       * history was editable by anyone who could reach the action. Six leads on
+       * the live project are in that state, which is six leads whose permanent
+       * record was not permanent.
+       *
+       * The fallback resolves the newest entry from the subcollection instead,
+       * ordered by `occurredAt` — **the same order the pane displays**, so the
+       * entry the server accepts is the one showing an Edit button rather than
+       * a padlock. Ordering by write time here would be defensible in isolation
+       * and would disagree with the screen the moment anybody back-dated a
+       * call, which FR-15 explicitly lets them do.
+       */
+      const newestId = lead.latestFollowUpId ?? newestSnap.docs[0]?.id ?? null;
+
+      if (newestId && newestId !== followUpId) {
         throw new UserFacingError(
           "Only the latest entry can be edited. Older ones are part of the permanent record."
         );
@@ -391,6 +426,11 @@ export async function updateFollowUp(
         connectCount: FieldValue.increment(dConnect),
         meetingCount: FieldValue.increment(dMeeting),
         siteVisitCount: FieldValue.increment(dVisit),
+        // Heals a lead whose entries predate the pointer. Written only when it
+        // was missing, so this never overwrites a live one, and each such lead
+        // is repaired the first time anybody edits it rather than by a
+        // migration nobody would remember to run.
+        ...(lead.latestFollowUpId ? {} : { latestFollowUpId: followUpId }),
         // One-way, as on the write path: a meeting that happened stays
         // happened, so un-ticking it here does not erase the lead-level flag.
         ...(meetingHeld ? { meetingHeld: true } : {}),

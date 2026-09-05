@@ -112,17 +112,31 @@ function normalizeFields(input: FolderInput): { fields: DataBankField[]; roles: 
   return { fields, roles: { name, phone } };
 }
 
+/**
+ * Creates a folder.
+ *
+ * **Both managing roles.** A manager building their own cold list — a walk-in
+ * sheet, an event sign-up, numbers they sourced themselves — is the ordinary
+ * case, and it was refused: only the admin could make a folder, so a manager's
+ * Data Bank held nothing but the mirrors an admin had handed them. What stays
+ * the admin's is *whose* folder it is: a manager's is always their own, and the
+ * owner field is taken from their token rather than from the request, so no
+ * amount of crafting lets one manager file a folder under another.
+ */
 export async function createDataBankFolder(
   token: string,
   input: FolderInput
 ): Promise<ActionResult<{ folderId: string }>> {
   return runAction("createDataBankFolder", async () => {
-    const admin = await requireAdmin(token);
+    const admin = await requireManager(token);
     const name = (input.name ?? "").trim();
     if (!name) throw new UserFacingError("Enter a name for the folder.");
 
     const { fields, roles } = normalizeFields(input);
-    const subAdminUid = await resolveFolderOwner(input.subAdminUid);
+    // The admin may hand the folder to somebody; a manager gets their own and
+    // is never asked. Read from the verified token, not the payload.
+    const subAdminUid =
+      admin.role === "admin" ? await resolveFolderOwner(input.subAdminUid) : admin.uid;
 
     const ref = await adminDb.collection(FOLDERS).add({
       name,
@@ -144,13 +158,21 @@ export async function createDataBankFolder(
   });
 }
 
+/**
+ * Renames a folder and changes its columns.
+ *
+ * A manager may edit their own; **only the admin may move one between owners**,
+ * which is why `subAdminUid` is ignored outright for a manager rather than
+ * validated. Handing a cold list to somebody is the decision the admin owns,
+ * and a manager who could reassign their own folder could give it away.
+ */
 export async function updateDataBankFolder(
   token: string,
   folderId: string,
   input: FolderInput
 ): Promise<ActionResult> {
   return runAction("updateDataBankFolder", async () => {
-    await requireAdmin(token);
+    const auth = await requireManager(token);
     const name = (input.name ?? "").trim();
     if (!name) throw new UserFacingError("Enter a name for the folder.");
 
@@ -158,13 +180,19 @@ export async function updateDataBankFolder(
     const snap = await ref.get();
     if (!snap.exists) throw new UserFacingError("That folder no longer exists.");
 
+    assertFolderAccess(auth, {
+      subAdminUid: (snap.data()?.subAdminUid as string | undefined) ?? null,
+    });
+
     const { fields, roles } = normalizeFields(input);
 
     // Removing a field leaves its values on existing records rather than
     // rewriting thousands of documents. They stop displaying; nothing is lost,
     // and re-adding the field brings them back.
     const subAdminUid =
-      input.subAdminUid === undefined ? undefined : await resolveFolderOwner(input.subAdminUid);
+      auth.role !== "admin" || input.subAdminUid === undefined
+        ? undefined
+        : await resolveFolderOwner(input.subAdminUid);
 
     await ref.update({
       name,
@@ -192,7 +220,17 @@ export async function deleteDataBankFolder(
   folderId: string
 ): Promise<ActionResult<{ deleted: number }>> {
   return runAction("deleteDataBankFolder", async () => {
-    await requireAdmin(token);
+    const auth = await requireManager(token);
+
+    // Their own folder only. `assertFolderAccess` is the same predicate every
+    // record write in this module already goes through, so a manager cannot
+    // delete a list they were merely shown.
+    const folderSnap = await adminDb.collection(FOLDERS).doc(folderId).get();
+    if (folderSnap.exists) {
+      assertFolderAccess(auth, {
+        subAdminUid: (folderSnap.data()?.subAdminUid as string | undefined) ?? null,
+      });
+    }
 
     let deleted = 0;
     // Two passes: the folder's live rows, then any promoted row whose

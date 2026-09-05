@@ -15,6 +15,7 @@
 
 import { useMemo, useState } from "react";
 import type { Lead } from "@/hooks/useLeads";
+import { useAuth } from "@/context/AuthContext";
 import { useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
 import { addFollowUp, updateFollowUp, setLeadStatus, reviewColdLead, closeDeal, acceptLead, PAYMENT_METHODS } from "@/lib/clientActions";
@@ -121,6 +122,7 @@ export function LeadDetailPane({
   onReassignRequest?: () => void;
 }) {
   const { followUps, events, error: historyError } = useLeadHistory(lead.id);
+  const { user } = useAuth();
   const { deal } = useDealForLead(lead.id);
   const [activeTab, setActiveTab] = useState<Tab>("FOLLOW_UPS");
   const [banner, setBanner] = useState<Banner>(null);
@@ -128,11 +130,21 @@ export function LeadDetailPane({
   // No per-lead reset logic lives here: the workspace mounts this component
   // with `key={lead.id}`, so selecting a different lead gives it fresh state.
   const closed = isTerminal(lead.status);
-  // A manager runs a team; they do not work leads themselves. They read the
-  // whole history and can move the lead between their own people, but they do
-  // not log calls or enter deals — and crediting either would be actively
-  // wrong, since the server books both against the assigned employee.
-  const isManagerView = userRole === "subadmin";
+  /**
+   * A manager runs a team; they do not work *their team's* leads. They read
+   * the whole history and can move a lead between their own people, but they
+   * do not log calls or enter deals on it — crediting either would be actively
+   * wrong, since the server books both against the assigned employee.
+   *
+   * **Unless the assigned employee is them.** A manager who promotes a Data
+   * Bank record into their own Client section, or takes one handed to them, is
+   * the person working that lead: `assignedUserId` is their uid, so the
+   * follow-up transaction and the deal both credit *them*, and the server has
+   * always allowed it (`canWorkLead` accepts a sub admin on their own team's
+   * lead). Only this screen refused, which is why a manager could open a lead
+   * in Clients and not write a word on it.
+   */
+  const isManagerView = userRole === "subadmin" && lead.assignedUserId !== user?.uid;
   const canEnterDeal =
     !closed && !isManagerView && lead.status !== "ASSIGNED" && lead.status !== "NEW";
   const waUrl = whatsAppUrl(lead.phone);
@@ -505,11 +517,20 @@ function StageSelect({
 
       {(["P3", "P2", "P1"] as const).map((band) => (
         <optgroup key={band} label={`${band} — ${band === "P3" ? "talking" : band === "P2" ? "met or visited" : "closing"}`}>
-          {STAGE_STATUSES[band].map((status) => (
-            <option key={status} value={status}>
-              {LEAD_STATUS_LABELS[status]}
-            </option>
-          ))}
+          {/* **Deal Closed is not on this list.** `setLeadStatus` refuses it
+              outright — a won deal has to come through Deal Entry, so the
+              customer record and the amounts are captured — so offering it
+              here was offering a choice that could only ever produce an error
+              message. The status then appeared not to change, which is
+              precisely what it was doing. It is set for real by the deal
+              form, and `orphan` above keeps it readable once it is. */}
+          {STAGE_STATUSES[band]
+            .filter((status) => status !== "CLOSED_WON")
+            .map((status) => (
+              <option key={status} value={status}>
+                {LEAD_STATUS_LABELS[status]}
+              </option>
+            ))}
         </optgroup>
       ))}
 
@@ -1042,9 +1063,15 @@ function FollowUpsPanel({
                   >
                     {fu.kind ? FOLLOW_UP_KIND_LABELS[fu.kind] : entryLabelAt(index, followUps.length, false)}
                   </span>
-                  {followUps.length - index > 1 && (
-                    <span className="text-[#9aacaa]">#{followUps.length - index - 1}</span>
-                  )}
+                  {/* **Numbered along the list, not against it.** `index` is
+                      the position in the *chronological* array, so the Remark
+                      is 0 and each Follow-Up after it is 1, 2, 3… Counting
+                      down from `length` — which is what this did — numbered a
+                      five-entry lead #4, #3, #2, #1 and then left the newest
+                      one with no number at all, which is exactly the entry a
+                      reader is looking for. The Remark takes no number: it is
+                      the one entry that is named rather than counted. */}
+                  {index > 0 && <span className="text-[#9aacaa]">#{index}</span>}
                   <span className="text-[#7e918f]">· {fu.authorEmail ?? "Team Member"}</span>
                   {(fu.revisions?.length ?? 0) > 0 && (
                     <span className="rounded-full bg-[#f2f8f7] px-2 py-0.5 text-[10.5px] text-[#5b6d6b]">

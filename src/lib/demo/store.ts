@@ -11,7 +11,7 @@ import { fieldKeyFor, phoneKey, type DataBankStatus } from '@/lib/dataBank';
 import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
-import { deriveStatus, isValidIp, normalizeIp, type AttendanceStatus } from '@/lib/attendance';
+import { deriveStatus, type AttendanceStatus } from '@/lib/attendance';
 import {
   buildPayrollLine,
   canTransition,
@@ -855,7 +855,7 @@ function seed(): DemoState {
     { id: 'cf_1__lead_1005', folderId: 'cf_1', leadId: 'lead_1005', leadName: 'Ahmed Raza', addedByUid: 'demo-admin', addedAt: daysAgo(5) },
   ];
 
-  return { employees, kpiMonths, attendance, attendancePolicy: { ...DEFAULT_ATTENDANCE_POLICY, officeIps: ['198.51.100.7'] },
+  return { employees, kpiMonths, attendance, attendancePolicy: { ...DEFAULT_ATTENDANCE_POLICY },
     leaveRequests: [
       {
         id: 'lv_1',
@@ -1463,6 +1463,11 @@ export const demo = {
         for (const entry of entries) {
           const day = entry.dayKey ?? '';
           if (!day || day < from || day > to) continue;
+          // Every entry, then the subset that connected — the same two
+          // questions the real action answers, in the same order.
+          if (entry.kind === 'REMARK') metrics.remarks += 1;
+          else metrics.followUps += 1;
+
           if (entry.connect) {
             if (entry.kind === 'REMARK') metrics.newConnects += 1;
             else metrics.followUpConnects += 1;
@@ -1509,6 +1514,8 @@ export const demo = {
       rows,
       totals: sumMetrics(
         rows.map((row) => ({
+          remarks: row.remarks,
+          followUps: row.followUps,
           newConnects: row.newConnects,
           followUpConnects: row.followUpConnects,
           meetings: row.meetings,
@@ -2057,13 +2064,8 @@ export const demo = {
   },
 
   setAttendanceConfig(input: Partial<AttendancePolicy>): Result<AttendancePolicy> {
-    const ips = (input.officeIps ?? state.attendancePolicy.officeIps).map(normalizeIp).filter(Boolean);
-    for (const ip of ips) {
-      if (!isValidIp(ip)) return fail(`"${ip}" is not a valid IP address.`);
-    }
-
-    const next = normalizePolicy({ ...input, officeIps: Array.from(new Set(ips)) }, state.attendancePolicy);
-    if (next.ipRestriction && next.officeIps.length === 0) {
+    const next = normalizePolicy(input, state.attendancePolicy);
+    if (next.wifiRestriction && next.officeWifiNames.length === 0) {
       return fail(
         'Add at least one office IP before switching the restriction on, or nobody will be able to check in.'
       );
@@ -2961,7 +2963,7 @@ export const demo = {
         allowedLates: policy.allowedLates,
         deductionMode: policy.deductionMode,
         deductionValue: policy.deductionValue,
-        ipRestriction: policy.ipRestriction,
+        wifiRestriction: policy.wifiRestriction,
       },
     });
   },

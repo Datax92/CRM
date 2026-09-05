@@ -13,6 +13,13 @@
  * Ticking somebody off a team returns them to the admin rather than to another
  * manager. Silently handing a person to a third party is not a decision this
  * screen is entitled to make on the admin's behalf.
+ *
+ * **The card opens the manager's dossier**, the same way an employee row opens
+ * theirs — `EmployeeDetailModal` with the manager's team, so the leads, deals,
+ * activity and analytics are the ones the admin already knows from an employee,
+ * read over the whole team. Edit stays its own button: a card that both opened
+ * a record and edited it, depending on where you clicked, is a card that edits
+ * things by accident.
  */
 
 import { useMemo, useState } from "react";
@@ -40,6 +47,7 @@ export function SubAdminPanel({
   folders,
   getIdToken,
   onResult,
+  onOpen,
 }: {
   subAdmins: EmployeeMetrics[];
   employees: EmployeeMetrics[];
@@ -47,6 +55,8 @@ export function SubAdminPanel({
   folders: DataBankFolder[];
   getIdToken: () => Promise<string>;
   onResult: (banner: { tone: "success" | "error"; text: string }) => void;
+  /** Opens the manager's dossier. Absent leaves the cards read-only. */
+  onOpen?: (manager: EmployeeMetrics) => void;
 }) {
   const [formFor, setFormFor] = useState<{ manager: EmployeeMetrics | null } | null>(null);
 
@@ -93,8 +103,9 @@ export function SubAdminPanel({
               </span>
             </h2>
             <p style={{ marginTop: 3, fontSize: 11.5, color: E.faint }}>
-              Figures are the sum of each manager&rsquo;s team. Data Bank folders are assigned from the
-              Data Bank.
+              Figures are the sum of each manager&rsquo;s team.{" "}
+              {onOpen ? "Open a card for the full record. " : ""}Data Bank folders are assigned from
+              the Data Bank.
             </p>
           </div>
 
@@ -139,11 +150,26 @@ export function SubAdminPanel({
               return (
                 <article
                   key={manager.uid}
+                  role={onOpen ? "button" : undefined}
+                  tabIndex={onOpen ? 0 : undefined}
+                  aria-label={onOpen ? `Open ${manager.name}'s record` : undefined}
+                  onClick={onOpen ? () => onOpen(manager) : undefined}
+                  onKeyDown={
+                    onOpen
+                      ? (event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onOpen(manager);
+                          }
+                        }
+                      : undefined
+                  }
                   style={{
                     border: `1px solid ${E.border}`,
                     borderRadius: 14,
                     padding: "14px 16px",
                     background: E.soft,
+                    cursor: onOpen ? "pointer" : "default",
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
@@ -179,7 +205,12 @@ export function SubAdminPanel({
                     </div>
 
                     <button
-                      onClick={() => setFormFor({ manager })}
+                      onClick={(event) => {
+                        // The card is clickable now; without this the dossier
+                        // opens behind the form and two backdrops stack.
+                        event.stopPropagation();
+                        setFormFor({ manager });
+                      }}
                       style={{
                         display: "inline-flex",
                         alignItems: "center",

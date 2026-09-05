@@ -24,6 +24,7 @@
 import { useMemo, useState } from "react";
 import type { Lead, FollowUpRecord } from "@/hooks/useLeads";
 import { useLeadHistory } from "@/hooks/useLeads";
+import { useAuth } from "@/context/AuthContext";
 import { useDealForLead } from "@/hooks/useFinancials";
 import {
   acceptLead,
@@ -129,6 +130,7 @@ export function MobileLeadDetail({
   onReassign?: () => void;
 }) {
   const { followUps, events, error: historyError } = useLeadHistory(lead.id);
+  const { user } = useAuth();
   const { deal } = useDealForLead(lead.id);
   const [tab, setTab] = useState<Tab>("notes");
   const [banner, setBanner] = useState<Banner>(null);
@@ -143,10 +145,13 @@ export function MobileLeadDetail({
   const stage = pipelineStage(lead);
 
   const loggedToday = followUps.some((fu) => fu.dayKey === karachiDayKey(new Date()));
-  // A manager runs a team; they do not work leads themselves. Same rule the
-  // desktop pane applies — they read everything and log nothing, because the
-  // server books a follow-up and a deal against the assigned employee.
-  const isManagerView = userRole === "subadmin";
+  // A manager runs a team; they do not work *their team's* leads. Same rule
+  // the desktop pane applies — they read everything and log nothing, because
+  // the server books a follow-up and a deal against the assigned employee —
+  // and the same exception: a lead assigned to the manager themselves (a
+  // Client-section promotion, or a record handed to them) is their own work,
+  // credited to them, so they work it like anybody else.
+  const isManagerView = userRole === "subadmin" && lead.assignedUserId !== user?.uid;
   const canEnterDeal =
     !closed && !isManagerView && lead.status !== "ASSIGNED" && lead.status !== "NEW";
 
@@ -558,11 +563,16 @@ export function MobileLeadDetail({
                     key={band}
                     label={`${band} — ${band === "P3" ? "talking" : band === "P2" ? "met or visited" : "closing"}`}
                   >
-                    {STAGE_STATUSES[band].map((status) => (
-                      <option key={status} value={status}>
-                        {LEAD_STATUS_LABELS[status]}
-                      </option>
-                    ))}
+                    {/* Deal Closed is deliberately absent — `setLeadStatus`
+                        refuses it, and a won deal is recorded through Deal
+                        Entry. See `LeadDetailPane`. */}
+                    {STAGE_STATUSES[band]
+                      .filter((status) => status !== "CLOSED_WON")
+                      .map((status) => (
+                        <option key={status} value={status}>
+                          {LEAD_STATUS_LABELS[status]}
+                        </option>
+                      ))}
                   </optgroup>
                 ))}
                 <optgroup label="Closed">
@@ -927,10 +937,10 @@ function FollowUpList({
               >
                 {note.kind ? FOLLOW_UP_KIND_LABELS[note.kind] : entryLabelAt(index, followUps.length, false)}
               </span>
-              {followUps.length - index > 1 && (
-                <span style={{ fontSize: 11.5, fontWeight: 600, color: M.fainter }}>
-                  #{followUps.length - index - 1}
-                </span>
+              {/* Chronological index — see `LeadDetailPane`. Counting down
+                  from `length` left the newest entry unnumbered. */}
+              {index > 0 && (
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: M.fainter }}>#{index}</span>
               )}
             </span>
             <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>

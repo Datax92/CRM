@@ -26,15 +26,59 @@ export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
 export type DeductionMode = 'AMOUNT' | 'PERCENT';
 
 export interface AttendancePolicy {
-  /** Whether attendance may only be marked from an approved address (§2). */
-  ipRestriction: boolean;
-  /** Public IPs that count as the office. Empty means "not configured". */
-  officeIps: string[];
   /**
-   * Employees allowed to punch from anywhere — §2's explicit exception.
+   * Employees who may check in from any network — §2's explicit exception.
    * Field staff and anyone the admin has decided about, by uid.
+   *
+   * The stored field is still named `ipExemptUids`: it predates the address
+   * check being removed, every existing installation has it, and renaming it
+   * would silently empty the exemption list on the next read. What it means is
+   * unchanged.
    */
   ipExemptUids: string[];
+
+  /**
+   * Whether check-in requires the device to be **at** the office.
+   *
+   * The strong check, and the reason the Wi-Fi name alone was never enough: a
+   * saved network name travels home in somebody's pocket, a position does not.
+   */
+  locationRestriction: boolean;
+  /** The office's latitude. `null` until somebody marks it. */
+  officeLat: number | null;
+  /** The office's longitude. `null` until somebody marks it. */
+  officeLng: number | null;
+  /**
+   * How far from that point still counts as being at the office, in metres.
+   *
+   * Meant to be **generous**. Indoor positioning is routinely tens of metres
+   * out, buildings are large, and a rule tight enough to catch somebody in the
+   * car park will refuse people at their own desk. 150m is a small office and
+   * its street; widen it rather than fight the error bars.
+   */
+  officeRadiusMeters: number;
+
+  /**
+   * Whether check-in requires the device to report an office Wi-Fi name.
+   *
+   * **The only network gate there is.** The address check it replaced is gone:
+   * a business line's public IP is dynamic, so an allow-list built from it
+   * stops matching without warning and then refuses everybody. The Wi-Fi name
+   * is static, which is the property that makes it usable.
+   */
+  wifiRestriction: boolean;
+  /**
+   * The Wi-Fi network names that count as the office, as the router broadcasts
+   * them. Empty means "not configured", and nothing is enforced.
+   *
+   * **This is a declared signal, not an observed one.** No browser exposes the
+   * SSID, so the name is typed by the employee once per device and sent with
+   * the punch; the comparison happens on the server. It is never shown back to
+   * an employee — not in the punch control, not in a refusal message — because
+   * a check whose expected answer is printed on the failure screen is not a
+   * check at all.
+   */
+  officeWifiNames: string[];
 
   /** `HH:MM`, Karachi. A check-in at or before this is on time. */
   startTime: string;
@@ -65,9 +109,15 @@ export interface AttendancePolicy {
  * editable in Attendance Settings; none is relied on anywhere else.
  */
 export const DEFAULT_ATTENDANCE_POLICY: AttendancePolicy = {
-  ipRestriction: false,
-  officeIps: [],
   ipExemptUids: [],
+
+  locationRestriction: false,
+  officeLat: null,
+  officeLng: null,
+  officeRadiusMeters: 150,
+
+  wifiRestriction: false,
+  officeWifiNames: [],
 
   startTime: '09:00',
   graceMinutes: 15,
@@ -342,35 +392,69 @@ export function normalizePolicy(
     return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
   };
 
-  const officeIps = Array.isArray(input.officeIps) ? input.officeIps : current.officeIps;
+  /** A coordinate is kept only as a pair — half an office is no office. */
+  const rawLat = input.officeLat === undefined ? current.officeLat : input.officeLat;
+  const rawLng = input.officeLng === undefined ? current.officeLng : input.officeLng;
+  const bothReal =
+    typeof rawLat === 'number' &&
+    typeof rawLng === 'number' &&
+    Number.isFinite(rawLat) &&
+    Number.isFinite(rawLng) &&
+    rawLat >= -90 &&
+    rawLat <= 90 &&
+    rawLng >= -180 &&
+    rawLng <= 180 &&
+    !(rawLat === 0 && rawLng === 0);
+
+  const officeLat = bothReal ? (rawLat as number) : null;
+  const officeLng = bothReal ? (rawLng as number) : null;
+  const hasOffice = officeLat !== null && officeLng !== null;
+
+  const officeWifiNames = Array.isArray(input.officeWifiNames)
+    ? input.officeWifiNames
+    : current.officeWifiNames;
 
   return {
-    /**
-     * **Configuring an office address is the decision to enforce it.**
-     *
-     * The stored document predates this field: an installation that had set
-     * `officeIps` and nothing else fell through to the default `false`, so
-     * every check-in was accepted from anywhere while the office addresses sat
-     * in the settings looking as though they were doing something. Somebody
-     * typing their office IP in means "only let people in from here" — that is
-     * the only thing it can mean — so an absent flag with addresses present
-     * now reads as on.
-     *
-     * The rule is: an **explicit** boolean always wins, so an admin who wants
-     * the network recorded but not policed unticks the box and that sticks —
-     * Settings always sends the field, so their choice is never re-derived.
-     * Only an *absent* flag falls back to "are there addresses configured",
-     * which is the case every pre-existing installation is in.
-     *
-     * An empty list still enforces nothing: there is nothing to enforce
-     * against, and refusing everybody would be worse than useless.
-     */
-    ipRestriction:
-      typeof input.ipRestriction === 'boolean'
-        ? input.ipRestriction
-        : current.ipRestriction || officeIps.length > 0,
-    officeIps,
     ipExemptUids: Array.isArray(input.ipExemptUids) ? input.ipExemptUids : current.ipExemptUids,
+
+    /**
+     * **Marking the office is the decision to enforce it**, the same rule the
+     * Wi-Fi names follow — somebody who stands in their office and presses
+     * "use my current location" means "only let people check in from here".
+     * An explicit boolean always wins, and Settings always sends the field.
+     *
+     * A missing coordinate still enforces nothing: `classifyLocation` returns
+     * UNKNOWN with no office configured, and the punch refuses nobody on an
+     * UNKNOWN. Turning it on before marking the office would otherwise lock the
+     * whole company out — the failure the address allow-list actually produced.
+     */
+    locationRestriction:
+      typeof input.locationRestriction === 'boolean'
+        ? input.locationRestriction
+        : current.locationRestriction || hasOffice,
+    officeLat,
+    officeLng,
+    // A radius of zero is nobody, and a radius of 20km is everybody; both are a
+    // restriction that does not do what its screen says.
+    officeRadiusMeters: intOr(input.officeRadiusMeters, current.officeRadiusMeters, 20, 20_000),
+
+    /**
+     * **Naming the office network is the decision to enforce it.**
+     *
+     * The stored document predates this field, and an installation that has
+     * filled in the names and nothing else must not read as "recorded but not
+     * policed" — that is the exact shape of the bug the address check had, where
+     * office addresses sat in Settings looking as though they were doing
+     * something. An **explicit** boolean always wins, so an admin who unticks
+     * the box keeps that choice; Settings always sends the field. An empty list
+     * still enforces nothing: there is nothing to enforce against, and refusing
+     * everybody is worse than useless.
+     */
+    wifiRestriction:
+      typeof input.wifiRestriction === 'boolean'
+        ? input.wifiRestriction
+        : current.wifiRestriction || officeWifiNames.length > 0,
+    officeWifiNames,
 
     startTime: clockOr(input.startTime, current.startTime),
     graceMinutes: intOr(input.graceMinutes, current.graceMinutes, 0, 240),

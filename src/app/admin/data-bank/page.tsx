@@ -28,9 +28,15 @@ import { Database, Plus, Pencil, Trash2, ChevronRight, UserCheck } from "lucide-
  *
  * A sub admin sees only the folders assigned to them — enforced by the query
  * in `useDataBankFolders` and by the Security Rule behind it, not by anything
- * this page hides. What they cannot do is create, rename or delete a folder:
- * handing out a cold list is the admin's decision, and the Server Actions
- * refuse it regardless of what this screen renders.
+ * this page hides.
+ *
+ * **A manager builds their own lists too.** Create, rename and delete are theirs
+ * as well as the admin's; a walk-in sheet or an event sign-up is a manager's
+ * own cold list, and refusing it left their Data Bank holding nothing but the
+ * mirrors an admin had handed them. What is still the admin's alone is *whose*
+ * folder it is: `createDataBankFolder` takes the owner from the caller's token
+ * for a manager, and `updateDataBankFolder` ignores the owner field entirely,
+ * so nobody can file a folder under, or take one from, somebody else.
  */
 export default function DataBankPage() {
   const { role, user, loading: authLoading, getIdToken } = useAuth();
@@ -110,7 +116,7 @@ export default function DataBankPage() {
           </div>
         </div>
 
-        {isAdmin && (
+        {isManager && (
           <button
             onClick={() => setFormFor({ folder: null })}
             className="inline-flex items-center gap-2 rounded-full bg-[#3f8f8a] px-5 py-2.5 text-[13.5px] text-white transition-colors hover:bg-[#2f7d78]"
@@ -136,7 +142,7 @@ export default function DataBankPage() {
           <p className="text-[14.5px] text-[#2b3a39]">No sources yet.</p>
           <p className="mx-auto mt-1.5 max-w-[440px] text-[13px] text-[#7e918f]">
             A folder is one source — Capital Smart City, F2F, a walk-in list. Create it with the
-            columns that source&rsquo;s sheet has, then import the file.
+            columns that source&rsquo;s sheet has, then import the file or add rows by hand.
           </p>
         </div>
       ) : (
@@ -152,8 +158,11 @@ export default function DataBankPage() {
                   ? (managerNames.get(folder.subAdminUid) ?? "a manager")
                   : null
               }
-              onEdit={isAdmin ? () => setFormFor({ folder }) : undefined}
-              onDelete={isAdmin ? () => setConfirming(folder) : undefined}
+              basePath={isAdmin ? "/admin/data-bank" : "/subadmin/data-bank"}
+              /* A manager owns every folder their query returns, so both
+                 controls are theirs. The Server Action re-checks it. */
+              onEdit={() => setFormFor({ folder })}
+              onDelete={() => setConfirming(folder)}
             />
           ))}
         </div>
@@ -186,18 +195,26 @@ export default function DataBankPage() {
 function FolderCard({
   folder,
   ownerName,
+  basePath,
   onEdit,
   onDelete,
 }: {
   folder: DataBankFolder;
   /** Set when this folder is a manager's mirror — see `ensureManagerFolder`. */
   ownerName?: string | null;
+  /**
+   * Where this role's Data Bank lives. Hardcoding `/admin/data-bank` sent a
+   * manager into the admin's URL space — it happened to render, because the
+   * route allows both roles, but every link and Back button afterwards then
+   * read as the admin's.
+   */
+  basePath: string;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
   return (
     <div className="group relative overflow-hidden rounded-2xl border border-[#dceae8] bg-white transition-colors hover:border-[#8cc3bf]">
-      <Link href={`/admin/data-bank/${folder.id}`} className="block px-5 pt-5 pb-4">
+      <Link href={`${basePath}/${folder.id}`} className="block px-5 pt-5 pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -264,8 +281,8 @@ function FolderCard({
       </Link>
 
       {/* Kept out of the <Link> so they are separate targets, not nested ones.
-          A sub admin gets neither, so the row collapses rather than showing two
-          buttons that would be refused. */}
+          Absent only when a caller passes neither, so the row collapses rather
+          than showing buttons that would be refused. */}
       {(onEdit || onDelete) && (
       <div className="flex items-center gap-1 border-t border-[#f0f6f5] px-3 py-2">
         {onEdit && (

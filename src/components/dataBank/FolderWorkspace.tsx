@@ -205,7 +205,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
         <div className="flex min-h-[78px] shrink-0 items-center justify-between gap-3 bg-[#4f9c99] px-5 py-3.5 text-white">
           <div className="flex min-w-0 items-center gap-2.5">
             <Link
-              href="/admin/data-bank"
+              href={role === "subadmin" ? "/subadmin/data-bank" : "/admin/data-bank"}
               aria-label="Back to the Data Bank"
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-white/20"
             >

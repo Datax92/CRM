@@ -5,8 +5,12 @@
  *
  * Check In and Check Out are the employee's own, at the owner's request — the
  * activity heartbeat that used to derive them is gone. The times are therefore
- * declared, but the **office / remote badge is still decided server-side** from
- * the request's own IP, which a browser cannot forge (see `lib/attendance`).
+ * declared, and so, where the office uses that rule, is the **Wi-Fi network
+ * name**: no browser exposes the SSID, so the field beside the buttons is where
+ * the employee says which network they are on, once per device. The comparison
+ * happens **on the server**, against names this screen never sees — a check
+ * whose expected answer is printed beside the field is not a check
+ * (see `lib/attendance`).
  *
  * Both roles get the buttons. `onPunch` stays optional so a caller can still
  * render the strip read-only, but nothing does today.
@@ -20,6 +24,7 @@ import {
   type AttendanceNetwork,
 } from "@/lib/attendance";
 import type { AttendanceDay } from "@/hooks/useAttendance";
+import { NetworkNameField, PunchRulesHint } from "@/components/attendance/NetworkNameField";
 import { D } from "./dayEndChrome";
 
 const NETWORK_GLYPH: Record<AttendanceNetwork, string> = {
@@ -67,12 +72,22 @@ export function AttendanceStrip({
   onPunch,
   punching,
   checkedOut,
+  wifiRequired,
+  locationRequired,
 }: {
   today: AttendanceDay | null;
   /** Absent for an admin, who has no shift to record. */
   onPunch?: (kind: "IN" | "OUT") => void;
   punching?: boolean;
   checkedOut?: boolean;
+  /**
+   * Whether this office checks the Wi-Fi network name on check-in. Asked of
+   * the server rather than assumed, so the field never appears in an office
+   * that does not use the rule — and never *fails* to appear in one that does.
+   */
+  wifiRequired?: boolean;
+  /** Whether check-in confirms the device is at the office. */
+  locationRequired?: boolean;
 }) {
   const network = today?.network ?? "UNKNOWN";
   const checkedIn = Boolean(today?.firstAt);
@@ -151,6 +166,11 @@ export function AttendanceStrip({
           filled
         />
 
+        {/* The declared half of the record, beside the observed half. It is
+            deliberately in the same row as the times rather than tucked under
+            the card: it is an input to the punch, not a setting. */}
+        {onPunch && wifiRequired && <NetworkNameField variant="web" onDark />}
+
         {onPunch && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, opacity: 0.92, whiteSpace: "nowrap" }}>
@@ -179,6 +199,12 @@ export function AttendanceStrip({
           </div>
         )}
       </div>
+
+      {onPunch && (wifiRequired || locationRequired) && (
+        <div style={{ flexBasis: "100%", minWidth: 0 }}>
+          <PunchRulesHint wifi={Boolean(wifiRequired)} location={Boolean(locationRequired)} onDark />
+        </div>
+      )}
     </div>
   );
 }
