@@ -548,9 +548,23 @@ export function MobileLeadDetail({
               <span>Pipeline Status</span>
               <select
                 value={lead.status}
-                onChange={(e) =>
-                  void run(async () => setLeadStatus(await getIdToken(), lead.id, e.target.value as LeadStatus))
-                }
+                onChange={(event) => {
+                  /**
+                   * **Read the value before the first `await`, not after it.**
+                   *
+                   * This select is controlled by `lead.status`. The handler used
+                   * to be `async () => setLeadStatus(await getIdToken(), lead.id,
+                   * event.target.value)`, which awaits the token *first* — and by
+                   * the time that resolves React has already re-rendered the
+                   * select back to `lead.status`, because no state changed. So
+                   * `event.target.value` read the **old** status, the server saw
+                   * "you asked for the status it already has" and returned
+                   * without writing, and the dropdown snapped back. The change
+                   * appeared to do nothing, with no error, every time.
+                   */
+                  const next = event.target.value as LeadStatus;
+                  void run(async () => setLeadStatus(await getIdToken(), lead.id, next));
+                }}
                 style={{ ...FIELD, cursor: "pointer" }}
               >
                 {/* Grouped by band, so choosing a status shows what it does

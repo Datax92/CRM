@@ -43,6 +43,7 @@ import {
   buildDirectoryAnalytics,
   buildActivity,
   applyLeadFilters,
+  lastTouchAt,
   applyDealPeriod,
   applyActivityPeriod,
   DEFAULT_DOSSIER_FILTERS,
@@ -58,11 +59,6 @@ import { DossierFilterBar, Pager } from "./DossierControls";
 const PAGE_SIZE = 6;
 
 type Tab = "leads" | "deals" | "activity" | "analytics" | "team";
-
-/** Most recent meaningful moment on a lead. */
-function lastTouchAt(lead: Lead) {
-  return lead.lastFollowUpAt ?? lead.lastActivityAt ?? lead.acceptedAt ?? lead.assignedAt ?? lead.createdAt;
-}
 
 function toMillis(value: { toMillis?: () => number; toDate?: () => Date } | undefined): number {
   if (!value) return 0;
@@ -582,7 +578,15 @@ export function EmployeeDetailModal({
                   onChange={setFilters}
                   variant="web"
                   counts={cutCounts}
-                  countLine={`${shownLeads.length} of ${ownLeads.length} lead${ownLeads.length === 1 ? "" : "s"}`}
+                  countLine={
+                    // Says which leads, and on what — "3 of 40" against a period
+                    // control reads as a total until it names the rule.
+                    filters.period === "ALL"
+                      ? `${shownLeads.length} of ${ownLeads.length} lead${ownLeads.length === 1 ? "" : "s"}`
+                      : `${shownLeads.length} of ${ownLeads.length} lead${
+                          ownLeads.length === 1 ? "" : "s"
+                        } — worked in this period`
+                  }
                 />
                 <AssignedLeads
                   leads={leadPages.items}

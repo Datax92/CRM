@@ -36,6 +36,7 @@ import { usePagination } from "@/hooks/usePagination";
 import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { useDataBankFolders } from "@/hooks/useDataBank";
 import { SubAdminPanel } from "@/components/employees/SubAdminPanel";
+import { ManagerFormModal } from "@/components/employees/ManagerFormModal";
 import { useLeads } from "@/hooks/useLeads";
 import { useFinancials } from "@/hooks/useFinancials";
 import { buildEmployeeMetrics, type EmployeeMetrics } from "@/lib/metrics";
@@ -121,6 +122,16 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<DirectoryFilter>("All");
   const [formFor, setFormFor] = useState<{ employee: EmployeeMetrics | null } | null>(null);
+  /**
+   * The Add / Edit Manager form, owned here rather than by `SubAdminPanel`.
+   *
+   * It is opened from two places — the manager's card and the Edit button
+   * inside their dossier — and a modal owned by the panel could only be opened
+   * from the panel. `null` inside the object means "new manager".
+   */
+  const [managerFormFor, setManagerFormFor] = useState<{ manager: EmployeeMetrics | null } | null>(
+    null
+  );
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
   const [recalculating, setRecalculating] = useState(false);
@@ -228,6 +239,19 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
         />
       )}
 
+      {managerFormFor && (
+        <ManagerFormModal
+          manager={managerFormFor.manager}
+          employees={metrics}
+          getIdToken={getIdToken}
+          onClose={() => setManagerFormFor(null)}
+          onSaved={(message) => {
+            setManagerFormFor(null);
+            setBanner({ tone: "success", text: message });
+          }}
+        />
+      )}
+
       {selected && (
         <EmployeeDetailModal
           key={selected.uid}
@@ -243,14 +267,24 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           // The dossier renders at z-110 and the form at z-120, but leaving both
           // mounted stacks two backdrops over the page. Close the dossier first.
           onEdit={
-            // A manager is edited by the Add Manager form, not the employee
-            // one — no lane priority, no KPI targets, no job title. Rather than
-            // open the wrong form, the manager's dossier has no Edit and the
-            // card behind it keeps its own.
-            canManage && !selectedIsManager
+            /**
+             * **Edit is on both dossiers now, and opens the right form.**
+             *
+             * A manager is edited by the Manager form, not the employee one —
+             * no lane priority, no KPI targets, no job title. That used to mean
+             * the manager's dossier simply had no Edit at all, on the reasoning
+             * that offering the wrong form is worse than offering none. The
+             * cost of that was worse still: an admin who opened a manager could
+             * change nothing about them — not their name, not their team, not
+             * even Active/Inactive — without closing the record and hunting for
+             * the small Edit on the card behind it. The dossier closes first
+             * either way, so only one backdrop is ever on screen.
+             */
+            canManage
               ? () => {
                   setSelectedUid(null);
-                  setFormFor({ employee: selected });
+                  if (selectedIsManager) setManagerFormFor({ manager: selected });
+                  else setFormFor({ employee: selected });
                 }
               : undefined
           }
@@ -487,11 +521,11 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
       {canManage && (
         <SubAdminPanel
           onOpen={(manager) => setSelectedUid(manager.uid)}
+          onAdd={() => setManagerFormFor({ manager: null })}
+          onEdit={(manager) => setManagerFormFor({ manager })}
           subAdmins={subAdminMetrics}
           employees={metrics}
           folders={folders}
-          getIdToken={getIdToken}
-          onResult={setBanner}
         />
       )}
 

@@ -602,11 +602,19 @@ async function loadEntries(
       // "Single field → Add exemption" screen is genuinely hard to find, and
       // `npm run deploy:indexes` creates this override and every other missing
       // index in one go from `firestore.indexes.json`.
+      /**
+       * **Not "these figures are correct".** They usually are, and the wording
+       * used to promise it — but the fallback can only look inside leads the
+       * subject holds *now*, so work somebody did on a lead that has since been
+       * reassigned is missing from it and present on the fast path. Saying so
+       * costs nothing and stops the fallback being trusted as identical.
+       */
       warning:
-        "These figures are correct, but the report ran the slow way: the " +
-        "followUps.dayKey collection-group index is missing. A developer can create it " +
-        "with `npm run deploy:indexes` — see docs/deployment-runbook.md for the one " +
-        "IAM role that needs granting first.",
+        "The report ran the slow way: the followUps.dayKey collection-group index is " +
+        "missing. Figures may under-count work done on leads that have since been " +
+        "reassigned to somebody else. A developer can create the index with " +
+        "`npm run deploy:indexes` — see docs/deployment-runbook.md for the one IAM " +
+        "role that needs granting first.",
     };
   }
 }

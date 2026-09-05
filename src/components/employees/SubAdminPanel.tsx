@@ -20,13 +20,18 @@
  * read over the whole team. Edit stays its own button: a card that both opened
  * a record and edited it, depending on where you clicked, is a card that edits
  * things by accident.
+ *
+ * **The form itself lives in `DirectoryView`, not here.** It has to be reachable
+ * from two places — this card, and the Edit button inside the manager's dossier
+ * — and a modal owned by this panel could only ever be opened from this panel.
+ * That was the gap: an admin who opened a manager's record had no way to change
+ * anything about them without closing it again and finding this small button.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Users, Plus, Pencil, FolderOpen, TrendingUp } from "lucide-react";
 import { buildAllManagerMetrics } from "@/lib/managerMetrics";
 import { formatCompactMoney } from "@/lib/money";
-import { ManagerFormModal } from "./ManagerFormModal";
 import type { EmployeeMetrics } from "@/lib/metrics";
 import type { DataBankFolder } from "@/hooks/useDataBank";
 
@@ -45,20 +50,21 @@ export function SubAdminPanel({
   subAdmins,
   employees,
   folders,
-  getIdToken,
-  onResult,
+  onAdd,
+  onEdit,
   onOpen,
 }: {
   subAdmins: EmployeeMetrics[];
   employees: EmployeeMetrics[];
   /** Only to say how many folders each manager holds — assigned in the Data Bank. */
   folders: DataBankFolder[];
-  getIdToken: () => Promise<string>;
-  onResult: (banner: { tone: "success" | "error"; text: string }) => void;
+  /** Opens the Add Manager form. Owned by `DirectoryView` — see the note above. */
+  onAdd: () => void;
+  /** Opens that manager in the same form. */
+  onEdit: (manager: EmployeeMetrics) => void;
   /** Opens the manager's dossier. Absent leaves the cards read-only. */
   onOpen?: (manager: EmployeeMetrics) => void;
 }) {
-  const [formFor, setFormFor] = useState<{ manager: EmployeeMetrics | null } | null>(null);
 
   // Every manager's totals in one pass, bucketed by `subAdminUid`. Recomputed
   // from the same employee metrics the roster below renders, so the two can
@@ -110,7 +116,7 @@ export function SubAdminPanel({
           </div>
 
           <button
-            onClick={() => setFormFor({ manager: null })}
+            onClick={onAdd}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -209,7 +215,7 @@ export function SubAdminPanel({
                         // The card is clickable now; without this the dossier
                         // opens behind the form and two backdrops stack.
                         event.stopPropagation();
-                        setFormFor({ manager });
+                        onEdit(manager);
                       }}
                       style={{
                         display: "inline-flex",
@@ -283,18 +289,6 @@ export function SubAdminPanel({
         )}
       </section>
 
-      {formFor && (
-        <ManagerFormModal
-          manager={formFor.manager}
-          employees={employees}
-          getIdToken={getIdToken}
-          onClose={() => setFormFor(null)}
-          onSaved={(message) => {
-            setFormFor(null);
-            onResult({ tone: "success", text: message });
-          }}
-        />
-      )}
     </>
   );
 }

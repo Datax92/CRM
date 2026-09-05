@@ -859,11 +859,15 @@ export function TeamReportView() {
       </section>
 
       <p style={{ marginTop: 12, fontSize: 11, color: E.faint, lineHeight: 1.6 }}>
+        Every activity column counts <strong style={{ color: E.muted }}>entries written in the
+        range</strong> — one row per call or note logged, not one per lead. An employee who logged
+        thirty follow-ups today across five leads reads as 30 here and as 5 leads on their own
+        record; both are right, and they are answers to different questions.{" "}
         <strong style={{ color: E.muted }}>Remarks</strong> and{" "}
-        <strong style={{ color: E.muted }}>Follow-ups</strong> count every entry written in the
-        range; the connect columns count the calls that were answered, so the two do not add up and
-        are not meant to. A manager&rsquo;s report includes their own work <em>and</em> their
-        team&rsquo;s, and nobody is counted twice.
+        <strong style={{ color: E.muted }}>Follow-ups</strong> count every entry; the connect
+        columns count only the calls that were answered, so the two do not add up and are not meant
+        to. A manager&rsquo;s report includes their own work <em>and</em> their team&rsquo;s, and
+        nobody is counted twice.
       </p>
     </div>
   );

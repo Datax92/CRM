@@ -63,6 +63,7 @@ follow-ups, attendance, payroll and financial reporting.
 - **Never a list on the manager.** A Security Rule cannot prove a list query against a scope held in another document, so every sub-admin query is `where('subAdminUid','==',me)` and every rule mirrors it exactly.
 - **Two levels deep only** — a sub admin never reports to a sub admin. A chain would make "whose team is this" a graph walk, and rules cannot walk graphs.
 - Moving somebody between teams re-stamps their leads and deals in paged batches (`reassignTeamOwnership`) — deliberately not a transaction; a half-finished run leaves stale ownership rather than corruption, and re-running finishes it.
+- **The admin edits a manager from the manager's own record, not only from the card.** `DirectoryView` owns `ManagerFormModal`, because it has to open from two places — the manager card and the Edit inside their dossier — and a modal owned by `SubAdminPanel` could only open from that panel. The dossier's Edit picks the form by subject: the Manager form for a manager, the Employee form for an employee. It briefly had none at all for a manager, on the reasoning that offering the wrong form is worse than offering none; the cost of that was an admin who could open a manager and change nothing about them, not even Active/Inactive.
 - **A Manager is not an employee.** Own Add Manager form: no lane priority, no KPI targets, no auto-assign, no job title, no leads. Their analytics are **their team's plus their own**, summed on read (`lib/managerMetrics.ts`) with conversion team-wide (won ÷ handled), never an average of per-person rates — the same set `reportScope.teamOf` builds, so the directory card, the manager's dossier and Reports agree on one number. `headcount` stays the *team* size. **Clicking a manager opens the same `EmployeeDetailModal` an employee row does**, given their team: pass `team` and it is a manager's dossier (Team Leads / Deals / Team / Activity / Analytics, team-scoped), omit it and it is an employee's. One component, because two would drift. Their lead view is read-only for **their team's** leads — the server books follow-ups and deals against the *assigned employee*, so a manager logging one would credit somebody else's KPI. **A lead assigned to the manager themselves is theirs to work**: a Data Bank record promoted into their Client section, or one handed to them, carries `assignedUserId = their uid`, so the entry credits them. `canWorkLead` always allowed it; only the two panes refused, which is why a manager could open a lead in Clients and not write a word on it.
 - `managerKind` (SALES / HR) rides in the **auth claim**, because the sidebar must know before it can draw. Changing it re-issues the claim and revokes the token. An older manager with no claim reads as SALES.
 - Employees see only their own leads; a sub admin only their team's — enforced in rules *and* server actions. **Every read hook takes a scope for this reason**, not as an optimisation: `useLeads`, `useEmployees`, `useDataBankFolders`, `useFinancials` and `useClientFolderMembers` all add the clause their rule checks, and an unscoped list query is refused outright rather than returning less. This has now shipped as a bug three times — the symptom is always a screen that renders with *nothing in it* rather than an error.
@@ -117,6 +118,7 @@ follow-ups, attendance, payroll and financial reporting.
   entry* — the first follow-up moves a lead out of it — and Follow-ups is two or more.
   Connected cuts across both, reading `connectCount`, so a call under 1:10 is contact
   and not a connect.
+- **A dossier period means "worked in", a report column means "entries written".** They are neighbouring questions and were being read as the same one. An employee's dossier counts **leads** and filters the period on **last touch** (`applyLeadFilters`); Reports counts **entries** in the range. Somebody who logs 30 follow-ups today across 30 leads is `30 / 41 worked` on their record and `5 Remarks + 25 Follow-ups` in Reports — both right. The dossier used to filter on `createdAt`, which answered "which of their leads were *created* today" and showed **nothing at all** for that employee; the two screens then looked like they were contradicting each other. The chip hints name their unit for the same reason.
 - Reports (`buildTeamReport`, a Server Action) have **one subject at a time** — an employee, a manager (their own work *and* their team's), the admin, All Employees, or All Managers. Every figure is built per person once (`lib/reportScope`), and a composite subject is the sum of a *set of people*, which is what makes double-counting impossible rather than merely unlikely. New Connects is the *first* connected contact on a lead (its Remark), Follow-up Connects every later one — disjoint, or the columns sum to more than the work that happened. **Remarks and Follow-ups count every entry, connected or not**, and are deliberately not disjoint from the connect columns: a day of unanswered calls is real work and must not read as a zero. The activity columns are range-scoped; P1/P2/P3 describe where the leads stand today and say so.
 
 ## Data Bank & Clients
@@ -225,6 +227,9 @@ and an element rule beats a family inherited from a container.
 - **Probe the running process, not a copy of it.** A throwaway API route doing one Admin SDK read answers "what does the *server* see" in seconds; a standalone script answers a different question and sent this project down the wrong path once already.
 - A folder under `src/app` whose name starts with `_` is a **private folder** and is excluded from routing — a route placed in one 404s with no warning.
 
+**React, and the shapes that look right**
+- **Read `event.target.value` before the first `await`, never after.** A controlled `<select>` is re-rendered back to its prop the moment the handler yields, so `async () => act(await getIdToken(), …, e.target.value)` reads the **old** value — the server is asked for the status the lead already has, returns without writing, and the control snaps back. No error, nothing in the log, and it looks exactly like a dead dropdown. The phone's Pipeline Status had this; the desktop's did not, because it passed the value in synchronously.
+
 **This project's conventions**
 - The lint rule rejects `setState` in an effect body and impure calls (`Date.now()`) in a render body. Reset-during-render, or a `useCallback` registered from a browser event — not an effect.
 - The raw `--experimental-strip-types` test loader cannot resolve extensionless imports — a module under test must not import `./dates`.
@@ -308,6 +313,101 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-05 (sixth round) — the phone status change, re-verified; the admin could not edit a manager
+
+**Reported again:** pipeline status still will not change on the phone, and
+*"admin should be able to change status or anything of employee and manager"*.
+
+**The phone fix was re-tested end to end and it works in this build.** Not with
+a synthetic event this time: signed in as an employee, on the phone layout, the
+select was focused and a real `ArrowDown` keypress sent — the browser's own
+`change` event. `2 FT2 GULF` went ACCEPTED → CONTACTED and **Firestore
+confirmed the write**; `ArrowUp` put it back and Firestore confirmed that too.
+So if it is still failing for the owner, it is not this code — the likely
+answer is that the build they are on does not have the fix yet. Nothing in this
+project has been deployed; every round so far is local only.
+
+**The admin gap was real, and I made it last round.** The manager dossier was
+built with **no Edit button**, deliberately — a manager is edited by the Manager
+form, not the employee one, and I judged that offering the wrong form was worse
+than offering none. That was wrong: it left an admin able to open a manager's
+record and change *nothing* about them — not their name, not their team, not
+Active/Inactive — without closing it and finding the small Edit on the card
+behind. `ManagerFormModal` moved up to `DirectoryView` so both entry points can
+reach it, and the dossier's Edit now picks the form from the subject. The phone
+already did this correctly.
+
+- **Validation**: `typecheck` 0 errors, `test` 378/378, `build` compiles,
+  `eslint src` unchanged. The phone status change verified against Firestore
+  both ways and the test lead left exactly as found.
+
+  **Not verified in the browser:** the manager Edit button. The signed-in
+  session rotated to an employee's mid-round, and a manager's dossier is
+  admin-only. It typechecks and the phone path it mirrors was already working.
+
+### 2026-09-05 (fifth round) — the report was right; the dossier was asking a different question
+
+**Reported:** an employee's dossier on "Today" shows a couple of remarks and
+follow-ups, Reports on "Today" shows a great many — *"make the report section
+work properly… recheck every single thing."*
+
+**Rechecked, against the raw database rather than the code.** Three candidate
+causes were measured and all three ruled out:
+
+- **Orphaned entries.** The collection-group path is unscoped, and a
+  subcollection outlives a deleted parent, so it *could* count entries whose
+  lead is gone — and that path only went live when the index was created hours
+  earlier, which fitted the timing suspiciously well. Measured: **0 orphans**,
+  58 entries, 58 live parents.
+- **Missing `kind`.** 24 entries carry none, and the report counts anything not
+  `REMARK` as a follow-up. Measured for the day in question: **0 entries
+  without `kind`**, so nothing was miscounted.
+- **Double counting.** Ruled out earlier in the day by the same method.
+
+**The report is correct**, verified end to end: an independent count straight
+out of Firestore gives Aroosa 5 remarks / 25 follow-ups, Sundus 22 / 1, Hussain
+4 / 0 — and the screen shows exactly those numbers.
+
+**What was actually wrong was the dossier.** Its period filter measured
+`lead.createdAt`, so "Today" meant *leads created today*. The employee who had
+logged 30 entries that day owned no lead created that day, so her record showed
+**nothing**, next to a report showing 30. The original rationale — "filtering on
+last touch would move a lead between periods every time it was rung" — is right
+for the leads workspace, which answers "what came in this month", and wrong for
+one person's record, where "Today" can only mean *what did they do today*.
+`applyLeadFilters` now measures the last touch, `lastTouchAt` moved into
+`directoryChrome` so the sort and the filter cannot disagree, and the count line
+reads `30 / 41 worked`.
+
+**They still do not produce the same number, and should not**: the dossier
+counts leads, Reports counts entries. Both now say which — the chip hints name
+the unit, and the report's footnote gives the 30-entries-across-5-leads example
+outright, because that is the comparison somebody will make.
+
+**Also fixed: the phone's Pipeline Status did nothing.** The handler was
+`async () => setLeadStatus(await getIdToken(), lead.id, e.target.value)` — the
+token is awaited *first*, and by the time it resolves React has re-rendered the
+controlled select back to `lead.status`, so `e.target.value` read the **old**
+status. The server saw a request for the status the lead already had, returned
+without writing, and the dropdown snapped back: no error, no log line, a
+dropdown that simply refused to move. The value is now read synchronously. The
+desktop never had this because it passed the value in on the event. Recorded in
+*Lessons*; a grep confirms it was the only occurrence.
+
+- **Validation**: `typecheck` 0 errors, `test` 378/378, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings. Driven in Chrome:
+  the report's per-person figures match an independent Firestore count exactly;
+  Aroosa's dossier on Today went from empty to `30 / 41 worked`; the phone's
+  status select moved Contacted → Details Sent and **stayed**.
+
+  The status test was run on an obvious test record and **reverted immediately**
+  — confirmed back at `CONTACTED` in Firestore, so the live data is as it was,
+  minus two audit-trail lines.
+
+  **Not changed:** the report's arithmetic. It was measured to be right, and
+  changing something that is correct because it disagrees with something that is
+  not is how the wrong screen wins.
 
 ### 2026-09-05 (fourth round) — a manager's own Data Bank, and two lead-pane bugs found by looking
 

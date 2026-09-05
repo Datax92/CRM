@@ -113,11 +113,20 @@ export const LEAD_FILTER_LABELS: Record<LeadFilterKey, string> = {
   CONNECTED: 'Connected',
 };
 
-/** One line each, for the chip's tooltip — these are not self-evident. */
+/**
+ * One line each, for the chip's tooltip — these are not self-evident.
+ *
+ * **Every one of them counts leads, not entries**, and each says so. Reports
+ * has columns with the same two words that count *entries written in a range*,
+ * and the two are easily read as the same figure and then as contradicting each
+ * other: an employee who logged 30 follow-ups today across five leads is "5"
+ * here and "30" there, and both are right. Naming the unit in the hint is the
+ * cheapest thing that stops the comparison being made.
+ */
 export const ACTIVITY_FILTER_HINTS: Record<ActivityFilterKey, string> = {
-  REMARKED: 'Remark written, not followed up yet — moves to Follow-ups on the next entry',
-  FOLLOWED_UP: 'Has gone past the Remark to at least one follow-up',
-  CONNECTED: 'A call was answered — 1:10 or longer, on the Remark or any follow-up',
+  REMARKED: 'Leads with a Remark and nothing since — they move to Follow-ups on the next entry',
+  FOLLOWED_UP: 'Leads that have gone past the Remark to at least one follow-up',
+  CONNECTED: 'Leads where a call was answered — 1:10 or longer, on the Remark or any follow-up',
 };
 
 /** True for the four chips that are a pipeline stage rather than a bucket. */

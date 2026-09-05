@@ -275,16 +275,44 @@ export interface DossierFilters {
 export const DEFAULT_DOSSIER_FILTERS: DossierFilters = { period: "ALL", cut: "ALL" };
 
 /**
+ * The most recent moment anything happened on a lead.
+ *
+ * Shared with the two dossiers, which already sorted by it — having the sort
+ * and the period filter disagree about what "recent" means is how a list ends
+ * up ordered by one thing and filtered by another.
+ */
+export function lastTouchAt(lead: Lead) {
+  return (
+    lead.lastFollowUpAt ?? lead.lastActivityAt ?? lead.acceptedAt ?? lead.assignedAt ?? lead.createdAt
+  );
+}
+
+/**
  * Applies the dossier filters to one employee's leads.
  *
- * The period is measured on `createdAt`, matching the leads workspace and
- * `buildEmployeeMetrics` — filtering on last touch instead would make a lead
- * move between periods every time somebody rang it.
+ * **The period is measured on the last touch, not on `createdAt`.**
+ *
+ * It used to be `createdAt`, on the reasoning that filtering by last touch
+ * makes a lead move between periods every time somebody rings it. That is the
+ * right rule for the *leads workspace*, which answers "what came in this
+ * month". It is the wrong rule here, and it was actively misleading: this
+ * dossier is one person's record, so picking "Today" on it means *what did
+ * they do today* — and measured on creation it answered "which of their leads
+ * were created today", which is a different question and usually zero.
+ *
+ * Measured against the live project on 2026-09-05: one employee had logged 30
+ * entries across her leads that day and this filter showed her **nothing at
+ * all**, because none of those leads happened to be created that day. Reports,
+ * which counts the work itself, showed all 30 — and the two screens looked
+ * like they were contradicting each other about the same person.
+ *
+ * The cuts below still count **leads**, not entries, so the dossier and Reports
+ * answer neighbouring questions rather than the same one — see the chip hints.
  */
 export function applyLeadFilters(leads: Lead[], filters: DossierFilters): Lead[] {
   const range = resolveRange(filters.period);
   return leads.filter(
-    (lead) => withinRange(lead.createdAt, range) && matchesLeadFilter(lead, filters.cut, undefined, "admin")
+    (lead) => withinRange(lastTouchAt(lead), range) && matchesLeadFilter(lead, filters.cut, undefined, "admin")
   );
 }
 

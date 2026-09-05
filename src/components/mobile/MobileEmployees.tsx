@@ -44,6 +44,7 @@ import {
   buildActivity,
   compactRupees,
   applyLeadFilters,
+  lastTouchAt,
   applyDealPeriod,
   applyActivityPeriod,
   DEFAULT_DOSSIER_FILTERS,
@@ -977,10 +978,6 @@ function RosterCard({
 
 /* -------------------------------------------------------------------------- */
 
-function lastTouchAt(lead: Lead) {
-  return lead.lastFollowUpAt ?? lead.lastActivityAt ?? lead.acceptedAt ?? lead.assignedAt ?? lead.createdAt;
-}
-
 function toMillis(value: { toMillis?: () => number; toDate?: () => Date } | undefined): number {
   if (!value) return 0;
   if (typeof value.toMillis === "function") return value.toMillis();
@@ -1353,7 +1350,11 @@ function ProfileOverlay({
                 onChange={setFilters}
                 variant="mobile"
                 counts={cutCounts}
-                countLine={`${shownLeads.length} / ${ownLeads.length}`}
+                countLine={
+                  filters.period === "ALL"
+                    ? `${shownLeads.length} / ${ownLeads.length}`
+                    : `${shownLeads.length} / ${ownLeads.length} worked`
+                }
               />
               <MobileAssignedLeads
                 leads={leadPages.items}
