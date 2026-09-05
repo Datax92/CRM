@@ -187,8 +187,12 @@ export function AddLeadModal({
         deal: isWonAtCreation
           ? {
               serviceDescription: dealDesc.trim(),
-              amountReceived: Number(dealReceived) || 0,
-              payableAmount: Number(dealPayable) || 0,
+              // This form is kept complete and unused (see CLAUDE.md); the two
+              // money fields map onto the four-field model as price and
+              // adjustment, which is exactly what the mirrors mean.
+              totalPrice: Number(dealReceived) || 0,
+              downPayment: Number(dealReceived) || 0,
+              adjustment: Number(dealPayable) || 0,
               paymentMethod: dealMethod,
               dealCategory,
               dealDate: dealDate || new Date().toISOString().slice(0, 10),

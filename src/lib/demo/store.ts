@@ -12,6 +12,7 @@ import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
 import { deriveStatus, type AttendanceStatus } from '@/lib/attendance';
+import { dealAmounts } from '@/lib/dealAmounts';
 import {
   buildPayrollLine,
   canTransition,
@@ -360,6 +361,11 @@ export interface DemoDistribution {
   employeeUid: string | null;
   subAdminUid: string | null;
   customerName: string | null;
+  totalPrice?: number;
+  downPayment?: number;
+  adjustment?: number;
+  remaining?: number;
+  /** Mirrors, kept for the readers that predate the four-field form. */
   amountReceived: number;
   payableAmount: number;
   netProfit: number;
@@ -626,6 +632,7 @@ function seed(): DemoState {
       customer: { name: 'Nida Aslam', phone: '923331112233', email: 'nida.aslam@gmail.com', cnic: '33100-1234567-8', address: 'House 42, Block C, Peoples Colony', city: 'Faisalabad' },
       serviceDescription: 'Gulberg commercial floor — 2nd floor, 1,850 sq ft',
       paymentMethod: 'Bank Transfer', notes: null,
+      totalPrice: 4850000, downPayment: 1200000, adjustment: 3200000, remaining: 1650000,
       amountReceived: 4850000, payableAmount: 3200000, profit: 1650000,
       campaignId: '23853', campaignName: CAMPAIGNS[2].name,
       dealDate: daysAgo(2), enteredAt: daysAgo(2),
@@ -635,6 +642,7 @@ function seed(): DemoState {
       customer: { name: 'Yasir Mehmood', phone: '923005554433', email: 'yasir.m@gmail.com', cnic: '37405-7654321-1', address: 'Flat 7B, Askari 14', city: 'Rawalpindi' },
       serviceDescription: 'DHA Phase 6 — 10 marla residential plot',
       paymentMethod: 'Cheque', notes: null,
+      totalPrice: 2750000, downPayment: 600000, adjustment: 1900000, remaining: 850000,
       amountReceived: 2750000, payableAmount: 1900000, profit: 850000,
       campaignId: '23851', campaignName: CAMPAIGNS[0].name,
       dealDate: daysAgo(6), enteredAt: daysAgo(6),
@@ -1680,7 +1688,7 @@ export const demo = {
     leadId: string,
     input: {
       customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
-      serviceDescription: string; amountReceived: number; payableAmount: number;
+      serviceDescription: string; totalPrice: number; downPayment: number; adjustment?: number;
       paymentMethod?: string; dealCategory?: string; dealDate?: string; notes?: string;
     },
     actorUid: string
@@ -1691,11 +1699,13 @@ export const demo = {
     if (!input.customer.name.trim()) return fail("Enter the customer's name.");
     if (!input.customer.phone.trim()) return fail('Enter a valid contact number for the customer.');
     if (!input.serviceDescription.trim()) return fail('Describe what was sold, so the record makes sense later.');
-    if (!Number.isFinite(input.amountReceived) || !Number.isFinite(input.payableAmount)) {
+    if (!Number.isFinite(input.totalPrice) || !Number.isFinite(input.downPayment)) {
       return fail('Enter a valid amount.');
     }
 
-    const profit = input.amountReceived - input.payableAmount;
+    // The same module the real action uses, so demo mode cannot drift from it.
+    const amounts = dealAmounts(input);
+    const profit = amounts.profit;
     const dealCategory = normalizeDealCategory(input.dealCategory);
     const dealDate = input.dealDate ? new Date(`${input.dealDate}T12:00:00`) : new Date();
     state.deals = [
@@ -1713,7 +1723,9 @@ export const demo = {
         paymentMethod: input.paymentMethod || 'Cash',
         dealCategory,
         notes: input.notes?.trim() || null,
-        amountReceived: input.amountReceived, payableAmount: input.payableAmount, profit,
+        totalPrice: amounts.totalPrice, downPayment: amounts.downPayment,
+        adjustment: amounts.adjustment, remaining: amounts.remaining,
+        amountReceived: amounts.amountReceived, payableAmount: amounts.payableAmount, profit,
         campaignId: lead.campaignId ?? null, campaignName: lead.campaignName ?? null,
         subAdminUid: state.employees.find((e) => e.uid === lead.assignedUserId)?.subAdminUid ?? null,
         distributionStatus: 'PENDING',
@@ -1741,7 +1753,7 @@ export const demo = {
     patchLead(leadId, { status: 'CLOSED_WON', closedAt: now() });
     bumpKpi(lead.assignedUserId ?? actorUid, karachiMonthKey(dealDate), {
       registrations: 1,
-      revenue: input.amountReceived,
+      revenue: amounts.amountReceived,
     }, dealCategory);
     addEvent(leadId, 'DEAL_CLOSED', actorUid, { dealId: leadId, profit });
     emit();
@@ -3090,8 +3102,9 @@ export const demo = {
       followUps?: Array<{ message: string; callMade: boolean; occurredAt: string }>;
       deal?: {
         serviceDescription: string;
-        amountReceived: number;
-        payableAmount: number;
+        totalPrice: number;
+        downPayment: number;
+        adjustment?: number;
         paymentMethod: string;
         dealCategory?: string;
         dealDate: string;
@@ -3196,7 +3209,8 @@ export const demo = {
     }
 
     if (input.status === "CLOSED_WON" && input.deal) {
-      const profit = input.deal.amountReceived - input.deal.payableAmount;
+      const dealMoney = dealAmounts(input.deal);
+      const profit = dealMoney.profit;
       const dDate = input.deal.dealDate ? ts(new Date(input.deal.dealDate + "T12:00:00Z")) : creationTime;
       state.deals = [
         {
@@ -3209,8 +3223,12 @@ export const demo = {
           paymentMethod: input.deal.paymentMethod,
           dealCategory: normalizeDealCategory(input.deal.dealCategory),
           notes: input.deal.notes || null,
-          amountReceived: input.deal.amountReceived,
-          payableAmount: input.deal.payableAmount,
+          totalPrice: dealMoney.totalPrice,
+          downPayment: dealMoney.downPayment,
+          adjustment: dealMoney.adjustment,
+          remaining: dealMoney.remaining,
+          amountReceived: dealMoney.amountReceived,
+          payableAmount: dealMoney.payableAmount,
           profit,
           campaignId,
           campaignName,
@@ -3223,11 +3241,11 @@ export const demo = {
         bumpKpi(
           input.assignedUserId,
           karachiMonthKey(dDate.toDate()),
-          { registrations: 1, revenue: input.deal.amountReceived },
+          { registrations: 1, revenue: dealMoney.amountReceived },
           normalizeDealCategory(input.deal.dealCategory)
         );
       }
-      addEvent(id, 'DEAL_CLOSED', actorUid, { dealId: id, creditedTo: input.assignedUserId || actorUid, amountReceived: input.deal.amountReceived, payableAmount: input.deal.payableAmount, profit });
+      addEvent(id, 'DEAL_CLOSED', actorUid, { dealId: id, creditedTo: input.assignedUserId || actorUid, totalPrice: dealMoney.totalPrice, downPayment: dealMoney.downPayment, adjustment: dealMoney.adjustment, remaining: dealMoney.remaining, amountReceived: dealMoney.amountReceived, payableAmount: dealMoney.payableAmount, profit });
     }
 
     emit();

@@ -29,6 +29,20 @@ export interface DealDistribution {
   employeeUid: string | null;
   subAdminUid: string | null;
   customerName: string | null;
+  /**
+   * The four figures a deal is recorded as. Optional because deals closed
+   * before the four-field form have only the mirrors below — read them through
+   * `lib/dealAmounts`, which falls back correctly.
+   */
+  totalPrice?: number;
+  downPayment?: number;
+  adjustment?: number;
+  remaining?: number;
+  /**
+   * The original two fields, still written as mirrors of the above so every
+   * revenue rollup keeps working: `amountReceived − payableAmount` is exactly
+   * the commission base. Nothing new should read them.
+   */
   amountReceived: number;
   payableAmount: number;
   netProfit: number;

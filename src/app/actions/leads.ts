@@ -8,9 +8,9 @@ import {
   type DecodedAuth,
 } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
+import { dealAmounts } from "@/lib/dealAmounts";
 import { isTerminal, isUserSettable, type LeadStatus } from "@/lib/leadStatus";
 import { PIPELINE_STAGES, type PipelineStage } from "@/lib/pipelineStage";
-import { parseMoney } from "@/lib/money";
 import { toE164Digits } from "@/lib/phone";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 import {
@@ -642,8 +642,9 @@ export async function createLead(
     followUps?: Array<{ message: string; callMade: boolean; occurredAt: string }>;
     deal?: {
       serviceDescription: string;
-      amountReceived: number;
-      payableAmount: number;
+      totalPrice: number;
+      downPayment: number;
+      adjustment?: number;
       paymentMethod: string;
       dealDate: string;
       dealCategory?: string;
@@ -819,9 +820,11 @@ export async function createLead(
 
         const customerName = name;
         const phoneDigits = toE164Digits(input.phone) || null;
-        const amountReceived = parseMoney(input.deal.amountReceived);
-        const payableAmount = parseMoney(input.deal.payableAmount);
-        const profit = amountReceived - payableAmount;
+        // Same four-figure model the live Deal Entry form uses; see
+        // `lib/dealAmounts` for why `remaining` is the commission base.
+        const amounts = dealAmounts(input.deal);
+        const { totalPrice, downPayment, adjustment, remaining, profit } = amounts;
+        const { amountReceived, payableAmount } = amounts;
         
         let dealDate = creationTime;
         if (input.deal.dealDate) {
@@ -847,6 +850,11 @@ export async function createLead(
           paymentMethod: input.deal.paymentMethod || "Cash",
           dealCategory: normalizeDealCategory(input.deal.dealCategory),
           notes: input.deal.notes?.trim() || null,
+          totalPrice,
+          downPayment,
+          adjustment,
+          remaining,
+          // Mirrors for the readers that predate this shape — see `dealAmounts`.
           amountReceived,
           payableAmount,
           profit,
@@ -887,6 +895,10 @@ export async function createLead(
           meta: {
             dealId: leadId,
             creditedTo: input.assignedUserId || admin.uid,
+            totalPrice,
+            downPayment,
+            adjustment,
+            remaining,
             amountReceived,
             payableAmount,
             profit,

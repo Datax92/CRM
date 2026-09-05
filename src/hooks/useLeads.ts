@@ -54,6 +54,12 @@ export interface Lead {
   subAdminUid?: string | null;
   /** The confirmed client record. See `lib/kyc`. */
   kyc?: KycValues | null;
+  /**
+   * Money the source sheet already carried, copied on at promotion by the
+   * folder's field mapping. Pre-fills Deal Entry so a price that is already in
+   * the spreadsheet is not typed again. See `lib/fieldMapping`.
+   */
+  dealDefaults?: { totalPrice?: number; downPayment?: number; adjustment?: number } | null;
   kycUpdatedAt?: FirestoreTimestamp;
   kycUpdatedByUid?: string | null;
   /** True once any entry recorded a held meeting. */

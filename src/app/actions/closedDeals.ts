@@ -3,7 +3,7 @@
 import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
-import { parseMoney } from "@/lib/money";
+import { dealAmounts, validateDealAmounts } from "@/lib/dealAmounts";
 import { toE164Digits } from "@/lib/phone";
 import { isTerminal } from "@/lib/leadStatus";
 import { karachiMonthKey } from "@/lib/dates";
@@ -33,8 +33,12 @@ export interface DealCustomerInput {
 export interface DealEntryInput {
   customer: DealCustomerInput;
   serviceDescription: string;
-  amountReceived: number;
-  payableAmount: number;
+  /** The sale price agreed with the client. */
+  totalPrice: number;
+  /** What they have paid so far — the cash the payouts come out of. */
+  downPayment: number;
+  /** Anything knocked off the price: a discount, or an old file traded in. */
+  adjustment?: number;
   paymentMethod?: string;
   /** Rental / Installment / Investment — drives the portfolio breakdown. */
   dealCategory?: string;
@@ -75,9 +79,22 @@ export async function closeDeal(
       throw new UserFacingError("Describe what was sold, so the record makes sense later.");
     }
 
-    const amountReceived = parseMoney(input.amountReceived);
-    const payableAmount = parseMoney(input.payableAmount);
-    const profit = amountReceived - payableAmount;
+    /**
+     * **The money, computed here and never read from the payload** (BR-19).
+     *
+     * `remaining = totalPrice − adjustment` is the commission base, and
+     * `profit` is set to it so the distribution screen — which splits `profit`
+     * by percentage — applies those percentages to exactly the number the
+     * owner specified. See `lib/dealAmounts` for why that single expression
+     * covers both the adjusted and unadjusted case.
+     */
+    const amountErrors = validateDealAmounts(input);
+    if (amountErrors.length > 0) throw new UserFacingError(amountErrors[0]);
+
+    const amounts = dealAmounts(input);
+    const { totalPrice, downPayment, adjustment, remaining, profit } = amounts;
+    // The two fields every existing revenue rollup reads. Mirrors, not inputs.
+    const { amountReceived, payableAmount } = amounts;
 
     const email = (input.customer?.email ?? "").trim();
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -145,6 +162,18 @@ export async function closeDeal(
         dealCategory,
         notes: (input.notes ?? "").trim() || null,
 
+        // The deal as it is now recorded.
+        totalPrice,
+        downPayment,
+        adjustment,
+        remaining,
+        /*
+         * Written for the ~30 readers that predate the four-field form — every
+         * revenue rollup, the KPI portfolio, the income sheet, campaign ROI.
+         * `amountReceived − payableAmount` still equals the commission base, so
+         * none of them had to change and no historical deal needs migrating.
+         * Nothing new should read these; use `lib/dealAmounts`.
+         */
         amountReceived,
         payableAmount,
         profit,
@@ -208,8 +237,17 @@ export async function closeDeal(
         targetRole: "admin",
         targetUid: null,
         payload: {
-          message: `${customerName} closed for ${amountReceived.toLocaleString("en-PK")} — net profit ${profit.toLocaleString("en-PK")}. Finalize Profit Distribution.`,
+          message:
+            `${customerName} closed for ${totalPrice.toLocaleString("en-PK")}` +
+            (adjustment > 0 ? ` less ${adjustment.toLocaleString("en-PK")} adjustment` : "") +
+            ` — commission base ${remaining.toLocaleString("en-PK")}, ` +
+            `paid from a down payment of ${downPayment.toLocaleString("en-PK")}. ` +
+            "Finalize Profit Distribution.",
           netProfit: profit,
+          totalPrice,
+          downPayment,
+          adjustment,
+          remaining,
           amountReceived,
         },
         createdAt: FieldValue.serverTimestamp(),
@@ -223,6 +261,10 @@ export async function closeDeal(
         meta: {
           dealId: leadId,
           creditedTo: lead.assignedUserId,
+          totalPrice,
+          downPayment,
+          adjustment,
+          remaining,
           amountReceived,
           payableAmount,
           profit,

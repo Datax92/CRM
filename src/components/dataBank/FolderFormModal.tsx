@@ -19,12 +19,18 @@ import { createDataBankFolder, updateDataBankFolder } from "@/lib/clientActions"
 import { useSubAdmins } from "@/hooks/useEmployees";
 import { useAuth } from "@/context/AuthContext";
 import { MAX_FIELDS_PER_FOLDER } from "@/lib/dataBank";
+import { MAPPING_GROUPS } from "@/lib/fieldMappingTargets";
 import type { DataBankFolder } from "@/hooks/useDataBank";
 
 interface Row {
   /** Present for a field that already exists; absent for a new one. */
   key?: string;
   label: string;
+  /**
+   * Where this column's value goes once the row becomes a lead. Empty string
+   * in the form, stored as absent — see `lib/fieldMapping`.
+   */
+  mapsTo: string;
   /** Stable React identity, so removing a row does not remount its siblings. */
   uid: number;
 }
@@ -65,10 +71,15 @@ export function FolderFormModal({
   const { subAdmins } = useSubAdmins(isAdmin);
   const [rows, setRows] = useState<Row[]>(() =>
     folder
-      ? folder.fields.map((field, index) => ({ key: field.key, label: field.label, uid: index }))
+      ? folder.fields.map((field, index) => ({
+          key: field.key,
+          label: field.label,
+          mapsTo: field.mapsTo ?? "",
+          uid: index,
+        }))
       : [
-          { label: "", uid: 0 },
-          { label: "", uid: 1 },
+          { label: "", mapsTo: "", uid: 0 },
+          { label: "", mapsTo: "", uid: 1 },
         ]
   );
   const [nameIndex, setNameIndex] = useState(() =>
@@ -95,7 +106,10 @@ export function FolderFormModal({
   // `max + 1` rather than a counter, so a uid stays unique after removals
   // without reading a ref during render.
   const addRow = () =>
-    setRows((list) => [...list, { label: "", uid: Math.max(-1, ...list.map((r) => r.uid)) + 1 }]);
+    setRows((list) => [
+      ...list,
+      { label: "", mapsTo: "", uid: Math.max(-1, ...list.map((r) => r.uid)) + 1 },
+    ]);
 
   const removeRow = (index: number) => {
     setRows((list) => list.filter((_, i) => i !== index));
@@ -128,7 +142,13 @@ export function FolderFormModal({
         description: description?.trim() || null,
         // Blank rows are dropped, so the role indexes must be recomputed
         // against the list that is actually sent.
-        fields: rows.filter((row) => row.label.trim()).map((row) => ({ key: row.key, label: row.label.trim() })),
+        fields: rows
+          .filter((row) => row.label.trim())
+          .map((row) => ({
+            key: row.key,
+            label: row.label.trim(),
+            mapsTo: row.mapsTo || null,
+          })),
         nameIndex: filled.findIndex((row) => row.uid === rows[nameIndex]?.uid),
         phoneIndex: filled.findIndex((row) => row.uid === rows[phoneIndex]?.uid),
         subAdminUid: subAdminUid || null,
@@ -252,8 +272,9 @@ export function FolderFormModal({
               </button>
             </div>
 
-            <div className="mt-3 grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-3 gap-y-2">
+            <div className="mt-3 grid grid-cols-[1fr_minmax(150px,190px)_auto_auto_auto] items-center gap-x-3 gap-y-2">
               <span className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Column name</span>
+              <span className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Fills in</span>
               <span className="text-center text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Name</span>
               <span className="text-center text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Phone</span>
               <span />
@@ -269,6 +290,9 @@ export function FolderFormModal({
                   onLabel={(label) =>
                     setRows((list) => list.map((r, i) => (i === index ? { ...r, label } : r)))
                   }
+                  onMapsTo={(mapsTo) =>
+                    setRows((list) => list.map((r, i) => (i === index ? { ...r, mapsTo } : r)))
+                  }
                   onName={() => setNameIndex(index)}
                   onPhone={() => setPhoneIndex(index)}
                   onRemove={() => removeRow(index)}
@@ -276,8 +300,16 @@ export function FolderFormModal({
               ))}
             </div>
 
+            <p className="mt-3 text-[12px] text-[#9aacaa]">
+              <strong className="text-[#5b6d6b]">Fills in</strong> carries a column through when the
+              row is promoted into a lead: point the sheet&rsquo;s price column at Total Price and it
+              is already there on Deal Entry, and a CNIC column lands on the KYC tab. It applies to
+              rows promoted <em>after</em> you save this — a lead already created keeps whatever it
+              has, because it is a working record and the sheet is only what was true on import day.
+            </p>
+
             {editing && (
-              <p className="mt-3 text-[12px] text-[#9aacaa]">
+              <p className="mt-2 text-[12px] text-[#9aacaa]">
                 Renaming a field keeps its data. Removing one hides its values rather than deleting
                 them — adding the field back brings them straight back.
               </p>
@@ -315,6 +347,7 @@ function FieldRow({
   isPhone,
   canRemove,
   onLabel,
+  onMapsTo,
   onName,
   onPhone,
   onRemove,
@@ -325,6 +358,7 @@ function FieldRow({
   isPhone: boolean;
   canRemove: boolean;
   onLabel: (label: string) => void;
+  onMapsTo: (mapsTo: string) => void;
   onName: () => void;
   onPhone: () => void;
   onRemove: () => void;
@@ -338,6 +372,25 @@ function FieldRow({
         aria-label={`Field ${index + 1} name`}
         className={INPUT}
       />
+      {/* Grouped, because "Total Price" and "Budget" are both money and only
+          one of them is the deal's. The group says which record it lands on. */}
+      <select
+        value={row.mapsTo}
+        onChange={(e) => onMapsTo(e.target.value)}
+        aria-label={`What field ${index + 1} fills in`}
+        className={`${INPUT} cursor-pointer`}
+      >
+        <option value="">— nothing —</option>
+        {MAPPING_GROUPS.map((section) => (
+          <optgroup key={section.group} label={section.group}>
+            {section.options.map((target) => (
+              <option key={target.value} value={target.value}>
+                {target.label}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
       <RoleDot checked={isName} onSelect={onName} label={`Use field ${index + 1} as the name`} />
       <RoleDot checked={isPhone} onSelect={onPhone} label={`Use field ${index + 1} as the phone number`} />
       <button

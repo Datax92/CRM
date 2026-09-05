@@ -29,6 +29,12 @@ export interface DataBankField {
   key: string;
   /** What the admin typed — "Member Name", "Form Number". Freely editable. */
   label: string;
+  /**
+   * Where this column's value belongs once the row becomes a lead —
+   * `kyc:cnic`, `deal:totalPrice`, `lead:city`. Absent means the column is
+   * carried as a custom field and nothing else. See `lib/fieldMapping`.
+   */
+  mapsTo?: string | null;
 }
 
 /** Which of a folder's own fields carry the two meanings the app depends on. */

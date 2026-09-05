@@ -71,7 +71,12 @@ follow-ups, attendance, payroll and financial reporting.
 
 ## Money
 
-- Profit = received − payable; net profit = gross − expenses.
+- **A deal is four figures.** Total Price and Down Payment are typed, Adjustment is typed when there is one, and **Remaining = Total Price − Adjustment** is calculated and read-only. `lib/dealAmounts` owns the arithmetic and the form, the phone and the Server Action all run it, so a deal cannot come out differently depending on where it was entered.
+- **The commission base is Remaining, and that is one rule, not two.** The owner stated it as two cases — the cut comes off the Total Price, or off the Remaining if there was an adjustment — but with no adjustment Remaining *is* the Total Price, so a single expression covers both and there is no branch to wire up backwards. On the worked example: 50 lakh total, 10 lakh adjustment, base 40 lakh; 1% to the employee is 40,000. Every percentage on the distribution screen is a percentage of this.
+- **The Down Payment funds the payouts; it never changes them.** It is what the client has actually handed over, so the distribution screen shows it beside the allocated total and says how much of it is left — or how far past it the split goes. Shown, never enforced: a shortfall is often covered elsewhere, and refusing the split would be that screen inventing a rule about the company's cash flow.
+- **The company still banks the remainder**, exactly as before — its own percentage plus everything nobody was allocated. Confirmed by the owner when the base changed.
+- `amountReceived` and `payableAmount` are still written, as **mirrors**: `amountReceived := totalPrice`, `payableAmount := adjustment`, so the old `profit = received − payable` lands exactly on the new base. That is why ~30 readers — every revenue rollup, the KPI portfolio, the income sheet, campaign ROI, employee metrics, Reports — needed no change and no historical deal needed migrating. Nothing new should read them; use `lib/dealAmounts`, whose accessors fall back for older deals. `readDownPayment` returns **null**, not 0, for a deal closed before the form asked — a confident `Rs 0` reads as a client who paid nothing.
+- Profit = the commission base; net profit = gross − expenses.
 - **A closed deal waits for the admin to split its profit.** `closeDeal` writes `distributionStatus: 'PENDING'` and notifies the admin.
 - `dealDistributions` holds the whole split (**admin only**); `dealPayouts` holds one row per recipient (that person, their sub admin, the admin). Two collections because Firestore grants a whole document or none — one document holding all four lines could never satisfy the privacy rule. The company's share is never written to `dealPayouts`.
 - Over-allocation is **refused, not clamped**. The remainder is the company's and is reported as its own line *and* inside the company total.
@@ -126,6 +131,11 @@ follow-ups, attendance, payroll and financial reporting.
 - Cold lists live apart from the pipeline: `leads` is a small live working set, a source export is 20,000+ rows. Mixing them would slow every pipeline query.
 - **Both managing roles build folders.** Create, rename and delete are a manager's as well as the admin's — a walk-in sheet or an event sign-up is a manager's own cold list, and refusing it left their Data Bank holding nothing but the mirrors an admin had handed them. What stays the admin's is *whose* folder it is: `createDataBankFolder` takes the owner from the caller's **token** for a manager, and `updateDataBankFolder` ignores the owner field for them entirely, so a folder cannot be filed under — or taken from — somebody else. Adding and importing records were already `requireManager`; only folder creation was not, which is why a manager appeared to be able to do neither.
 - **A Client folder is not created by hand.** It holds leads that already exist, so an empty one is a container with no way to fill it; every route in is a promotion from the Data Bank. "New Folder" was removed from the Clients screen for that reason — it was the one of the two screens where the button led nowhere. Rename and delete stay.
+- **A column can name where its value belongs.** Each folder field takes an optional `mapsTo` — `deal:totalPrice`, `kyc:cnic`, `lead:city` — set from a "Fills in" picker beside the column. At **promotion** the mapped values are copied onto the lead: `kyc` pre-fills the KYC tab, `dealDefaults` pre-fills Deal Entry, and email/city land on the lead itself. A society export already knows the plot's price and the buyer's CNIC; retyping them is where the two records start to disagree.
+  - **Copied once, at promotion — never read through afterwards.** A cold row is provenance, a lead is a working record somebody edits. Reading live would make a corrected KYC revert to whatever the spreadsheet said, and a re-import rewrite a lead nobody touched. Same rule `lib/leadSource` follows.
+  - **`deal:remaining` is not offered** — it is calculated from the other two, so a column filling it could contradict them. Neither are name and phone, which every folder already nominates through `roles`.
+  - A price cell holding `"TBC"` yields nothing rather than a confident zero, and an empty cell is skipped rather than written as `""` — an unfilled KYC field and a deliberately blanked one look identical in Firestore and only one should count toward `kycCompleteness`.
+  - `lib/fieldMapping` imports **nothing**, because it is unit-tested under the raw `--experimental-strip-types` loader; `lib/fieldMappingTargets` holds the labels and is where `KYC_FIELDS` is read.
 - **Fields are per folder**, labelled in the source's own words. One is designated the name and one the phone — without them the app cannot dial, dedupe or promote. **Keys are generated and permanent; only labels are editable.**
 - Import maps columns rather than matching header names exactly, remembers corrections on the folder, and dedupes on a normalised phone key (`0300 1234567` / `+92 300…` / Excel's zero-eaten `3001234567` all collapse to one). Junk yields `""`, which never matches.
 - **Nothing is dropped silently** — `prepareImport` reports every rejected row by line number. Existing numbers are skipped, never overwritten, and **a row handed to a manager still counts as held**: the dedupe scans the folder plus its mirrors (one query each, reusing the `folderId, phoneKey` index, and skipped entirely when `handedOffCount` is 0), or re-importing last month's sheet would recreate every handed-over row and put two people on one number.
@@ -313,6 +323,56 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-05 (seventh round) — the deal becomes four figures, and a sheet column can fill them
+
+**1 · Deal Entry: Total Price, Down Payment, Adjustment, Remaining.**
+`amountReceived` / `payableAmount` are gone from every form. The arithmetic is
+in `lib/dealAmounts` — pure, 20 tests, run by both forms and the Server Action —
+and the rules are in **Business rules → Money**. The one that took a
+conversation: the commission base is **Remaining**, and because Remaining
+collapses to Total Price when there is no adjustment, it is a single expression
+rather than a branch.
+
+**The two old fields are still written, as mirrors.** `amountReceived :=
+totalPrice`, `payableAmount := adjustment`, chosen precisely so the existing
+`profit = received − payable` lands on the new base. Around thirty readers —
+every revenue rollup, the KPI portfolio, the income sheet, campaign ROI, the
+employee metrics, Reports — therefore needed no change at all, and no historical
+deal needs migrating. Ripping them out would have been a thirty-file change with
+thirty chances to get a money figure wrong.
+
+**Asked before building, twice.** The base and the funding source were clear
+from the owner's worked example (50 lakh / 10 lakh down / 10 lakh adjustment),
+but the consequence was not: with the base becoming a sale price, the existing
+"everything unallocated is the company's" rule would have reported ~39 lakh of
+company profit on a 50 lakh deal. The owner's call was to keep that rule
+unchanged, so it is unchanged.
+
+**2 · A Data Bank column can say where its value belongs.** A "Fills in" picker
+beside each column, offering Deal Entry / KYC / Lead targets; at promotion the
+values are copied onto the lead. The owner's own **GFS Sheet** (267 rows) already
+has a `Total Price` column — pointing it at Deal Entry → Total Price is now one
+selection, and the price never gets typed again. Rules in **Business rules →
+Data Bank**.
+
+- **Validation**: `typecheck` 0 errors, `test` **406/406** (378 → 406: 20 on the
+  deal arithmetic including the owner's own example both ways, and the
+  compatibility mirrors; 14 on the field mapping), `build` compiles, `eslint
+  src` at the 7 pre-existing errors and 34 warnings.
+
+  **Driven in Chrome.** Deal Entry typed with 50 lakh / 10 lakh / 10 lakh:
+  Remaining showed **4,000,000** and the strip read *"COMMISSION BASE —
+  Total Price less the adjustment — Rs 4,000,000"*; clearing the adjustment
+  moved both to 5,000,000 and the caption to *"The total price"*. The folder
+  editor's picker was confirmed to offer Deal Entry / KYC / Lead groups and to
+  exclude `deal:remaining` and `lead:phone`. **Nothing was submitted or saved** —
+  no deal was closed and no folder mapping was written, since which column maps
+  where is the owner's decision.
+
+  **Not exercised end to end:** a promotion carrying mapped values onto a lead.
+  That needs a folder mapping saved and a row promoted, both of which write to
+  live data.
 
 ### 2026-09-05 (sixth round) — the phone status change, re-verified; the admin could not edit a manager
 

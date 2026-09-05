@@ -34,6 +34,7 @@ import {
   type DataBankStatus,
   type FieldRoles,
 } from "@/lib/dataBank";
+import { applyFieldMapping, normalizeMapsTo } from "@/lib/fieldMapping";
 
 const FOLDERS = "dataBankFolders";
 const RECORDS = "dataBankRecords";
@@ -47,7 +48,7 @@ export interface FolderInput {
   code?: string | null;
   description?: string | null;
   /** Labels in display order. Keys are assigned here, never by the client. */
-  fields: Array<{ key?: string; label: string }>;
+  fields: Array<{ key?: string; label: string; mapsTo?: string | null }>;
   /** Indexes into `fields` — which one is the name, which the phone. */
   nameIndex: number;
   phoneIndex: number;
@@ -90,7 +91,10 @@ function normalizeFields(input: FolderInput): { fields: DataBankField[]; roles: 
     if (!label) continue;
     const key = raw.key && !seen.has(raw.key) ? raw.key : fieldKeyFor(label, seen);
     seen.add(key);
-    fields.push({ key, label });
+    // Validated here rather than trusted: a target this build does not know
+    // would be written and then silently never applied.
+    const mapsTo = normalizeMapsTo(raw.mapsTo);
+    fields.push(mapsTo ? { key, label, mapsTo } : { key, label });
   }
 
   if (fields.length === 0) {
@@ -641,6 +645,17 @@ export async function promoteDataBankRecord(
       if (label && value) customFields[label] = value;
     }
 
+    /**
+     * What the sheet already knew, carried onto the lead (§ "connect those
+     * fields with the KYC section").
+     *
+     * Copied **once, here** rather than read through to the row afterwards: a
+     * cold row is provenance and a lead is a working record, so reading through
+     * would let a corrected KYC revert to whatever the spreadsheet said. See
+     * `lib/fieldMapping`.
+     */
+    const mapped = applyFieldMapping(folder.fields, record.values ?? {});
+
     const now = FieldValue.serverTimestamp();
     const leadRef = adminDb.collection("leads").doc();
 
@@ -654,8 +669,8 @@ export async function promoteDataBankRecord(
     batch.set(leadRef, {
       name: record.name,
       phone: record.phone ?? null,
-      email: null,
-      city: null,
+      email: mapped.lead.email ?? null,
+      city: mapped.lead.city ?? null,
       status: "ACCEPTED",
       source: "DATA_BANK",
       dataBankFolderId: record.folderId,
@@ -676,6 +691,10 @@ export async function promoteDataBankRecord(
       followUpCount: 0,
       callCount: 0,
       customFields,
+      // Only written when the folder actually maps something, so a lead from an
+      // unmapped folder carries no empty objects to reason about.
+      ...(Object.keys(mapped.kyc).length > 0 ? { kyc: mapped.kyc } : {}),
+      ...(Object.keys(mapped.deal).length > 0 ? { dealDefaults: mapped.deal } : {}),
       createdAt: now,
       assignedAt: now,
       acceptedAt: now,

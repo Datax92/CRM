@@ -46,7 +46,15 @@ import {
   type LeadStatus,
 } from "@/lib/leadStatus";
 import { whatsAppUrl, telUrl, formatPhone } from "@/lib/phone";
-import { formatMoney } from "@/lib/money";
+import { formatMoney, formatAmount } from "@/lib/money";
+import {
+  dealAmounts,
+  validateDealAmounts,
+  readTotalPrice,
+  readDownPayment,
+  readAdjustment,
+  readRemaining,
+} from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDate, formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
@@ -1254,19 +1262,39 @@ function DealEntryForm({
   const [address] = useState(prefill.address);
   const [city] = useState(prefill.city);
   const [serviceDescription, setServiceDescription] = useState("");
-  const [amountReceived, setAmountReceived] = useState("");
-  const [payableAmount, setPayableAmount] = useState("");
+  /**
+   * Seeded from what the source sheet already knew, where the folder's field
+   * mapping pointed a column at one of these. `useState` initialisers, so they
+   * are a starting value the operator can overwrite rather than a binding that
+   * would fight their typing.
+   */
+  const seeded = lead.dealDefaults ?? null;
+  const [totalPrice, setTotalPrice] = useState(seeded?.totalPrice ? String(seeded.totalPrice) : "");
+  const [downPayment, setDownPayment] = useState(
+    seeded?.downPayment ? String(seeded.downPayment) : ""
+  );
+  const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
   const [paymentMethod, setPaymentMethod] = useState<string>(PAYMENT_METHODS[0] ?? "Cash");
   const [dealCategory, setDealCategory] = useState<string>(DEFAULT_DEAL_CATEGORY);
   const [dealDate, setDealDate] = useState(todayInputValue());
   const [busy, setBusy] = useState(false);
 
-  const received = Number(amountReceived);
-  const payable = Number(payableAmount);
-  const profit =
-    Number.isFinite(received) && Number.isFinite(payable) && amountReceived !== "" && payableAmount !== ""
-      ? received - payable
-      : null;
+  /**
+   * The whole calculation, recomputed as they type, from the same module the
+   * Server Action uses. The operator sees the commission base before saving,
+   * which is the number everybody's percentage will come off.
+   */
+  const amounts = dealAmounts({
+    totalPrice: Number(totalPrice),
+    downPayment: Number(downPayment),
+    adjustment: Number(adjustment),
+  });
+  const amountErrors = totalPrice === "" ? [] : validateDealAmounts({
+    totalPrice: Number(totalPrice),
+    downPayment: Number(downPayment),
+    adjustment: Number(adjustment),
+  });
+  const profit = totalPrice === "" ? null : amounts.remaining;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1276,8 +1304,9 @@ function DealEntryForm({
       const result = await closeDeal(await getIdToken(), lead.id, {
         customer: { name, phone, email, cnic, address, city },
         serviceDescription,
-        amountReceived: Number(amountReceived),
-        payableAmount: Number(payableAmount),
+        totalPrice: Number(totalPrice),
+        downPayment: Number(downPayment),
+        adjustment: Number(adjustment) || 0,
         paymentMethod,
         dealCategory,
         dealDate,
@@ -1366,28 +1395,65 @@ function DealEntryForm({
           <div className="grid gap-x-4.5 gap-y-3.5 sm:grid-cols-2">
             <label className={FIELD_LABEL_CLASS}>
               <span>
-                Amount Received (PKR) <span className="text-[#e05a4a]">*</span>
+                Total Price (PKR) <span className="text-[#e05a4a]">*</span>
               </span>
               <input
                 required
                 type="number"
                 min="0"
-                value={amountReceived}
-                onChange={(e) => setAmountReceived(e.target.value)}
+                value={totalPrice}
+                onChange={(e) => setTotalPrice(e.target.value)}
                 placeholder="0"
                 className={`${INPUT_CLASS} tabular-nums`}
               />
             </label>
             <label className={FIELD_LABEL_CLASS}>
-              <span>Payable Amount (PKR)</span>
+              <span>
+                Down Payment (PKR) <span className="text-[#e05a4a]">*</span>
+              </span>
               <input
+                required
                 type="number"
                 min="0"
-                value={payableAmount}
-                onChange={(e) => setPayableAmount(e.target.value)}
+                value={downPayment}
+                onChange={(e) => setDownPayment(e.target.value)}
                 placeholder="0"
                 className={`${INPUT_CLASS} tabular-nums`}
               />
+              <span className="text-[11px] text-[#9aacaa]">
+                What the client has paid. Commissions are paid out of this.
+              </span>
+            </label>
+            <label className={FIELD_LABEL_CLASS}>
+              <span>Adjustment (PKR)</span>
+              <input
+                type="number"
+                min="0"
+                value={adjustment}
+                onChange={(e) => setAdjustment(e.target.value)}
+                placeholder="0"
+                className={`${INPUT_CLASS} tabular-nums`}
+              />
+              <span className="text-[11px] text-[#9aacaa]">
+                Anything off the price — a discount, or a file traded in.
+              </span>
+            </label>
+            {/* Read-only on purpose: it is Total Price minus Adjustment, and a
+                typed Remaining that disagreed with the two figures above it
+                would be a fourth number nobody could reconcile. */}
+            <label className={FIELD_LABEL_CLASS}>
+              <span>Remaining (PKR)</span>
+              <input
+                type="text"
+                readOnly
+                aria-readonly="true"
+                value={totalPrice === "" ? "" : formatAmount(amounts.remaining)}
+                placeholder="0"
+                className={`${INPUT_CLASS} tabular-nums bg-[#eef5f4] text-[#5b6d6b]`}
+              />
+              <span className="text-[11px] text-[#9aacaa]">
+                Total Price &minus; Adjustment. Calculated.
+              </span>
             </label>
             <label className={FIELD_LABEL_CLASS}>
               <span>Payment Method</span>
@@ -1429,11 +1495,29 @@ function DealEntryForm({
             </label>
           </div>
 
+          {amountErrors.length > 0 && (
+            <p
+              role="alert"
+              className="mt-4 rounded-lg border border-[#f0c4bd] bg-[#fdeeeb] px-4 py-3 text-[12.5px] text-[#a33a29]"
+            >
+              {amountErrors[0]}
+            </p>
+          )}
+
+          {/* What the percentages will be applied to, said before the deal is
+              saved rather than discovered on the distribution screen. */}
           <div
-            className="mt-4 flex items-center justify-between gap-4 rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-4.5 py-3.5"
+            className="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-4.5 py-3.5"
             aria-live="polite"
           >
-            <span className="text-xs tracking-[1px] text-[#2f7d78]">CALCULATED GROSS PROFIT</span>
+            <span className="min-w-0">
+              <span className="block text-xs tracking-[1px] text-[#2f7d78]">COMMISSION BASE</span>
+              <span className="mt-0.5 block text-[11px] text-[#5f8b88]">
+                {Number(adjustment) > 0
+                  ? "Total Price less the adjustment — every share is a percentage of this."
+                  : "The total price — every share is a percentage of this."}
+              </span>
+            </span>
             <span className="text-[17px] font-medium tabular-nums text-[#2f7d78]">
               {profit === null ? "—" : formatMoney(profit)}
             </span>
@@ -1441,7 +1525,7 @@ function DealEntryForm({
 
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || amountErrors.length > 0}
             className="mt-4 w-full rounded-lg bg-[#3f8f8a] py-3 text-sm text-white transition-colors hover:bg-[#2f7d78] disabled:opacity-50"
           >
             {busy ? "Saving Deal…" : "Close Deal & Settle Revenue"}
@@ -1487,18 +1571,31 @@ function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLe
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-3 border-t border-[#f0f6f5] px-6 py-5">
+      {/* The four figures the deal was recorded as, then what the commission
+          is a percentage of. `readDownPayment` returns null for a deal closed
+          before the form asked, which shows as "—" rather than a confident
+          Rs 0 — a client who paid nothing is a different claim. */}
+      <div className="grid grid-cols-2 gap-3 border-t border-[#f0f6f5] px-6 py-5 sm:grid-cols-4">
         <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">RECEIVED</p>
-          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(deal.amountReceived)}</p>
+          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">TOTAL PRICE</p>
+          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(readTotalPrice(deal))}</p>
         </div>
         <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">PAYABLE</p>
-          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(deal.payableAmount)}</p>
+          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">DOWN PAYMENT</p>
+          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">
+            {readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal))}
+          </p>
+        </div>
+        <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
+          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">ADJUSTMENT</p>
+          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(readAdjustment(deal))}</p>
         </div>
         <div className="rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#2f7d78]">NET PROFIT</p>
-          <p className="mt-0.5 text-sm font-medium tabular-nums text-[#2f7d78]">{formatMoney(deal.profit)}</p>
+          <p className="text-[11px] tracking-[0.6px] text-[#2f7d78]">REMAINING</p>
+          <p className="mt-0.5 text-sm font-medium tabular-nums text-[#2f7d78]">
+            {formatMoney(readRemaining(deal))}
+          </p>
+          <p className="mt-0.5 text-[10px] text-[#5f8b88]">commission base</p>
         </div>
       </div>
     </div>

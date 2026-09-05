@@ -49,6 +49,12 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
+import {
+  readTotalPrice,
+  readDownPayment,
+  readAdjustment,
+  readRemaining,
+} from "@/lib/dealAmounts";
 import { formatPhone } from "@/lib/phone";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
 import { describeLeadSource } from "@/lib/leadSource";
@@ -134,9 +140,14 @@ export function ClosedDealRecord({
       headerExtra={
         <OverlayFigures
           items={[
-            { label: "Received", value: formatMoney(deal.amountReceived) },
-            { label: "Payable", value: formatMoney(deal.payableAmount) },
-            { label: "Net Profit", value: formatMoney(deal.profit), strong: true },
+            { label: "Total Price", value: formatMoney(readTotalPrice(deal)) },
+            {
+              label: "Down Payment",
+              // Null, not zero, for a deal closed before the form asked.
+              value: readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal)),
+            },
+            { label: "Adjustment", value: formatMoney(readAdjustment(deal)) },
+            { label: "Remaining", value: formatMoney(readRemaining(deal)), strong: true },
           ]}
         />
       }

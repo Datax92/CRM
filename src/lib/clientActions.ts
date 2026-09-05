@@ -181,8 +181,9 @@ export async function createLead(
     followUps?: Array<{ message: string; callMade: boolean; occurredAt: string }>;
     deal?: {
       serviceDescription: string;
-      amountReceived: number;
-      payableAmount: number;
+      totalPrice: number;
+      downPayment: number;
+      adjustment?: number;
       paymentMethod: string;
       dealCategory?: string;
       dealDate: string;
@@ -257,8 +258,9 @@ export async function closeDeal(
   input: {
     customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
     serviceDescription: string;
-    amountReceived: number;
-    payableAmount: number;
+    totalPrice: number;
+    downPayment: number;
+    adjustment?: number;
     paymentMethod?: string;
     dealCategory?: string;
     dealDate?: string;

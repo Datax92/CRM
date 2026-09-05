@@ -8,7 +8,15 @@ import { useDealForLead } from "@/hooks/useFinancials";
 import { addFollowUp, setLeadStatus, closeDeal, PAYMENT_METHODS, acceptLead } from "@/lib/clientActions";
 import { USER_SETTABLE_STATUSES, LEAD_STATUS_LABELS, isTerminal, type LeadStatus } from "@/lib/leadStatus";
 import { whatsAppUrl, telUrl, formatPhone } from "@/lib/phone";
-import { formatMoney } from "@/lib/money";
+import { formatMoney, formatAmount } from "@/lib/money";
+import {
+  dealAmounts,
+  validateDealAmounts,
+  readTotalPrice,
+  readDownPayment,
+  readAdjustment,
+  readRemaining,
+} from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
@@ -837,8 +845,18 @@ function DealEntryForm({
   const [address, setAddress] = useState("");
   const [city, setCity] = useState(lead.city ?? "");
   const [serviceDescription, setServiceDescription] = useState("");
-  const [amountReceived, setAmountReceived] = useState("");
-  const [payableAmount, setPayableAmount] = useState("");
+  /**
+   * Seeded from what the source sheet already knew, where the folder's field
+   * mapping pointed a column at one of these. `useState` initialisers, so they
+   * are a starting value the operator can overwrite rather than a binding that
+   * would fight their typing.
+   */
+  const seeded = lead.dealDefaults ?? null;
+  const [totalPrice, setTotalPrice] = useState(seeded?.totalPrice ? String(seeded.totalPrice) : "");
+  const [downPayment, setDownPayment] = useState(
+    seeded?.downPayment ? String(seeded.downPayment) : ""
+  );
+  const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
   const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
   const [dealCategory, setDealCategory] = useState<string>(DEFAULT_DEAL_CATEGORY);
   const [dealDate, setDealDate] = useState(todayInputValue());
@@ -849,12 +867,15 @@ function DealEntryForm({
     return PAYMENT_METHODS.map((m) => ({ value: m, label: m }));
   }, []);
 
-  const received = Number(amountReceived);
-  const payable = Number(payableAmount);
-  const profit =
-    Number.isFinite(received) && Number.isFinite(payable) && amountReceived !== "" && payableAmount !== ""
-      ? received - payable
-      : null;
+  // Same arithmetic as every other Deal Entry surface — see `lib/dealAmounts`.
+  const typedAmounts = {
+    totalPrice: Number(totalPrice),
+    downPayment: Number(downPayment),
+    adjustment: Number(adjustment),
+  };
+  const amounts = dealAmounts(typedAmounts);
+  const amountErrors = totalPrice === "" ? [] : validateDealAmounts(typedAmounts);
+  const profit = totalPrice === "" ? null : amounts.remaining;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -864,8 +885,9 @@ function DealEntryForm({
       const result = await closeDeal(await getIdToken(), lead.id, {
         customer: { name, phone, email, cnic, address, city },
         serviceDescription,
-        amountReceived: Number(amountReceived),
-        payableAmount: Number(payableAmount),
+        totalPrice: Number(totalPrice),
+        downPayment: Number(downPayment) || 0,
+        adjustment: Number(adjustment) || 0,
         paymentMethod,
         dealCategory,
         dealDate,
@@ -961,26 +983,50 @@ function DealEntryForm({
         <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Financial Breakdown</h4>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1">
-            <label className="block text-xs font-semibold text-slate-700">Amount Received (PKR) *</label>
+            <label className="block text-xs font-semibold text-slate-700">Total Price (PKR) *</label>
             <input
               type="number"
               required
               min="0"
-              value={amountReceived}
-              onChange={(e) => setAmountReceived(e.target.value)}
+              value={totalPrice}
+              onChange={(e) => setTotalPrice(e.target.value)}
               placeholder="0"
               className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 focus:bg-white"
             />
           </div>
           <div className="space-y-1">
-            <label className="block text-xs font-semibold text-slate-700">Payable Amount (PKR)</label>
+            <label className="block text-xs font-semibold text-slate-700">Down Payment (PKR) *</label>
+            <input
+              type="number"
+              required
+              min="0"
+              value={downPayment}
+              onChange={(e) => setDownPayment(e.target.value)}
+              placeholder="0"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 focus:bg-white"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-xs font-semibold text-slate-700">Adjustment (PKR)</label>
             <input
               type="number"
               min="0"
-              value={payableAmount}
-              onChange={(e) => setPayableAmount(e.target.value)}
+              value={adjustment}
+              onChange={(e) => setAdjustment(e.target.value)}
               placeholder="0"
               className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 focus:bg-white"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-xs font-semibold text-slate-700">Remaining (PKR)</label>
+            {/* Calculated — Total Price minus Adjustment. */}
+            <input
+              type="text"
+              readOnly
+              aria-readonly="true"
+              value={totalPrice === "" ? "" : formatAmount(amounts.remaining)}
+              placeholder="0"
+              className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-500 outline-none"
             />
           </div>
           <div className="space-y-1">
@@ -1003,8 +1049,17 @@ function DealEntryForm({
           </div>
         </div>
 
+        {amountErrors.length > 0 && (
+          <p
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700"
+          >
+            {amountErrors[0]}
+          </p>
+        )}
+
         <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50/80 p-3.5">
-          <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">Calculated Gross Profit</span>
+          <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">Commission Base</span>
           <span className="text-lg font-black tabular-nums text-emerald-700">
             {profit === null ? "—" : formatMoney(profit)}
           </span>
@@ -1013,7 +1068,7 @@ function DealEntryForm({
 
       <button
         type="submit"
-        disabled={busy}
+        disabled={busy || amountErrors.length > 0}
         className="w-full rounded-xl bg-emerald-600 py-3 text-xs font-bold text-white shadow-md shadow-emerald-500/20 hover:bg-emerald-700 disabled:opacity-50 transition-colors"
       >
         {busy ? "Saving Deal..." : "Close Deal & Settle Revenue"}
@@ -1059,18 +1114,24 @@ function DealRecordView({ deal }: { deal: NonNullable<ReturnType<typeof useDealF
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-3 border-t border-slate-100 pt-4 text-center">
+      <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-4 text-center sm:grid-cols-4">
         <div className="rounded-xl bg-slate-50 p-2.5">
-          <p className="text-[10px] font-bold uppercase text-slate-400">Received</p>
-          <p className="text-sm font-bold text-slate-800">{formatMoney(deal.amountReceived)}</p>
+          <p className="text-[10px] font-bold uppercase text-slate-400">Total Price</p>
+          <p className="text-sm font-bold text-slate-800">{formatMoney(readTotalPrice(deal))}</p>
         </div>
         <div className="rounded-xl bg-slate-50 p-2.5">
-          <p className="text-[10px] font-bold uppercase text-slate-400">Payable</p>
-          <p className="text-sm font-bold text-slate-800">{formatMoney(deal.payableAmount)}</p>
+          <p className="text-[10px] font-bold uppercase text-slate-400">Down Payment</p>
+          <p className="text-sm font-bold text-slate-800">
+            {readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal))}
+          </p>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-2.5">
+          <p className="text-[10px] font-bold uppercase text-slate-400">Adjustment</p>
+          <p className="text-sm font-bold text-slate-800">{formatMoney(readAdjustment(deal))}</p>
         </div>
         <div className="rounded-xl bg-emerald-50 p-2.5 border border-emerald-200/80">
-          <p className="text-[10px] font-bold uppercase text-emerald-800">Net Profit</p>
-          <p className="text-sm font-black text-emerald-700">{formatMoney(deal.profit)}</p>
+          <p className="text-[10px] font-bold uppercase text-emerald-800">Remaining</p>
+          <p className="text-sm font-black text-emerald-700">{formatMoney(readRemaining(deal))}</p>
         </div>
       </div>
     </div>

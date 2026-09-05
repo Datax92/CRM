@@ -135,6 +135,13 @@ export async function finalizeProfitDistribution(
       employeeUid: deal.userId ?? null,
       subAdminUid: deal.subAdminUid ?? null,
       customerName: deal.customer?.name ?? null,
+      // The deal as it stood when the split was finalised. Frozen here on
+      // purpose: re-reading the deal later would let a corrected price silently
+      // restate what people were paid.
+      totalPrice: deal.totalPrice ?? deal.amountReceived ?? 0,
+      downPayment: deal.downPayment ?? null,
+      adjustment: deal.adjustment ?? deal.payableAmount ?? 0,
+      remaining: deal.remaining ?? deal.profit ?? 0,
       amountReceived: deal.amountReceived ?? 0,
       payableAmount: deal.payableAmount ?? 0,
       netProfit: result.netProfit,

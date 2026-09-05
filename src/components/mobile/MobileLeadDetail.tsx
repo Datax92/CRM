@@ -37,7 +37,15 @@ import {
 } from "@/lib/clientActions";
 import { USER_SETTABLE_STATUSES, LEAD_STATUS_LABELS, isTerminal, type LeadStatus } from "@/lib/leadStatus";
 import { whatsAppUrl, telUrl, formatPhone } from "@/lib/phone";
-import { formatMoney } from "@/lib/money";
+import { formatMoney, formatAmount } from "@/lib/money";
+import {
+  dealAmounts,
+  validateDealAmounts,
+  readTotalPrice,
+  readDownPayment,
+  readAdjustment,
+  readRemaining,
+} from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
@@ -1348,17 +1356,33 @@ function DealForm({
   const [email, setEmail] = useState(lead.email ?? "");
   const [cnic, setCnic] = useState(kycPrefill.cnic);
   const [serviceDescription, setServiceDescription] = useState("");
-  const [received, setReceived] = useState("");
-  const [payable, setPayable] = useState("");
+  /**
+   * Seeded from what the source sheet already knew, where the folder's field
+   * mapping pointed a column at one of these. `useState` initialisers, so they
+   * are a starting value the operator can overwrite rather than a binding that
+   * would fight their typing.
+   */
+  const seeded = lead.dealDefaults ?? null;
+  const [totalPrice, setTotalPrice] = useState(seeded?.totalPrice ? String(seeded.totalPrice) : "");
+  const [downPayment, setDownPayment] = useState(
+    seeded?.downPayment ? String(seeded.downPayment) : ""
+  );
+  const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
   const [paymentMethod, setPaymentMethod] = useState<string>(PAYMENT_METHODS[0] ?? "Cash");
   const [dealCategory, setDealCategory] = useState<string>(DEFAULT_DEAL_CATEGORY);
   const [dealDate, setDealDate] = useState(todayInputValue());
   const [busy, setBusy] = useState(false);
 
-  const r = Number(received);
-  const p = Number(payable);
-  const profit =
-    Number.isFinite(r) && received !== "" ? r - (Number.isFinite(p) && payable !== "" ? p : 0) : null;
+  // Same module the desktop form and the Server Action use — one arithmetic,
+  // so a deal saved from a phone cannot come out differently.
+  const typed = {
+    totalPrice: Number(totalPrice),
+    downPayment: Number(downPayment),
+    adjustment: Number(adjustment),
+  };
+  const amounts = dealAmounts(typed);
+  const amountErrors = totalPrice === "" ? [] : validateDealAmounts(typed);
+  const profit = totalPrice === "" ? null : amounts.remaining;
 
   const submit = async () => {
     setBusy(true);
@@ -1366,8 +1390,9 @@ function DealForm({
       const result = await closeDeal(await getIdToken(), lead.id, {
         customer: { name, phone, email, cnic, address: kycPrefill.address, city: kycPrefill.city },
         serviceDescription,
-        amountReceived: Number(received),
-        payableAmount: Number(payable) || 0,
+        totalPrice: Number(totalPrice),
+        downPayment: Number(downPayment) || 0,
+        adjustment: Number(adjustment) || 0,
         paymentMethod,
         dealCategory,
         dealDate,
@@ -1426,27 +1451,63 @@ function DealForm({
           />
         </label>
         <label style={FIELD_LABEL}>
-          <span>Amount received (PKR) *</span>
+          <span>Total price (PKR) *</span>
           <input
             type="number"
             inputMode="decimal"
             min="0"
-            value={received}
-            onChange={(e) => setReceived(e.target.value)}
+            value={totalPrice}
+            onChange={(e) => setTotalPrice(e.target.value)}
             placeholder="0"
             style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
           />
         </label>
         <label style={FIELD_LABEL}>
-          <span>Payable amount (PKR)</span>
+          <span>Down payment (PKR) *</span>
           <input
             type="number"
             inputMode="decimal"
             min="0"
-            value={payable}
-            onChange={(e) => setPayable(e.target.value)}
+            value={downPayment}
+            onChange={(e) => setDownPayment(e.target.value)}
             placeholder="0"
             style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
+          />
+          <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
+            What the client has paid. Commissions come out of this.
+          </span>
+        </label>
+        <label style={FIELD_LABEL}>
+          <span>Adjustment (PKR)</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            value={adjustment}
+            onChange={(e) => setAdjustment(e.target.value)}
+            placeholder="0"
+            style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
+          />
+          <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
+            A discount, or a file traded in.
+          </span>
+        </label>
+        {/* Read-only: Total Price minus Adjustment. A typed Remaining that
+            disagreed with the two above it would be unreconcilable. */}
+        <label style={FIELD_LABEL}>
+          <span>Remaining (PKR)</span>
+          <input
+            type="text"
+            readOnly
+            aria-readonly="true"
+            value={totalPrice === "" ? "" : formatAmount(amounts.remaining)}
+            placeholder="0"
+            style={{
+              ...FIELD,
+              fontVariantNumeric: "tabular-nums",
+              background: "#eef5f4",
+              color: M.muted,
+            }}
           />
         </label>
         <label style={FIELD_LABEL}>
@@ -1504,7 +1565,7 @@ function DealForm({
         aria-live="polite"
       >
         <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.9px", color: M.tealDeep }}>
-          GROSS PROFIT
+          COMMISSION BASE
         </span>
         <span
           style={{
@@ -1519,10 +1580,36 @@ function DealForm({
         </span>
       </div>
 
+      {amountErrors.length > 0 && (
+        <p
+          role="alert"
+          style={{
+            marginTop: 12,
+            borderRadius: 12,
+            border: "1px solid #f0c4bd",
+            background: "#fdeeeb",
+            padding: "10px 12px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: "#a33a29",
+            lineHeight: 1.45,
+          }}
+        >
+          {amountErrors[0]}
+        </p>
+      )}
+
       <button
         type="button"
         className="mob-press"
-        disabled={busy || !name.trim() || !phone.trim() || !serviceDescription.trim() || received === ""}
+        disabled={
+          busy ||
+          !name.trim() ||
+          !phone.trim() ||
+          !serviceDescription.trim() ||
+          totalPrice === "" ||
+          amountErrors.length > 0
+        }
         onClick={() => void submit()}
         style={{
           marginTop: 14,
@@ -1535,7 +1622,15 @@ function DealForm({
           fontSize: 14.5,
           fontWeight: 700,
           cursor: "pointer",
-          opacity: busy || !name.trim() || !phone.trim() || !serviceDescription.trim() || received === "" ? 0.5 : 1,
+          opacity:
+            busy ||
+            !name.trim() ||
+            !phone.trim() ||
+            !serviceDescription.trim() ||
+            totalPrice === "" ||
+            amountErrors.length > 0
+              ? 0.5
+              : 1,
           WebkitTapHighlightColor: "transparent",
         }}
       >
@@ -1561,8 +1656,13 @@ function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLe
           ["Contact", deal.customer?.phone ? formatPhone(deal.customer.phone) : "—"],
           ["Method", deal.paymentMethod || "—"],
           ["Category", deal.dealCategory || "—"],
-          ["Received", formatMoney(deal.amountReceived)],
-          ["Payable", formatMoney(deal.payableAmount)],
+              ["Total price", formatMoney(readTotalPrice(deal))],
+          [
+            "Down payment",
+            readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal)),
+          ],
+          ["Adjustment", formatMoney(readAdjustment(deal))],
+          ["Remaining", formatMoney(readRemaining(deal))],
         ].map(([label, value]) => (
           <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
             <span style={{ fontSize: 12.5, fontWeight: 500, color: M.faint }}>{label}</span>

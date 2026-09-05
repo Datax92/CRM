@@ -43,6 +43,12 @@ import {
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import {
+  readTotalPrice,
+  readDownPayment,
+  readAdjustment,
+  readRemaining,
+} from "@/lib/dealAmounts";
+import {
   calculateDistribution,
   parsePercentage,
   DEFAULT_COMPANY_PERCENTAGE,
@@ -147,6 +153,12 @@ export function ProfitDistributionModal({
   ];
 
   const result = calculateDistribution(deal.profit ?? 0, shares);
+  /**
+   * The cash the payouts come out of — null for a deal closed before the form
+   * asked for it, in which case the row below is simply not shown rather than
+   * claiming the client paid nothing.
+   */
+  const downPaymentOnDeal = readDownPayment(deal);
   const amountFor = (kind: string) => result.lines.find((line) => line.kind === kind)?.amount ?? 0;
 
   const submit = async () => {
@@ -190,9 +202,14 @@ export function ProfitDistributionModal({
       headerExtra={
         <OverlayFigures
           items={[
-            { label: "Received", value: formatMoney(deal.amountReceived) },
-            { label: "Payable", value: formatMoney(deal.payableAmount) },
-            { label: "Net Profit", value: formatMoney(deal.profit), strong: true },
+            { label: "Total Price", value: formatMoney(readTotalPrice(deal)) },
+            {
+              label: "Down Payment",
+              // Null, not zero, for a deal closed before the form asked.
+              value: readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal)),
+            },
+            { label: "Adjustment", value: formatMoney(readAdjustment(deal)) },
+            { label: "Remaining", value: formatMoney(readRemaining(deal)), strong: true },
           ]}
         />
       }
@@ -387,7 +404,14 @@ export function ProfitDistributionModal({
 
       <OverlayCard title="Distribution summary">
         <dl style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-          <TotalRow label="Net profit" value={formatMoney(result.netProfit)} />
+          {/* Named for what it is: every percentage below is a percentage of
+              this. It is the deal's Remaining — Total Price less any
+              adjustment — which is the rule the owner set. */}
+          <TotalRow
+            label="Commission base"
+            sub={readAdjustment(deal) > 0 ? "Total price less the adjustment" : "The total price"}
+            value={formatMoney(result.netProfit)}
+          />
           <TotalRow
             label="Total distributed"
             sub={`${result.distributedPercentage}%`}
@@ -399,6 +423,33 @@ export function ProfitDistributionModal({
             value={formatMoney(Math.max(0, result.remainingAmount))}
             muted
           />
+
+          {/*
+            **Where the money is actually coming from.**
+
+            The shares are a percentage of the price, but they are paid out of
+            what the client has actually handed over — the down payment. Those
+            are different numbers and nothing else on this screen says so, which
+            is how an admin finalises a split the business cannot yet fund.
+            Shown, never enforced: a shortfall is often covered elsewhere, and
+            refusing the split would be this screen inventing a rule about the
+            company's cash flow.
+          */}
+          {downPaymentOnDeal !== null && (
+            <>
+              <div style={{ height: 1, background: T.line, margin: "3px 0" }} aria-hidden />
+              <TotalRow
+                label="Paid from the down payment"
+                sub={
+                  result.distributedAmount > downPaymentOnDeal
+                    ? `${formatMoney(result.distributedAmount - downPaymentOnDeal)} more than has been received`
+                    : `${formatMoney(downPaymentOnDeal - result.distributedAmount)} of it left`
+                }
+                value={formatMoney(downPaymentOnDeal)}
+                muted={result.distributedAmount <= downPaymentOnDeal}
+              />
+            </>
+          )}
 
           {/* A bar, so "how much is still unallocated" is answerable at a
               glance and not only by reading four numbers. */}
