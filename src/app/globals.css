@@ -775,3 +775,20 @@
     color: #b4524a;
   }
 }
+
+/**
+ * Office Expenses — the two `style-hover` rules its design file specifies.
+ *
+ * The pill's hover tint differs per action (reject is pink, pay is teal, edit
+ * is grey), so it is carried in as the `--oe-hover` custom property the button
+ * sets inline. A pill with no property set falls back to the neutral tint
+ * rather than to `transparent`, which would read as no hover at all.
+ */
+@layer utilities {
+  .oe-row:hover {
+    background: #fbfdfd;
+  }
+  .oe-pill:hover:not(:disabled) {
+    background: var(--oe-hover, #f4f8f7);
+  }
+}

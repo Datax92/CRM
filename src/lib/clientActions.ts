@@ -130,7 +130,8 @@ import {
 } from '@/app/actions/ledger';
 import {
   savePersonalExpense as _savePersonalExpense,
-  decidePersonalExpense as _decidePersonalExpense,
+  deletePersonalExpense as _deletePersonalExpense,
+  countPersonalExpensePayments as _countPersonalExpensePayments,
   saveStateLifePolicy as _saveStateLifePolicy,
   deleteStateLifePolicy as _deleteStateLifePolicy,
   saveMarketingIncome as _saveMarketingIncome,
@@ -1060,13 +1061,12 @@ export async function savePersonalExpense(token: string, input: PersonalExpenseI
   return _savePersonalExpense(token, input, expenseId);
 }
 
-export async function decidePersonalExpense(
-  token: string,
-  expenseId: string,
-  decision: 'APPROVED' | 'REJECTED' | 'CANCELLED',
-  note?: string
-) {
-  return _decidePersonalExpense(token, expenseId, decision, note);
+export async function deletePersonalExpense(token: string, expenseId: string) {
+  return _deletePersonalExpense(token, expenseId);
+}
+
+export async function countPersonalExpensePayments(token: string, expenseId: string) {
+  return _countPersonalExpensePayments(token, expenseId);
 }
 
 export async function saveStateLifePolicy(token: string, input: StateLifeInputRow, policyId?: string) {

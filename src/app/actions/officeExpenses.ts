@@ -4,7 +4,7 @@ import { adminDb } from "@/lib/firebase/server";
 import { requireAdmin, requireManager, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
-import { parseMoney } from "@/lib/money";
+import { formatMoney, parseMoney } from "@/lib/money";
 import { karachiDayKey } from "@/lib/dates";
 import {
   DEFAULT_EXPENSE_CATEGORIES,
@@ -278,6 +278,21 @@ export async function updateOfficeExpense(
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
 
     const before = snap.data() ?? {};
+
+    /*
+      **An expense cannot be edited below what has already left an account.**
+      The transactions funding it are real money movements and are not rewritten
+      by editing the obligation, so an amount under `paidAmount` would leave a
+      record insisting it was over-funded — and `readPaid` would report Rs 0
+      outstanding on an expense that had been paid for twice over.
+    */
+    const paidSoFar = Number(before.paidAmount) || 0;
+    if (paidSoFar > 0 && Number(clean.amount) < paidSoFar) {
+      throw new UserFacingError(
+        `${formatMoney(paidSoFar)} has already been paid against this expense, so it cannot be reduced below that. Remove the funding movement from its account first.`
+      );
+    }
+
     const changes: string[] = [];
     for (const [key, value] of Object.entries(clean)) {
       if (key === "date") continue; // Covered by dayKey.
@@ -324,6 +339,24 @@ export async function setOfficeExpenseStatus(
     if (current === status) {
       throw new UserFacingError(`This expense is already ${status.toLowerCase()}.`);
     }
+
+    /*
+      **A funded expense may be rejected, and the payment stays on the account.**
+      This was refused for one round, on the reasoning that rejecting takes the
+      expense out of approved spend while the cash has already gone. The owner's
+      call is that the decision is theirs to make: a payment that turns out to
+      have been wrong is exactly when somebody needs to mark the expense
+      rejected, and being told to go and unpick the ledger first is a dead end
+      at the moment they are trying to record what happened.
+
+      What must not happen is the money going quiet. It does not: the funding
+      transactions stay posted on the account that paid — the rupees really did
+      leave it — the rejection is written into the expense's own history beside
+      the amount already paid, and the row carries its payment pill whatever the
+      status, so a rejected expense that cost money reads as `Rejected · Paid`
+      rather than as a clean refusal. Removing the funding movement from the
+      account is still what un-pays it; it is now a choice rather than a gate.
+    */
 
     await ref.update({
       status,

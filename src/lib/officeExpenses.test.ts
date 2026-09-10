@@ -6,6 +6,8 @@ import {
   expensesByCategory,
   expensesByPeriod,
   normalizeExpenseStatus,
+  normalizePaymentStatus,
+  readPaid,
   summarizeExpenses,
   trendPercent,
   type ExpenseStatus,
@@ -26,6 +28,9 @@ const expense = (patch: Partial<OfficeExpense> = {}): OfficeExpense => ({
   addedByUid: 'admin',
   addedByEmail: null,
   dayKey: '2026-09-01',
+  paidAmount: 0,
+  paymentStatus: 'UNPAID',
+  history: [],
   decidedByUid: null,
   decidedByName: null,
   decisionNote: null,
@@ -192,4 +197,51 @@ test('a status never transitions to itself', () => {
     assert.equal(allowedExpenseTransitions(status).includes(status), false);
     assert.equal(allowedExpenseTransitions(status).length, 2);
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* What has been paid                                                          */
+/* -------------------------------------------------------------------------- */
+
+test('an expense nothing has been paid against reads as fully outstanding', () => {
+  const { paid, outstanding, settled } = readPaid(expense({ amount: 5_000, paidAmount: 0 }));
+  assert.equal(paid, 0);
+  assert.equal(outstanding, 5_000);
+  assert.equal(settled, false);
+});
+
+test('a part payment leaves the balance, not the whole amount', () => {
+  // The bug this guards: the reader was handed a hard 0, so a 50,000 expense
+  // paid 30,000 still offered all 50,000 on the next payment.
+  const { paid, outstanding, settled } = readPaid(expense({ amount: 50_000, paidAmount: 30_000 }));
+  assert.equal(paid, 30_000);
+  assert.equal(outstanding, 20_000);
+  assert.equal(settled, false);
+});
+
+test('paying the last of it settles the expense', () => {
+  const { outstanding, settled } = readPaid(expense({ amount: 50_000, paidAmount: 50_000 }));
+  assert.equal(outstanding, 0);
+  assert.equal(settled, true);
+});
+
+test('an over-paid expense never reports a negative outstanding', () => {
+  // Reachable by editing an expense down after it was paid. "Rs -2,000 owed"
+  // is not a sentence anybody can act on.
+  const { paid, outstanding, settled } = readPaid(expense({ amount: 1_000, paidAmount: 4_000 }));
+  assert.equal(paid, 1_000);
+  assert.equal(outstanding, 0);
+  assert.equal(settled, true);
+});
+
+test('a zero-amount expense is not "settled" by having nothing paid on it', () => {
+  assert.equal(readPaid(expense({ amount: 0, paidAmount: 0 })).settled, false);
+});
+
+test('an absent payment status reads as unpaid, never as paid', () => {
+  assert.equal(normalizePaymentStatus(undefined), 'UNPAID');
+  assert.equal(normalizePaymentStatus(null), 'UNPAID');
+  assert.equal(normalizePaymentStatus('nonsense'), 'UNPAID');
+  assert.equal(normalizePaymentStatus('PAID'), 'PAID');
+  assert.equal(normalizePaymentStatus('PARTIALLY_PAID'), 'PARTIALLY_PAID');
 });

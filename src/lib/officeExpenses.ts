@@ -85,6 +85,115 @@ export interface OfficeExpense {
   decidedByUid: string | null;
   decidedByName: string | null;
   decisionNote: string | null;
+  /**
+   * **How much of this expense the ledger has actually funded.**
+   *
+   * Written by `payFromAccounts`, which is also the only thing that may write
+   * it — the obligation (`amount`) never changes when it is paid. An expense
+   * recorded before the ledger has no field at all, and absent means *nothing
+   * paid*, not *broken*: `readPaid` is the single reader so that reading stays
+   * one decision.
+   */
+  paidAmount: number;
+  paymentStatus: PaymentStatus;
+  /**
+   * The audit trail every write path appends to — created, edited, decided,
+   * paid, un-paid. It has been written since the module shipped and had **no
+   * reader**: the row shows a title, a date and a status, so who approved this
+   * and which accounts funded it were facts the database held and the screen
+   * could not show. The detail panel is that reader.
+   */
+  history: ExpenseHistoryEntry[];
+}
+
+export interface ExpenseHistoryEntry {
+  /** ISO, or a Firestore timestamp already turned into one. */
+  at: string;
+  action: string;
+  byName: string | null;
+  detail: string | null;
+  amount: number | null;
+}
+
+/**
+ * One history entry, from whatever shape it was written in.
+ *
+ * Three writers have appended to this array over the module's life and they do
+ * not agree: `at` is an ISO string from the ledger and a `Date` from
+ * `officeExpenses`, the name is `byName` or `decidedByName`, and the ledger's
+ * `PAID` rows carry an `amount` nothing else does. Reading them one way here is
+ * what stops the panel rendering "Invalid Date" against the older half.
+ */
+export function readHistoryEntry(raw: unknown): ExpenseHistoryEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const at = row.at;
+  const stamp =
+    typeof at === 'string'
+      ? at
+      : at instanceof Date
+        ? at.toISOString()
+        : typeof (at as { toDate?: () => Date })?.toDate === 'function'
+          ? (at as { toDate: () => Date }).toDate().toISOString()
+          : '';
+
+  return {
+    at: stamp,
+    action: typeof row.action === 'string' ? row.action : 'Recorded',
+    byName:
+      (typeof row.byName === 'string' && row.byName) ||
+      (typeof row.decidedByName === 'string' && row.decidedByName) ||
+      null,
+    detail:
+      (typeof row.detail === 'string' && row.detail) ||
+      (typeof row.note === 'string' && row.note) ||
+      null,
+    amount: typeof row.amount === 'number' ? row.amount : null,
+  };
+}
+
+/** The stored action words, made readable. Anything else is shown as written. */
+export const HISTORY_LABELS: Record<string, string> = {
+  CREATED: 'Recorded',
+  EDITED: 'Edited',
+  PAID: 'Paid',
+  PAYMENT_REMOVED: 'Payment removed',
+  STATUS_APPROVED: 'Approved',
+  STATUS_REJECTED: 'Rejected',
+  STATUS_PENDING: 'Moved back to pending',
+  SUBMITTED: 'Submitted for approval',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  CANCELLED: 'Cancelled',
+};
+
+/** Unpaid is the absence of a payment, so it is what an absent field reads as. */
+export type PaymentStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID';
+
+export function normalizePaymentStatus(raw: unknown): PaymentStatus {
+  return raw === 'PAID' || raw === 'PARTIALLY_PAID' ? raw : 'UNPAID';
+}
+
+/**
+ * What has been paid against an expense, and what is still owed.
+ *
+ * The paid figure is **clamped to the amount**: an expense edited down after it
+ * was paid would otherwise report a negative outstanding, and "Rs -2,000 still
+ * owed" is a sentence nobody can act on. The clamp is display-only — the
+ * stored figure and the transactions behind it are untouched.
+ */
+export function readPaid(expense: Pick<OfficeExpense, 'amount' | 'paidAmount'>): {
+  paid: number;
+  outstanding: number;
+  settled: boolean;
+} {
+  const paid = Math.max(0, Math.min(round2(expense.paidAmount), round2(expense.amount)));
+  const outstanding = round2(expense.amount - paid);
+  return { paid, outstanding, settled: outstanding <= 0 && expense.amount > 0 };
+}
+
+function round2(n: number): number {
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
 /** An absent status means the record predates approvals — see the note above. */

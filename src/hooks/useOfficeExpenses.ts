@@ -5,6 +5,8 @@ import { describeFirestoreError } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import {
   normalizeExpenseStatus,
+  normalizePaymentStatus,
+  readHistoryEntry,
   type OfficeExpense,
 } from '@/lib/officeExpenses';
 
@@ -95,6 +97,18 @@ function mapExpense(id: string, raw: Record<string, unknown>): OfficeExpense {
     decidedByUid: (raw.decidedByUid as string) ?? null,
     decidedByName: (raw.decidedByName as string) ?? null,
     decisionNote: (raw.decisionNote as string) ?? null,
+    // **These two were typed and never read**, which is this project's most
+    // repeated bug and was the whole of "paying it does not cut the amount":
+    // `payFromAccounts` wrote both correctly every time, and the screen was
+    // handed a hard 0. So the button never left "Pay from…", the split panel
+    // offered the full amount again after a part payment, and the only thing
+    // that stopped a second full payment was the server's own guard — which
+    // reads the stored figure, and refused. Check the mapper, not just the type.
+    paidAmount: typeof raw.paidAmount === 'number' ? raw.paidAmount : 0,
+    paymentStatus: normalizePaymentStatus(raw.paymentStatus),
+    history: Array.isArray(raw.history)
+      ? raw.history.map(readHistoryEntry).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [],
   };
 }
 

@@ -1,212 +1,544 @@
 "use client";
 
 /**
- * Personal expenses — an employee spends their own money, the company pays it
- * back.
+ * Personal Expenses — what I spent, and which account paid it back.
  *
- * The workflow is the standard reimbursement one, not an invention: **submit →
- * approve → reimburse**, with two separations that do all the work.
+ * It used to be a reimbursement workflow: file a *claim*, pick a *claimant* off
+ * the roster, have a manager approve or reject it, then reimburse. The owner
+ * removed all of that — *"whats claim and claimant, make the wording simple,
+ * remove employees and manager, it should be personal expense only"* — and the
+ * screen is better for it. One person, one list, three states that are not
+ * states anybody sets: **Unpaid · Part paid · Paid**, derived from how much an
+ * account has paid back.
  *
- * - **Approval is not payment.** An approved claim is money owed. It becomes
- *   money moved when somebody says which accounts fund it — the same split
- *   control every other module uses.
- * - **The approver is never the claimant.** Self-approval is the failure this
- *   kind of module exists to prevent, and it is refused on the server, not
- *   merely hidden here.
+ * Nothing here says "claim", "claimant", "submit", "approve" or "reimburse".
+ * The words on screen are the words somebody would use out loud.
  *
- * Employees see only their own claims. That is a Security Rule, matched by the
+ * **This is the Office Expenses screen** — the same hero, stat cards, filter
+ * grid, rows, phone cards and detail panel, from
+ * `components/finance/expensesChrome`. Two implementations of one screen drift;
+ * this way the two cannot. What differs is the data behind it.
+ *
+ * Employees see only their own. That is a Security Rule, matched by the
  * `where('employeeUid','==',uid)` in `useMyPersonalExpenses` — an unscoped read
  * is refused outright rather than filtered.
  */
 
-import { useMemo, useState } from "react";
-import { Plus, Check, X, Wallet2, Wallet } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { Wallet2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { usePersonalExpenses, useMyPersonalExpenses, useLedger } from "@/hooks/useLedger";
-import { useEmployees } from "@/hooks/useEmployees";
-import { EmptyState, A, CARD, Button, SummaryCard, StatusPill, Skeleton } from "./accountsChrome";
+import { useMyPersonalExpenses, useLedger } from "@/hooks/useLedger";
 import { useIsMobile } from "@/hooks/useIsMobile";
-
-/** The section tokens; `E` was the old alias. */
-const E = A;
+import { usePagination } from "@/hooks/usePagination";
+import { Pager } from "@/components/employees/DossierControls";
 import { PayFromAccounts } from "./PayFromAccounts";
 import { formatMoney } from "@/lib/money";
-import { karachiDayKey } from "@/lib/dates";
-import { savePersonalExpense, decidePersonalExpense } from "@/lib/clientActions";
+import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
+import {
+  savePersonalExpense,
+  deletePersonalExpense,
+  countPersonalExpensePayments,
+} from "@/lib/clientActions";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
+import { readHistoryEntry, readPaid, HISTORY_LABELS } from "@/lib/officeExpenses";
+import {
+  PERSONAL_EXPENSE_CATEGORIES,
+  PAYMENT_STATES,
+  PAYMENT_STATE_LABELS,
+  paymentState,
+  type PaymentState,
+} from "@/lib/personalExpenses";
+import {
+  ChipRow,
+  DetailAction,
+  ExpenseDetail,
+  ExpenseHero,
+  ExpenseList,
+  FilterPanel,
+  FloatingAdd,
+  HeroButton,
+  HeroTile,
+  ICON,
+  MobileSearch,
+  PeriodPill,
+  StatCards,
+  TONE,
+  X,
+  designField,
+  designLabel,
+  type ExpenseRowModel,
+  type FundingLeg,
+  type RowAction,
+  type StatCard,
+  type Tone,
+} from "@/components/finance/expensesChrome";
+import { stamp } from "@/components/finance/OfficeExpensesView";
 
-const FIELD: React.CSSProperties = {
-  width: "100%", borderRadius: 9, border: `1px solid ${E.border}`, background: E.surface,
-  padding: "8px 10px", fontSize: 13, color: E.ink, outline: "none", fontFamily: "inherit",
-};
+/** The first of the current month — the period this question usually means. */
+function monthStart(): string {
+  return `${karachiMonthKey()}-01`;
+}
 
-const CATEGORIES = ["Travel", "Fuel", "Meals", "Client entertainment", "Supplies", "Phone", "Other"];
+/**
+ * One stored expense.
+ *
+ * Read defensively at every field: this collection predates the ledger, so an
+ * older record has no `paidAmount` — and absent means *nothing paid back*, not
+ * *broken*. The five stored statuses the module used to write are deliberately
+ * **not read**: the state is derived from the money, so the two existing
+ * records carrying `SUBMITTED` classify correctly with no migration.
+ */
+interface Expense {
+  id: string;
+  title: string;
+  category: string;
+  amount: number;
+  dayKey: string;
+  vendor: string | null;
+  purpose: string | null;
+  paidAmount: number;
+  history: Array<{ at: string; action: string; byName: string | null; detail: string | null; amount: number | null }>;
+}
 
-interface Row {
-  id: string; title?: string; category?: string; amount?: number; dayKey?: string;
-  vendor?: string; purpose?: string; employeeUid?: string; employeeName?: string;
-  status?: string; paidAmount?: number; decisionNote?: string; decidedByName?: string;
+function readExpense(raw: Record<string, unknown>): Expense {
+  return {
+    id: String(raw.id ?? ""),
+    title: typeof raw.title === "string" && raw.title ? raw.title : "Untitled",
+    category: typeof raw.category === "string" && raw.category ? raw.category : "Other",
+    amount: typeof raw.amount === "number" ? raw.amount : 0,
+    dayKey: typeof raw.dayKey === "string" && raw.dayKey.length === 10 ? raw.dayKey : karachiDayKey(),
+    vendor: typeof raw.vendor === "string" ? raw.vendor : null,
+    purpose: typeof raw.purpose === "string" ? raw.purpose : null,
+    paidAmount: typeof raw.paidAmount === "number" ? raw.paidAmount : 0,
+    history: Array.isArray(raw.history)
+      ? raw.history.map(readHistoryEntry).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [],
+  };
+}
+
+function stateTone(state: PaymentState): Tone {
+  return state === "PAID" ? TONE.good : state === "PART_PAID" ? TONE.warn : TONE.quiet;
 }
 
 export function PersonalExpensesView() {
   const { user, role, getIdToken } = useAuth();
-  const isFinance = role === "admin" || role === "subadmin";
-  const all = usePersonalExpenses(isFinance);
-  const mine = useMyPersonalExpenses(user?.uid, !isFinance);
-  const ledger = useLedger(isFinance);
-  const [adding, setAdding] = useState(false);
-  const [paying, setPaying] = useState<Row | null>(null);
-  const [banner, setBanner] = useState<string | null>(null);
+  /*
+    **Everyone sees their own, and only their own.** There is no "everybody's
+    claims" list any more — that was the manager's view of other people's
+    money, which is exactly what came out.
+  */
+  const { records, loading } = useMyPersonalExpenses(user?.uid, Boolean(user?.uid));
+
+  /*
+    Paying one back moves money out of a company account, so it needs somebody
+    who may read the accounts at all. Not a workflow — a permission. Where it
+    is absent the row simply has no Pay button rather than one that errors.
+  */
+  const canPay = role === "admin" || role === "subadmin";
+  const ledger = useLedger(canPay);
   const isMobile = useIsMobile();
 
-  const rows = (isFinance ? all.records : mine.records) as unknown as Row[];
-  const totals = useMemo(() => rows.reduce((t, r) => ({
-    claimed: t.claimed + (r.amount ?? 0),
-    approved: t.approved + (r.status === "APPROVED" ? (r.amount ?? 0) : 0),
-    paid: t.paid + (r.paidAmount ?? 0),
-  }), { claimed: 0, approved: 0, paid: 0 }), [rows]);
+  const [from, setFrom] = useState(monthStart());
+  const [to, setTo] = useState(karachiDayKey());
+  const [search, setSearch] = useState("");
+  const [state, setState] = useState<PaymentState | "ALL">("ALL");
+  const [category, setCategory] = useState("ALL");
+  const [showPeriod, setShowPeriod] = useState(false);
+  const [editing, setEditing] = useState<Expense | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [paying, setPaying] = useState<Expense | null>(null);
+  const [deleting, setDeleting] = useState<{ expense: Expense; payments: number; total: number } | null>(null);
+  const [opened, setOpened] = useState<string | null>(null);
+  const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const decide = async (row: Row, decision: "APPROVED" | "REJECTED") => {
-    const res = await decidePersonalExpense(await getIdToken(), row.id, decision);
-    setBanner(res.ok ? `${row.title ?? "Claim"} ${decision.toLowerCase()}.` : res.error);
+  const expenses = useMemo(
+    () => (records as Record<string, unknown>[]).map(readExpense),
+    [records]
+  );
+
+  /** The range first — every figure on the screen belongs to the same period. */
+  const inRange = useMemo(
+    () => expenses.filter((expense) => expense.dayKey >= from && expense.dayKey <= to),
+    [expenses, from, to]
+  );
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return inRange.filter((expense) => {
+      if (state !== "ALL" && paymentState(expense) !== state) return false;
+      if (category !== "ALL" && expense.category !== category) return false;
+      if (!needle) return true;
+      return (
+        expense.title.toLowerCase().includes(needle) ||
+        (expense.vendor ?? "").toLowerCase().includes(needle) ||
+        (expense.purpose ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [inRange, search, state, category]);
+
+  /*
+    The headline figures describe the **range**, not the filter — a total that
+    fell when somebody clicked "Unpaid" would read as having spent less, which
+    is the opposite of what happened.
+  */
+  const summary = useMemo(() => {
+    const sum = { spent: 0, count: 0, paid: 0, unpaid: 0, unpaidCount: 0, month: 0 };
+    const monthKey = karachiMonthKey();
+    for (const expense of inRange) {
+      const { paid, outstanding } = readPaid(expense);
+      sum.spent += expense.amount;
+      sum.count += 1;
+      sum.paid += paid;
+      sum.unpaid += outstanding;
+      if (outstanding > 0) sum.unpaidCount += 1;
+      if (expense.dayKey.startsWith(monthKey)) sum.month += expense.amount;
+    }
+    return sum;
+  }, [inRange]);
+
+  const listedTotal = useMemo(
+    () => filtered.reduce((total, expense) => total + expense.amount, 0),
+    [filtered]
+  );
+
+  const page = usePagination(filtered, 12);
+
+  const statCards = useMemo<StatCard[]>(() => {
+    const pct = (n: number) => (summary.spent ? Math.round((n / summary.spent) * 100) : 0);
+    return [
+      { label: "Total Spent", value: formatMoney(summary.spent), note: "every record in range", pill: `${summary.count} recs`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.receipt },
+      { label: "This Month", value: formatMoney(summary.month), note: "your own spending", pill: null, pct: pct(summary.month), color: "#141f1e", accent: "#4fa39c", icon: ICON.calendar },
+      // **The figure this screen exists for**: money still out of pocket.
+      { label: "Not Paid Back", value: formatMoney(summary.unpaid), note: summary.unpaid > 0 ? `${summary.unpaidCount} still owed to you` : "everything is paid back", pill: summary.unpaid > 0 ? "Owed" : "Clear", tone: summary.unpaid > 0 ? "warn" : "good", pct: pct(summary.unpaid), color: summary.unpaid > 0 ? "#a5762a" : "#2f7d78", accent: "#c99a2e", icon: ICON.clock },
+      { label: "Paid Back", value: formatMoney(summary.paid), note: `${pct(summary.paid)}% of what you spent`, pill: `${pct(summary.paid)}%`, tone: "good", pct: pct(summary.paid), color: "#2f7d78", accent: "#2f7d78", icon: ICON.check },
+    ];
+  }, [summary]);
+
+  /** The payments made against each expense, by the expense they paid. */
+  const legsByExpense = useMemo(() => {
+    const map = new Map<string, FundingLeg[]>();
+    const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
+    for (const txn of ledger.transactions) {
+      if (txn.sourceModule !== "PERSONAL_EXPENSE" || !txn.sourceId) continue;
+      const list = map.get(txn.sourceId) ?? [];
+      list.push({
+        id: txn.id,
+        accountName: names.get(txn.accountId) ?? "A deleted account",
+        amount: txn.amount,
+        dayKey: txn.dayKey,
+        note: txn.note ?? null,
+        by: txn.createdByName ?? null,
+      });
+      map.set(txn.sourceId, list);
+    }
+    return map;
+  }, [ledger.transactions, ledger.accounts]);
+
+  /*
+    **Deleting asks first, and the question names the cost.** Money may have
+    been paid back against this out of a real account; those movements go with
+    it and the balance is restored, so the confirmation has to say so before
+    the button is pressed rather than report it afterwards.
+  */
+  const askDelete = useCallback(async (expense: Expense) => {
+    setBusyId(expense.id);
+    const result = await countPersonalExpensePayments(await getIdToken(), expense.id);
+    setBusyId(null);
+    setDeleting({
+      expense,
+      payments: result.ok ? result.data.payments : 0,
+      total: result.ok ? result.data.total : 0,
+    });
+  }, [getIdToken]);
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    setBusyId(deleting.expense.id);
+    const result = await deletePersonalExpense(await getIdToken(), deleting.expense.id);
+    setBusyId(null);
+    setDeleting(null);
+    setOpened(null);
+    setBanner(
+      result.ok
+        ? {
+            ok: true,
+            text: result.data.removedPayments > 0
+              ? `"${deleting.expense.title}" deleted, and ${formatMoney(result.data.restored)} put back into ${result.data.removedPayments} account${result.data.removedPayments === 1 ? "" : "s"}.`
+              : `"${deleting.expense.title}" deleted.`,
+          }
+        : { ok: false, text: result.error }
+    );
+  };
+
+  const buildActions = useCallback((expense: Expense, compact: boolean): RowAction[] => {
+    const { paid, settled } = readPaid(expense);
+    const actions: RowAction[] = [];
+
+    if (canPay && !settled) {
+      actions.push({
+        key: "pay",
+        label: paid > 0 ? (compact ? "Pay rest" : "Pay balance") : compact ? "Pay" : "Pay from…",
+        shortLabel: paid > 0 ? "Pay rest" : "Pay",
+        d: ICON.wallet, tone: "good", onClick: () => setPaying(expense),
+      });
+    }
+    actions.push({ key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setEditing(expense) });
+    actions.push({ key: "delete", label: "Delete", d: ICON.trash, tone: "bad", onClick: () => void askDelete(expense), disabled: busyId === expense.id });
+    return actions;
+  }, [canPay, busyId, askDelete]);
+
+  const rowModels = useMemo<ExpenseRowModel[]>(
+    () =>
+      page.items.map((expense) => {
+        const { paid, outstanding, settled } = readPaid(expense);
+        const state_ = paymentState(expense);
+        return {
+          id: expense.id,
+          title: expense.title,
+          meta: [expense.dayKey, expense.category]
+            .concat(expense.vendor ? [expense.vendor] : [])
+            .join(" · "),
+          amount: expense.amount,
+          category: expense.category,
+          /*
+            **One pill, not two.** Office Expenses needs a status *and* a
+            payment state because approving and paying are different facts. Here
+            they are the same fact, so a second pill would be the same word
+            twice.
+          */
+          status: {
+            label: paid > 0 && !settled ? `${formatMoney(outstanding)} left` : PAYMENT_STATE_LABELS[state_],
+            tone: stateTone(state_),
+          },
+          payment: null,
+          notes: expense.purpose ? (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{expense.purpose}</span>
+            </div>
+          ) : null,
+          actions: buildActions(expense, isMobile),
+          onOpen: () => setOpened(expense.id),
+        };
+      }),
+    [page.items, buildActions, isMobile]
+  );
+
+  const openedExpense = useMemo(
+    () => (opened ? expenses.find((expense) => expense.id === opened) ?? null : null),
+    [opened, expenses]
+  );
+
+  const download = () => {
+    const header = ["Date", "What for", "Category", "Paid to", "Amount", "Paid back", "Left", "Note"];
+    const rows = filtered.map((expense) => {
+      const { paid, outstanding } = readPaid(expense);
+      return [
+        expense.dayKey, expense.title, expense.category, expense.vendor ?? "",
+        String(expense.amount), String(paid), String(outstanding), expense.purpose ?? "",
+      ];
+    });
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `personal-expenses-${from}-to-${to}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <div style={{ fontFamily: "var(--font-directory), system-ui, sans-serif" }}>
-      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontFamily: "inherit", fontSize: 22, fontWeight: 700, color: E.ink }}>Personal Expenses</h1>
-          <p style={{ fontSize: 12.5, color: E.faint }}>
-            {isFinance ? "Claims to approve and reimburse." : "Your own claims. Approval and reimbursement are separate steps."}
-          </p>
-        </div>
-        <Button primary icon={<Plus size={14} />} full={isMobile} onClick={() => setAdding(true)}>New claim</Button>
-      </header>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: "var(--font-directory), system-ui, sans-serif" }}>
+      <ExpenseHero
+        eyebrow="Personal Expenses"
+        figure={formatMoney(summary.unpaid)}
+        caption={`not paid back yet · ${summary.count} record${summary.count === 1 ? "" : "s"} in range`}
+        isMobile={isMobile}
+        tileIcon={ICON.receipt}
+        stats={[
+          { label: "SPENT", value: summary.spent },
+          { label: "PAID BACK", value: summary.paid },
+          { label: "LEFT", value: summary.unpaid },
+        ]}
+        mobileAction={<HeroTile onClick={() => setAdding(true)} label="Add expense" d="M12 5v14M5 12h14" />}
+        actions={
+          <HeroButton onClick={() => setAdding(true)} solid
+            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>}>
+            Add expense
+          </HeroButton>
+        }
+      >
+        {isMobile && (
+          <PeriodPill from={from} to={to} maxTo={karachiDayKey()} open={showPeriod}
+            onToggle={() => setShowPeriod((open) => !open)} onFrom={setFrom} onTo={setTo} />
+        )}
+      </ExpenseHero>
 
-      {banner && <p role="status" style={{ marginBottom: 12, borderRadius: 10, background: E.tealTint, padding: "10px 13px", fontSize: 12.5, fontWeight: 600, color: E.deep }}>{banner}</p>}
-
-      <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill,minmax(180px,1fr))", marginBottom: 14 }}>
-        <SummaryCard label="Claimed" value={totals.claimed} icon={<Wallet2 size={14} />} mobile={isMobile} />
-        <SummaryCard label="Approved" value={totals.approved} icon={<Check size={14} />} tone={A.pending} mobile={isMobile} />
-        <SummaryCard label="Reimbursed" value={totals.paid} icon={<Wallet size={14} />} tone={A.positive} mobile={isMobile} />
-      </div>
-
-      {(isFinance ? all.loading : mine.loading) ? (
-        <div style={{ display: "grid", gap: 8 }}><Skeleton height={64} count={4} /></div>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          icon={<Wallet2 size={22} />}
-          title="No expense claims yet"
-          body={isFinance
-            ? "Claims your team submits appear here for approval, then reimbursement."
-            : "Spent your own money on something for work? File it here and it goes for approval."}
-          action={<Button primary icon={<Plus size={14} />} onClick={() => setAdding(true)}>New claim</Button>}
-          mobile={isMobile}
-        />
-      ) : (
-        isMobile ? (
-        <div style={{ display: "grid", gap: 8 }}>
-          {rows.map((row) => {
-            const paid = row.paidAmount ?? 0;
-            const isMine = row.employeeUid === user?.uid;
-            const shown = paid > 0 && paid >= (row.amount ?? 0) ? "REIMBURSED" : row.status ?? "DRAFT";
-            return (
-              <div key={row.id} className="acc-in" style={{ ...CARD, padding: "13px 14px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <p style={{ fontSize: 14, fontWeight: 700, color: A.ink }}>{row.title ?? "—"}</p>
-                    <p style={{ fontSize: 11.5, color: A.faint, marginTop: 2 }}>
-                      {row.employeeName ?? "—"} · {row.category ?? "—"} · {row.dayKey ?? "—"}
-                    </p>
-                  </div>
-                  <p style={{ fontSize: 15, fontWeight: 800, color: A.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                    {formatMoney(row.amount ?? 0)}
-                  </p>
-                </div>
-                {row.purpose && <p style={{ fontSize: 12, color: A.body, marginTop: 6 }}>{row.purpose}</p>}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                  <StatusPill status={shown} />
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {isFinance && row.status === "SUBMITTED" && !isMine && (
-                      <Button onClick={() => void decide(row, "APPROVED")}>Approve</Button>
-                    )}
-                    {isFinance && row.status === "SUBMITTED" && (
-                      <Button onClick={() => void decide(row, "REJECTED")}>Reject</Button>
-                    )}
-                    {isFinance && row.status === "APPROVED" && paid < (row.amount ?? 0) && (
-                      <Button primary onClick={() => setPaying(row)}>Reimburse</Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        ) : (
-        <div style={{ ...CARD, overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 820 }}>
-            <thead>
-              <tr style={{ background: E.tint }}>
-                {["Date", "Employee", "What for", "Category", "Amount", "Status", ""].map((h, i) => (
-                  <th key={i} style={{ padding: "9px 10px", textAlign: i === 4 ? "right" : "left", fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: E.faint, whiteSpace: "nowrap" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const paid = row.paidAmount ?? 0;
-                const isMine = row.employeeUid === user?.uid;
-                return (
-                  <tr key={row.id} style={{ borderTop: `1px solid ${E.rowBorder}` }}>
-                    <td style={cell}>{row.dayKey ?? "—"}</td>
-                    <td style={{ ...cell, fontWeight: 700, color: E.ink }}>{row.employeeName ?? "—"}</td>
-                    <td style={{ ...cell, whiteSpace: "normal", maxWidth: 240 }}>
-                      {row.title ?? "—"}
-                      {row.purpose && <span style={{ display: "block", fontSize: 11, color: E.faint }}>{row.purpose}</span>}
-                    </td>
-                    <td style={cell}>{row.category ?? "—"}</td>
-                    <td style={{ ...num, fontWeight: 700 }}>{formatMoney(row.amount ?? 0)}</td>
-                    <td style={cell}>
-                      <StatusPill status={paid > 0 && paid >= (row.amount ?? 0) ? "REIMBURSED" : row.status ?? "DRAFT"} />
-                    </td>
-                    <td style={{ ...cell, textAlign: "right" }}>
-                      {isFinance && row.status === "SUBMITTED" && (
-                        <>
-                          {/* Absent on your own claim: the server refuses
-                              self-approval, so offering the button would be
-                              offering a choice that can only fail. */}
-                          {!isMine && (
-                            <button type="button" onClick={() => void decide(row, "APPROVED")} style={{ ...pill, color: "#1f7a52", borderColor: "#bfe3d2" }}>
-                              <Check size={11} /> Approve
-                            </button>
-                          )}
-                          <button type="button" onClick={() => void decide(row, "REJECTED")} style={{ ...pill, color: "#a33a29", borderColor: "#f0c4bd" }}>
-                            <X size={11} /> Reject
-                          </button>
-                        </>
-                      )}
-                      {isFinance && row.status === "APPROVED" && paid < (row.amount ?? 0) && (
-                        <button type="button" onClick={() => setPaying(row)} style={{ ...pill, color: E.tealInk, borderColor: "#bfe0dc" }}>
-                          <Wallet2 size={11} /> Reimburse
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        )
+      {banner && (
+        <p role="status" style={{ borderRadius: 12, background: banner.ok ? "#e8f5f3" : "#fdeeec", border: `1px solid ${banner.ok ? "#bfe0dc" : "#f0c4bd"}`, padding: "11px 14px", fontSize: 12.5, fontWeight: 600, color: banner.ok ? X.deep : "#a33a29" }}>
+          {banner.text}
+        </p>
       )}
 
-      {adding && <NewClaim onClose={() => setAdding(false)} getIdToken={getIdToken} isFinance={isFinance} onSaved={(m) => { setBanner(m); setAdding(false); }} />}
+      <StatCards isMobile={isMobile} cards={statCards} />
 
+      {isMobile ? (
+        <>
+          <MobileSearch value={search} onChange={setSearch} placeholder="What it was for, or who you paid" />
+          <ChipRow
+            chips={[
+              { label: "All", active: state === "ALL" && category === "ALL", pick: () => { setState("ALL"); setCategory("ALL"); } },
+              ...PAYMENT_STATES.map((value) => ({
+                label: PAYMENT_STATE_LABELS[value],
+                active: state === value,
+                pick: () => { setState(value); setCategory("ALL"); },
+              })),
+              ...PERSONAL_EXPENSE_CATEGORIES.map((value) => ({
+                label: value,
+                active: category === value,
+                pick: () => { setCategory(value); setState("ALL"); },
+              })),
+            ]}
+          />
+        </>
+      ) : (
+        <FilterPanel
+          from={from} to={to} maxTo={karachiDayKey()} onFrom={setFrom} onTo={setTo}
+          search={search} onSearch={setSearch}
+          onDownload={download} canDownload={filtered.length > 0}
+          selects={[
+            {
+              label: "Paid back", width: "148px", value: state,
+              onChange: (next) => setState(next as PaymentState | "ALL"),
+              options: [{ value: "ALL", label: "All" }, ...PAYMENT_STATES.map((v) => ({ value: v, label: PAYMENT_STATE_LABELS[v] }))],
+            },
+            {
+              label: "Category", width: "168px", value: category, onChange: setCategory,
+              options: [{ value: "ALL", label: "All" }, ...PERSONAL_EXPENSE_CATEGORIES.map((v) => ({ value: v, label: v }))],
+            },
+          ]}
+        />
+      )}
+
+      <ExpenseList
+        heading="Your Expenses"
+        count={`${filtered.length} of ${inRange.length}${isMobile ? "" : " in this period"}`}
+        total={listedTotal}
+        rows={rowModels}
+        isMobile={isMobile}
+        loading={loading}
+        empty={
+          inRange.length === 0
+            ? "Nothing in this period. Spent your own money on something for work? Add it here."
+            : "Nothing matches these filters."
+        }
+        formatMoney={formatMoney}
+        pager={<Pager pagination={page} variant={isMobile ? "mobile" : "web"} noun="expenses" />}
+      />
+
+      {isMobile && <FloatingAdd onClick={() => setAdding(true)} label="Add expense" />}
+
+      {openedExpense && (
+        <OverlayPanel
+          title={openedExpense.title}
+          subtitle={`${openedExpense.category} · ${openedExpense.dayKey}`}
+          maxWidth={620}
+          onClose={() => setOpened(null)}
+        >
+          <ExpenseDetail
+            title={openedExpense.title}
+            amountLabel={formatMoney(openedExpense.amount)}
+            formatMoney={formatMoney}
+            status={{ label: PAYMENT_STATE_LABELS[paymentState(openedExpense)], tone: stateTone(paymentState(openedExpense)) }}
+            payment={(() => {
+              const { paid, outstanding, settled } = readPaid(openedExpense);
+              if (paid <= 0) return null;
+              return { paid, outstanding, label: settled ? "Paid back" : `${formatMoney(outstanding)} left`, tone: settled ? TONE.good : TONE.warn };
+            })()}
+            fields={[
+              { label: "Date", value: openedExpense.dayKey },
+              { label: "Category", value: openedExpense.category },
+              { label: "Amount", value: formatMoney(openedExpense.amount) },
+              { label: "Paid to", value: openedExpense.vendor ?? "—" },
+              { label: "Note", value: openedExpense.purpose ?? "—", wide: true },
+            ]}
+            legs={legsByExpense.get(openedExpense.id) ?? []}
+            notFunded={
+              canPay
+                ? "Nothing has been paid back yet. Choose which account pays it."
+                : "Nothing has been paid back yet."
+            }
+            history={openedExpense.history.map((entry) => ({
+              at: stamp(entry.at),
+              action: HISTORY_LABELS[entry.action] ?? entry.action,
+              by: entry.byName,
+              detail: entry.detail,
+              amount: entry.amount,
+            }))}
+            actions={buildActions(openedExpense, false).map((action) => (
+              <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
+                disabled={action.disabled}
+                onClick={() => {
+                  if (action.key === "pay" || action.key === "edit") setOpened(null);
+                  action.onClick();
+                }} />
+            ))}
+          />
+        </OverlayPanel>
+      )}
+
+      {deleting && (
+        <OverlayPanel title="Delete this expense?" maxWidth={440} onClose={() => setDeleting(null)}
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button type="button" onClick={() => setDeleting(null)}
+                style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                Keep it
+              </button>
+              <button type="button" disabled={busyId === deleting.expense.id} onClick={() => void confirmDelete()}
+                style={{ borderRadius: 10, border: "none", background: "#a8483c", color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busyId === deleting.expense.id ? 0.5 : 1 }}>
+                {busyId === deleting.expense.id ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          }>
+          <p style={{ fontSize: 13.5, color: X.body, lineHeight: 1.6 }}>
+            <strong style={{ color: X.ink }}>{deleting.expense.title}</strong> · {formatMoney(deleting.expense.amount)} · {deleting.expense.dayKey}
+          </p>
+          {deleting.payments > 0 ? (
+            <p style={{ marginTop: 10, borderRadius: 10, background: "#fdf5e6", border: "1px solid #ecdcae", padding: "11px 13px", fontSize: 12.5, fontWeight: 600, color: "#8a6321", lineHeight: 1.6 }}>
+              {formatMoney(deleting.total)} has been paid back for this from {deleting.payments} account
+              {deleting.payments === 1 ? "" : "s"}. Deleting it removes {deleting.payments === 1 ? "that movement" : "those movements"} too
+              and puts the money back — otherwise the account would show cash gone for a record that no longer exists.
+            </p>
+          ) : (
+            <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
+              Nothing has been paid back for this, so nothing else changes. This cannot be undone.
+            </p>
+          )}
+        </OverlayPanel>
+      )}
+
+      {(adding || editing) && (
+        <ExpenseForm
+          expense={editing}
+          onClose={() => { setAdding(false); setEditing(null); }}
+          getIdToken={getIdToken}
+          onSaved={(text) => { setBanner({ ok: true, text }); setAdding(false); setEditing(null); }}
+        />
+      )}
+
+      {/*
+        **The same split control Office Expenses uses**, pointed at a different
+        collection. An expense paid back out of three accounts is one expense
+        and three transactions; the expense stays what was spent.
+      */}
       {paying && (
         <PayFromAccounts
           open
           onClose={() => setPaying(null)}
-          onPaid={(text) => setBanner(text)}
+          onPaid={(text) => setBanner({ ok: true, text })}
           accounts={ledger.accounts}
           balances={ledger.balances}
           getIdToken={getIdToken}
@@ -214,9 +546,9 @@ export function PersonalExpensesView() {
             module: "PERSONAL_EXPENSE",
             collection: "personalExpenses",
             id: paying.id,
-            label: `Reimbursement — ${paying.employeeName ?? "employee"} · ${paying.title ?? ""}`,
-            amount: paying.amount ?? 0,
-            alreadyPaid: paying.paidAmount ?? 0,
+            label: `Personal expense — ${paying.title}`,
+            amount: paying.amount,
+            alreadyPaid: readPaid(paying).paid,
             direction: "OUT",
             type: "REIMBURSEMENT",
           }}
@@ -226,88 +558,97 @@ export function PersonalExpensesView() {
   );
 }
 
-const cell: React.CSSProperties = { padding: "8px 10px", color: E.body, whiteSpace: "nowrap" };
-const num: React.CSSProperties = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
-const pill: React.CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 5,
-  border: `1px solid ${E.border}`, background: E.surface, borderRadius: 999,
-  padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer",
-};
+/* -------------------------------------------------------------------------- */
+/* The form                                                                    */
+/* -------------------------------------------------------------------------- */
 
-function NewClaim({ onClose, getIdToken, onSaved, isFinance }: {
-  onClose: () => void; getIdToken: () => Promise<string>; onSaved: (m: string) => void; isFinance: boolean;
+/** New and Edit as one component, so the two cannot ask for different fields. */
+function ExpenseForm({ expense, onClose, getIdToken, onSaved }: {
+  expense: Expense | null;
+  onClose: () => void;
+  getIdToken: () => Promise<string>;
+  onSaved: (message: string) => void;
 }) {
-  const { employees } = useEmployees(isFinance);
+  const isMobile = useIsMobile();
   const [form, setForm] = useState({
-    title: "", category: CATEGORIES[0], amount: "", dayKey: karachiDayKey(),
-    vendor: "", purpose: "", employeeUid: "",
+    title: expense?.title ?? "",
+    category: expense?.category ?? (PERSONAL_EXPENSE_CATEGORIES[0] as string),
+    amount: expense ? String(expense.amount) : "",
+    dayKey: expense?.dayKey ?? karachiDayKey(),
+    vendor: expense?.vendor ?? "",
+    purpose: expense?.purpose ?? "",
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (key: keyof typeof form, value: string) => setForm((f) => ({ ...f, [key]: value }));
 
-  const save = async (submit: boolean) => {
+  // 16px on the phone, or iOS Safari zooms the page on focus.
+  const field = { ...designField, fontSize: isMobile ? 16 : 13.5 };
+
+  const save = async () => {
     setBusy(true);
-    const res = await savePersonalExpense(await getIdToken(), {
-      title: form.title, category: form.category, amount: Number(form.amount) || 0,
-      dayKey: form.dayKey, vendor: form.vendor, purpose: form.purpose,
-      employeeUid: form.employeeUid || null, submit,
-    });
+    setError(null);
+    const result = await savePersonalExpense(
+      await getIdToken(),
+      {
+        title: form.title, category: form.category, amount: Number(form.amount) || 0,
+        dayKey: form.dayKey, vendor: form.vendor, purpose: form.purpose,
+      },
+      expense?.id
+    );
     setBusy(false);
-    if (res.ok) onSaved(submit ? "Claim submitted for approval." : "Draft saved."); else setError(res.error);
+    if (result.ok) onSaved(expense ? "Expense updated." : "Expense added.");
+    else setError(result.error);
   };
 
   return (
-    <OverlayPanel title="New expense claim" icon={<Wallet2 size={18} />} maxWidth={560} onClose={onClose}
+    <OverlayPanel title={expense ? "Edit expense" : "Add expense"} icon={<Wallet2 size={18} />} maxWidth={560} onClose={onClose}
       footer={
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
-          <button type="button" disabled={busy} onClick={() => void save(false)}
-            style={{ borderRadius: 10, border: `1px solid ${E.border}`, background: E.surface, color: E.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-            Save draft
+          <button type="button" onClick={onClose}
+            style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            Cancel
           </button>
-          <button type="button" disabled={busy || !form.title.trim() || !(Number(form.amount) > 0)} onClick={() => void save(true)}
-            style={{ borderRadius: 10, border: "none", background: E.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", opacity: busy ? 0.5 : 1 }}>
-            {busy ? "Saving…" : "Submit for approval"}
+          <button type="button" disabled={busy || !form.title.trim() || !(Number(form.amount) > 0)} onClick={() => void save()}
+            style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy ? 0.5 : 1 }}>
+            {busy ? "Saving…" : expense ? "Save changes" : "Add expense"}
           </button>
         </div>
       }>
-      <OverlayCard title="The claim">
-        <div style={{ display: "grid", gap: 9, gridTemplateColumns: "1fr 1fr" }}>
-          <div style={{ gridColumn: "1 / -1" }}>
-            <L label="What was it for"><input value={form.title} onChange={(e) => set("title", e.target.value)} style={FIELD} /></L>
-          </div>
-          <L label="Date"><input type="date" value={form.dayKey} max={karachiDayKey()} onChange={(e) => set("dayKey", e.target.value)} style={FIELD} /></L>
-          <L label="Amount"><input type="number" value={form.amount} onChange={(e) => set("amount", e.target.value)} style={FIELD} /></L>
+      <OverlayCard title="The expense">
+        <div style={{ display: "grid", gap: 11, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", padding: "14px 16px" }}>
+          <L label="What was it for" wide>
+            <input value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="Petrol, client lunch, phone bill…" style={field} />
+          </L>
+          <L label="Date">
+            <input type="date" value={form.dayKey} max={karachiDayKey()} onChange={(e) => set("dayKey", e.target.value)} style={field} />
+          </L>
+          <L label="Amount">
+            <input type="number" inputMode="decimal" value={form.amount} onChange={(e) => set("amount", e.target.value)} style={field} />
+          </L>
           <L label="Category">
-            <select value={form.category} onChange={(e) => set("category", e.target.value)} style={{ ...FIELD, cursor: "pointer" }}>
-              {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            <select value={form.category} onChange={(e) => set("category", e.target.value)} style={{ ...field, cursor: "pointer" }}>
+              {PERSONAL_EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </L>
-          <L label="Vendor"><input value={form.vendor} onChange={(e) => set("vendor", e.target.value)} style={FIELD} /></L>
-          {isFinance && (
-            <div style={{ gridColumn: "1 / -1" }}>
-              <L label="Claimant — leave blank to file your own">
-                <select value={form.employeeUid} onChange={(e) => set("employeeUid", e.target.value)} style={{ ...FIELD, cursor: "pointer" }}>
-                  <option value="">Myself</option>
-                  {employees.map((e) => <option key={e.uid} value={e.uid}>{e.name}</option>)}
-                </select>
-              </L>
-            </div>
-          )}
-          <div style={{ gridColumn: "1 / -1" }}>
-            <L label="Business purpose"><input value={form.purpose} onChange={(e) => set("purpose", e.target.value)} placeholder="Why the company should carry this" style={FIELD} /></L>
-          </div>
+          <L label="Paid to">
+            <input value={form.vendor} onChange={(e) => set("vendor", e.target.value)} placeholder="Shop, driver, restaurant…" style={field} />
+          </L>
+          <L label="Note" wide>
+            <input value={form.purpose} onChange={(e) => set("purpose", e.target.value)} placeholder="Anything worth remembering about it" style={field} />
+          </L>
         </div>
       </OverlayCard>
-      {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
+      {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>{error}</p>}
     </OverlayPanel>
   );
 }
 
-function L({ label, children }: { label: string; children: React.ReactNode }) {
+function L({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 600, color: E.muted }}>
-      {label}{children}
+    <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: wide ? "1 / -1" : undefined, ...designLabel }}>
+      <span>{label}</span>
+      {children}
     </label>
   );
 }

@@ -110,6 +110,8 @@ follow-ups, attendance, payroll and financial reporting.
 - **Payroll:** `DRAFT → REVIEWED → APPROVED → PAID`, one step at a time, **`PAID` is terminal**. `isEditable()` is the single predicate every write path asks. Approving *copies* lines into `payslips/{uid}_{YYYY-MM}`; reopening marks them `current: false`. Commission is dated by the month the split was **finalised**, not the month the deal closed.
 - Salary figures: HR yes, other managers no, anyone else needs `salaryAccess: true` set per person. Marking a payroll **paid** is the admin's alone.
 - **Office expenses** extend the existing `expenses` collection. Records written before the module read as approved. Charts count **approved spend only**; total (invoiced) and spend (approved) are both shown. Renaming a category moves its records in batches; removing one does not. An approved expense is rejected, never deleted.
+- **Approving an expense and paying it are two different facts, and the screen shows both.** `status` says the company agreed to the cost; `paidAmount` / `paymentStatus` say how much has actually left an account, written **only** by `payFromAccounts`. The obligation never changes when it is paid — a 50,000 expense funded 30,000 is still a 50,000 expense with 20,000 outstanding. `readPaid` is the single reader (it clamps the paid figure to the amount, so a negative outstanding can never be printed), and a settled expense offers **no Pay button at all** rather than one that could only be refused.
+- **A funded expense may be rejected; it may not be edited below what has been paid.** Rejecting was refused for one round and the owner reversed it: a payment that turns out to have been wrong is exactly when somebody needs to mark the expense rejected, and being sent to unpick the ledger first is a dead end at the moment they are recording what happened. The money does not go quiet — the funding transactions stay **posted** on the account that paid (the rupees really did leave it), the rejection is written into the expense's history, and the row's payment pill shows whatever the status, so a rejected expense that cost money reads `Rejected · Paid`. Removing the funding movement (`unpaySource`) is still what un-pays it, now a choice rather than a gate. The **amount** guard stays: an amount below `paidAmount` would leave a record insisting it was over-funded, and `readPaid` would report Rs 0 outstanding on something paid for twice over.
 
 ## Attendance
 
@@ -309,7 +311,7 @@ and an element rule beats a family inherited from a container.
 **This project's conventions**
 - The lint rule rejects `setState` in an effect body and impure calls (`Date.now()`) in a render body. Reset-during-render, or a `useCallback` registered from a browser event — not an effect.
 - The raw `--experimental-strip-types` test loader cannot resolve extensionless imports — a module under test must not import `./dates`.
-- **Recurring bug class: a field typed on a hook's `*Data` interface but never read out of the snapshot.** It has shipped four times (`phone`/`joinedAt`/`notes`/`autoAssign`, `monthlySalary`, the payroll fields, the client-folder fields). Check the mapper, not just the type.
+- **Recurring bug class: a field typed on a hook's interface but never read out of the snapshot.** It has now shipped **six** times (`phone`/`joinedAt`/`notes`/`autoAssign`, `monthlySalary`, the payroll fields, the client-folder fields, `managerKind`, and `paidAmount`/`paymentStatus` in `useOfficeExpenses`). Check the mapper, not just the type. **The symptom is never an error** — it is a screen confidently showing the field's default, which is why it survives typecheck, lint, build and clicking around. The 2026-09-10 outing is the clearest case: the server wrote `paidAmount` correctly on every payment and the screen read a hard 0, so paying an expense appeared to do nothing.
 - Derive on read (`pipelineStage`, `leadSource`, `followUpKind`, `managerMetrics`) rather than denormalising a computed value: every existing record is classified the moment the code ships, with no backfill to run and nothing to go stale. Denormalise only *provenance* — facts that must not change when their source does.
 - Day keys are `YYYY-MM-DD` in **Karachi**, which makes string comparison date comparison. Seeds and sweeps keyed off UTC break between 19:00 and midnight UTC.
 - Read state is per-browser, not a field on the lead: it changes on every click, differs per person and nobody audits it.
@@ -389,6 +391,111 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-10 (sixth round) — rejecting a paid expense is the owner's call, not the code's
+
+*"remove rejected block"* — the guard added an hour earlier, which refused to
+reject an expense that had already been paid from an account.
+
+**The reasoning behind it was not wrong, and it was still the wrong answer.**
+Rejecting takes an expense out of approved spend while the cash has already
+left, so the books show money gone with nothing booked against it. But the
+moment somebody reaches for Reject on a paid expense is precisely the moment
+they have discovered the payment was a mistake — and being told to go and
+unpick the ledger before they may record that is a dead end at the worst point.
+Same shape as the committee's reverse-before-delete refusal the owner removed on
+2026-09-09: a guard that is correct about the accounting and wrong about the
+person.
+
+**What replaces it is visibility, not a rule.** The funding transactions stay
+**POSTED** on the account that paid — the rupees really did leave it, and
+deleting that row on the user's behalf would be the code inventing a decision.
+The rejection is written into the expense's own history beside the amount
+already paid, and the row's payment pill renders whatever the status, so a
+rejected expense that cost money reads **`Rejected · Paid`** rather than as a
+clean refusal. Removing the funding movement is still what un-pays it; it is a
+choice now.
+
+**The amount guard stays**, because it is a different question: an amount below
+`paidAmount` is not a decision anybody means to make, it is a record insisting
+it was over-funded, and `readPaid` would then report Rs 0 outstanding on
+something paid for twice over.
+
+- **Validation**: `typecheck` 0 errors, `test` 534/534, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **Driven end to end against the live project.** A throwaway expense paid 400
+  of 1,000 (Committee 500,000 → 499,600): **Reject succeeded**, the expense kept
+  `paidAmount: 400 / PARTIALLY_PAID` with `STATUS_REJECTED` appended to its
+  history, the balance stayed 499,600 and the funding leg stayed **POSTED**;
+  editing the amount to 100 was still refused; re-approving worked and left the
+  payment intact. Every probe row deleted — 2 transactions, 11 expenses,
+  cachedBalance 500,000, exactly as found.
+
+### 2026-09-10 (fifth round) — paying an expense looked like it did nothing
+
+**Reported:** paying an office expense from an account — the Committee — posts
+into the account, *"but its not cutting the paid amount like if i pay full or
+half"*.
+
+**The server was right the whole time, and I proved that before changing
+anything.** A throwaway route called the real `payFromAccounts` from inside the
+running dev server with a real admin token, on a throwaway expense: 400 then
+600 moved `paidAmount` 400 → 1000, `paymentStatus` PARTIALLY_PAID → PAID, wrote
+two legs, and took the Committee 500,000 → 499,600 → 499,000. Every figure
+correct.
+
+**The bug was one line that does not exist.** `mapExpense` in
+`useOfficeExpenses` types nothing about payment and reads nothing about it, so
+every expense reached the screen with a hard `paidAmount: 0`. Three consequences,
+which together are exactly the report:
+
+- the button never left **"Pay from…"** — never "Paid", never "Pay balance";
+- `PayFromAccounts` was handed `alreadyPaid: 0`, so after paying half it offered
+  the **whole amount** again;
+- nothing on the row ever said money had moved.
+
+The only thing stopping a second full payment was the server's in-transaction
+guard, which reads the *stored* figure and refused — so the screen showed a
+refusal for a payment it had just told the user was still outstanding.
+
+**Sixth outing of this bug class.** See *Lessons*; the count is updated there.
+
+**The row now carries the payment as its own pill**, beside the status one, and
+names the balance rather than the fact: `Approved` · `Rs 20,000 due`. An
+approved-but-unfunded expense is the normal state and gets no pill, so a pill
+appearing means money has actually left an account.
+
+**Two adjacent gaps looked at while there.** Editing a paid expense's **amount
+below what had been paid** is refused on the server — it would leave a record
+insisting it was over-funded. **Rejecting a funded expense was refused too, and
+the owner reversed that within the round** — see the entry below. The refusal
+that survives names the way out (remove the funding movement from the account,
+which un-pays the expense) rather than being a dead end.
+
+- **Validation**: `typecheck` 0 errors, `test` **534/534** (528 → 534: the part
+  payment leaving the balance rather than the whole amount, the over-paid case
+  that must never print a negative outstanding, the zero-amount expense that is
+  not "settled", and the absent status reading as UNPAID), `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **Driven end to end against the live project — ten steps, all as specified.**
+  Pay 400 → PARTIALLY_PAID, Committee 500,000 → 499,600. Reject **refused**
+  (*"Rs 400 has already been paid out…"*). Edit to 100 **refused**. Pay 601
+  **refused**. Pay 600 → PAID, 499,000. Pay 1 more **refused**. Deleting the 400
+  leg un-paid it back to 600 / PARTIALLY_PAID and the balance to 499,400. Every
+  probe row deleted afterwards: **2 transactions, 11 expenses, cachedBalance
+  500,000** — exactly as found.
+
+  **Found while probing, and worth knowing:** there were **no
+  `OFFICE_EXPENSE` legs in the live project at all**. The two movements on the
+  Committee are both manual ("Gifts" 50,000, "Tour" 500,000). So no payment had
+  ever actually committed — consistent with a screen that made the flow look
+  broken enough to abandon.
+
+  **Not driven in a browser** — Chrome tooling is still not enabled for this
+  session. The pill and the button states are reasoned from the shared
+  components; the data they read is proven above.
 
 ### 2026-09-10 (fourth round) — the committee screen, transcribed from the design files
 

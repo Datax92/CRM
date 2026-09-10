@@ -21,10 +21,13 @@ import { verifyAuth, requireAdmin, type DecodedAuth } from "@/lib/firebase/serve
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { karachiDayKey } from "@/lib/dates";
 import { money } from "@/lib/ledger";
+import { formatMoney } from "@/lib/money";
 import { stateLifeCommission } from "@/lib/stateLife";
 import { FieldValue } from "firebase-admin/firestore";
 
 const PERSONAL = "personalExpenses";
+/** The ledger owns this collection; named here only to restore a balance. */
+const ACCOUNTS_FOR_RESTORE = "accounts";
 const STATELIFE = "stateLifePolicies";
 const MARKETING = "marketingIncome";
 
@@ -38,22 +41,24 @@ const dayOrToday = (raw?: string) =>
   raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : karachiDayKey();
 
 /* -------------------------------------------------------------------------- */
-/* Personal expenses — an employee spends, the company pays them back          */
+/* Personal expenses — one person's own spending                               */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The standard reimbursement shape, not an invention: an employee spends their
- * own money, attaches a receipt and a business purpose, somebody who is **not
- * them** approves it, and only then is it paid back.
+ * What somebody spent out of their own pocket, and which account paid it back.
  *
- * Two separations do the work, and both are deliberate:
+ * **No approval, and no second person.** This was a reimbursement workflow —
+ * submit, approve, reject, cancel, with a claimant chosen from the roster and a
+ * manager to decide it — and the owner removed all of it: *"remove employees
+ * and manager, it should be personal expense only."* So there is no `status`
+ * written any more and no `employeeUid` to choose: the record belongs to
+ * whoever filed it, and the only question left about it is how much of it an
+ * account has paid back.
  *
- * - **Approval is not payment.** An approved claim is money owed, not money
- *   moved; it becomes a transaction when it is reimbursed, from whichever
- *   accounts fund it.
- * - **The approver is never the claimant.** Self-approval is the single
- *   failure mode this kind of module exists to prevent, so it is refused on the
- *   server rather than hidden on the screen.
+ * **`employeeUid` is still stamped, and must be** — it is the clause the
+ * Security Rule checks (`where('employeeUid','==',uid)`), so a record without
+ * it would be unreadable by the person who owns it. It is taken from the token
+ * and can no longer be sent in.
  */
 export interface PersonalExpenseInput {
   title: string;
@@ -65,9 +70,6 @@ export interface PersonalExpenseInput {
   notes?: string | null;
   receiptUrl?: string | null;
   receiptName?: string | null;
-  /** Admin/HR may file on somebody's behalf; an employee may only file their own. */
-  employeeUid?: string | null;
-  submit?: boolean;
 }
 
 export async function savePersonalExpense(
@@ -83,15 +85,6 @@ export async function savePersonalExpense(
     const amount = money(input.amount);
     if (amount <= 0) throw new UserFacingError("Enter an amount greater than zero.");
 
-    // An employee files their own and nobody else's. Only finance may name a
-    // different claimant, and that is checked here rather than trusted.
-    const employeeUid =
-      auth.isHr && input.employeeUid ? input.employeeUid : auth.uid;
-    if (!auth.isHr && input.employeeUid && input.employeeUid !== auth.uid) {
-      throw new UserFacingError("You can only file your own expenses.");
-    }
-
-    const profile = await adminDb.collection("users").doc(employeeUid).get();
     const payload = {
       title,
       category: (input.category ?? "Other").trim() || "Other",
@@ -102,10 +95,6 @@ export async function savePersonalExpense(
       notes: (input.notes ?? "").trim() || null,
       receiptUrl: input.receiptUrl ?? null,
       receiptName: input.receiptName ?? null,
-      employeeUid,
-      employeeName: (profile.data()?.name as string) ?? null,
-      subAdminUid: (profile.data()?.subAdminUid as string) ?? null,
-      status: input.submit ? "SUBMITTED" : "DRAFT",
       updatedAt: FieldValue.serverTimestamp(),
     };
 
@@ -117,10 +106,22 @@ export async function savePersonalExpense(
       if (current.employeeUid !== auth.uid && !auth.isHr) {
         throw new UserFacingError("That is not your expense.");
       }
-      // Once money has moved against it the record is history, not a draft.
-      if (money(current.paidAmount) > 0) {
-        throw new UserFacingError("This has already been reimbursed and cannot be edited.");
+
+      /*
+        **The amount may not fall below what an account has already paid back.**
+        The transactions funding it are real money movements and are not
+        rewritten by editing the record, so a smaller amount would leave one
+        insisting it was over-paid. Everything else about it stays editable,
+        including after it has been paid — correcting a category or a date on a
+        settled expense is ordinary, not an audit event.
+      */
+      const paidSoFar = money(current.paidAmount);
+      if (paidSoFar > 0 && amount < paidSoFar) {
+        throw new UserFacingError(
+          `${formatMoney(paidSoFar)} has already been paid back for this. Reduce or delete that payment first.`
+        );
       }
+
       await ref.update({
         ...payload,
         history: FieldValue.arrayUnion({
@@ -133,9 +134,14 @@ export async function savePersonalExpense(
       return { expenseId };
     }
 
+    const profile = await adminDb.collection("users").doc(auth.uid).get();
     const ref = adminDb.collection(PERSONAL).doc();
     await ref.create({
       ...payload,
+      // The Security Rule's clause. Taken from the token, never from the input.
+      employeeUid: auth.uid,
+      employeeName: (profile.data()?.name as string) ?? auth.name ?? null,
+      subAdminUid: (profile.data()?.subAdminUid as string) ?? null,
       paidAmount: 0,
       paymentStatus: "UNPAID",
       createdByUid: auth.uid,
@@ -143,7 +149,7 @@ export async function savePersonalExpense(
       history: [
         {
           at: new Date().toISOString(),
-          action: input.submit ? "SUBMITTED" : "CREATED",
+          action: "CREATED",
           byUid: auth.uid,
           byName: auth.name ?? auth.email ?? null,
         },
@@ -153,44 +159,87 @@ export async function savePersonalExpense(
   });
 }
 
-export async function decidePersonalExpense(
+/**
+ * Deletes a personal expense **and the payments made against it**.
+ *
+ * A plain delete would leave the ledger holding transactions whose `sourceId`
+ * points at nothing — money recorded as having left an account for a record
+ * that no longer exists. So the movements go with it and each account's cached
+ * balance is put back, which is what deleting the expense actually means.
+ *
+ * That is destructive and irreversible, so the action **reports what it will
+ * cost before it is called** (`countPersonalExpensePayments`) and the screen
+ * names the figure in the confirmation rather than afterwards.
+ *
+ * Yours to delete, or HR's. The balances are restored outside the batch: a
+ * stale cache is a display problem that `balancesFor` recomputes from the
+ * transactions anyway, and failing there must not leave the delete half done.
+ */
+export async function deletePersonalExpense(
   token: string,
-  expenseId: string,
-  decision: "APPROVED" | "REJECTED" | "CANCELLED",
-  note?: string
-): Promise<ActionResult> {
-  return runAction("decidePersonalExpense", async () => {
-    const auth = await requireFinance(token);
+  expenseId: string
+): Promise<ActionResult<{ removedPayments: number; restored: number }>> {
+  return runAction("deletePersonalExpense", async () => {
+    const auth = await verifyAuth(token);
 
     const ref = adminDb.collection(PERSONAL).doc(expenseId);
     const snap = await ref.get();
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
-    const expense = snap.data()!;
-
-    // **No self-approval.** The one rule a reimbursement module must enforce,
-    // and it is enforced here because a screen that merely hides the button is
-    // not an enforcement.
-    if (expense.employeeUid === auth.uid && decision === "APPROVED") {
-      throw new UserFacingError("You cannot approve your own expense. Ask another approver.");
-    }
-    if (money(expense.paidAmount) > 0 && decision !== "APPROVED") {
-      throw new UserFacingError("This has already been reimbursed. Reverse the payment first.");
+    if (snap.data()!.employeeUid !== auth.uid && !auth.isHr) {
+      throw new UserFacingError("That is not your expense.");
     }
 
-    await ref.update({
-      status: decision,
-      decidedByUid: auth.uid,
-      decidedByName: auth.name ?? auth.email ?? null,
-      decisionNote: (note ?? "").trim() || null,
-      decidedAt: FieldValue.serverTimestamp(),
-      history: FieldValue.arrayUnion({
-        at: new Date().toISOString(),
-        action: decision,
-        byUid: auth.uid,
-        byName: auth.name ?? auth.email ?? null,
-        note: (note ?? "").trim() || null,
-      }),
-    });
+    const legs = await adminDb
+      .collection("transactions")
+      .where("sourceModule", "==", "PERSONAL_EXPENSE")
+      .where("sourceId", "==", expenseId)
+      .get();
+
+    const restore = new Map<string, number>();
+    const batch = adminDb.batch();
+    for (const leg of legs.docs) {
+      const row = leg.data();
+      const accountId = row.accountId as string;
+      const amount = money(row.amount);
+      // An OUT leg took money away, so undoing it puts money back.
+      const delta = row.direction === "OUT" ? amount : -amount;
+      restore.set(accountId, (restore.get(accountId) ?? 0) + delta);
+      batch.delete(leg.ref);
+    }
+    batch.delete(ref);
+    await batch.commit();
+
+    await Promise.all(
+      [...restore].map(([accountId, delta]) =>
+        adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).update({
+          cachedBalance: FieldValue.increment(Math.round(delta * 100) / 100),
+        })
+      )
+    );
+
+    return {
+      removedPayments: legs.size,
+      restored: Math.round([...restore.values()].reduce((sum, value) => sum + value, 0) * 100) / 100,
+    };
+  });
+}
+
+/** What deleting this expense would also delete. Read before the confirmation. */
+export async function countPersonalExpensePayments(
+  token: string,
+  expenseId: string
+): Promise<ActionResult<{ payments: number; total: number }>> {
+  return runAction("countPersonalExpensePayments", async () => {
+    await verifyAuth(token);
+    const legs = await adminDb
+      .collection("transactions")
+      .where("sourceModule", "==", "PERSONAL_EXPENSE")
+      .where("sourceId", "==", expenseId)
+      .get();
+    return {
+      payments: legs.size,
+      total: legs.docs.reduce((sum, leg) => sum + money(leg.data().amount), 0),
+    };
   });
 }
 
