@@ -32,6 +32,7 @@ import {
   type StateLifeSlab,
 } from "@/lib/stateLife";
 import { PERSONAL_EXPENSE_CATEGORIES } from "@/lib/personalExpenses";
+import { calculateMarketingSplit, type MarketingCut } from "@/lib/marketingIncome";
 import { FieldValue } from "firebase-admin/firestore";
 
 const PERSONAL = "personalExpenses";
@@ -761,102 +762,279 @@ export async function deleteStateLifePolicy(token: string, policyId: string): Pr
 /* Mahziyar marketing income                                                   */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* The marketing account                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * **Mahziyar Marketing is an account**, and that is the whole of the owner's
+ * *"there shouldn't be an option to add receive balance"*.
+ *
+ * There used to be two steps: record a sale, then separately receive it into an
+ * account before anything could be paid from it. Two steps for one fact, and
+ * the second one existed only because the module had no account of its own. Now
+ * the profit lands the moment the sale is recorded, in an account named after
+ * the business — so an office expense or a personal one can be paid **from
+ * Mahziyar Marketing** through the same split control every module already
+ * uses, with no receiving in between.
+ *
+ * The id is fixed rather than searched for by name: renaming the account on
+ * screen must not make the next sale create a second one beside it.
+ */
+const MARKETING_ACCOUNT_ID = "mahziyar_marketing";
+
+async function ensureMarketingAccount(uid: string): Promise<string> {
+  const ref = adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(MARKETING_ACCOUNT_ID);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    await ref.set({
+      name: "Mahziyar Marketing",
+      kind: "INCOME",
+      openingBalance: 0,
+      cachedBalance: 0,
+      status: "ACTIVE",
+      note: "Profit from marketing sales. Expenses can be paid straight out of it.",
+      createdByUid: uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  }
+  return MARKETING_ACCOUNT_ID;
+}
+
+export async function getMarketingAccountId(): Promise<string> {
+  return MARKETING_ACCOUNT_ID;
+}
+
+/* -------------------------------------------------------------------------- */
+
 export interface MarketingIncomeInput {
   dayKey?: string;
   customerName: string;
   soldByUid?: string | null;
   soldByName?: string | null;
-  teamUid?: string | null;
-  teamName?: string | null;
+  /**
+   * **Who sold it, and therefore which cuts the sale can carry.**
+   *
+   * A sale is not always an employee's: a manager can close one, and so can the
+   * admin. It is stored rather than derived from the uid because the roster
+   * changes — an employee promoted to manager next year must not retrospectively
+   * turn last year's sale into a manager's.
+   */
+  soldByRole?: "EMPLOYEE" | "MANAGER" | "ADMIN" | null;
   description?: string | null;
   amountReceived: number;
-  staffCommission?: number;
-  teamCommission?: number;
-  companyCommission?: number;
+  /** One row per recipient, as a **percentage**. The company keeps the rest. */
+  cuts?: MarketingCut[];
 }
 
 /**
- * Marketing income, with its three commission cuts.
+ * A marketing sale, its percentage cuts, and the profit it puts in the bank.
  *
- * **Deliberately separate from the deal profit split.** `lib/profitDistribution`
- * exists for a closed CRM deal, where the admin finalises percentages of a cut
- * base; this is a marketing receipt with three amounts typed directly. Routing
- * one through the other would put a second meaning on `dealPayouts` and make
- * every commission report ambiguous about which kind of earning it was
- * counting.
+ * **Three things changed together at the owner's instruction**, and they only
+ * make sense as one shape:
  *
- * `totalCost` is the sum of the three cuts — what the receipt costs in
- * commission — and it is **derived**, never typed, so it cannot disagree with
- * the parts. The money itself arrives in the ledger by paying it in through
- * `payFromAccounts` with `direction: 'IN'`.
+ * 1. **The cuts are percentages with as many recipients as the sale needs** —
+ *    two managers, three staff — and the rupees are computed, never typed.
+ * 2. **Everything left is the company's.** There is no company percentage: a
+ *    typed one could disagree with the arithmetic, and `received − Σ cuts` is
+ *    the only figure that always adds up.
+ * 3. **The profit is banked here, not received later.** One `IN` transaction to
+ *    the Mahziyar Marketing account, labelled with the customer, so the account
+ *    statement reads *"Imran Khan — sold lead"* and the money is immediately
+ *    spendable.
+ *
+ * Editing a sale **moves the posted profit by the difference** rather than
+ * writing a second transaction, so the account can never hold two versions of
+ * one sale.
  */
 export async function saveMarketingIncome(
   token: string,
   input: MarketingIncomeInput,
   recordId?: string
-): Promise<ActionResult<{ recordId: string }>> {
+): Promise<ActionResult<{ recordId: string; profit: number }>> {
   return runAction("saveMarketingIncome", async () => {
     const auth = await requireFinance(token);
 
     const customerName = (input.customerName ?? "").trim();
     if (!customerName) throw new UserFacingError("Enter the customer's name.");
+
     const amountReceived = money(input.amountReceived);
-    if (amountReceived <= 0) throw new UserFacingError("Enter the amount received.");
+    const split = calculateMarketingSplit(amountReceived, input.cuts ?? []);
+    if (!split.valid) throw new UserFacingError(split.errors[0]);
 
-    const staffCommission = money(input.staffCommission);
-    const teamCommission = money(input.teamCommission);
-    const companyCommission = money(input.companyCommission);
-    const totalCost = Math.round((staffCommission + teamCommission + companyCommission) * 100) / 100;
-
-    if (totalCost > amountReceived) {
-      // Not a rounding slip: the cuts cannot come to more than came in.
-      throw new UserFacingError("The commissions come to more than the amount received.");
-    }
+    const accountId = await ensureMarketingAccount(auth.uid);
+    const dayKey = dayOrToday(input.dayKey);
+    const label = `${customerName} — sold lead`;
 
     const payload = {
-      dayKey: dayOrToday(input.dayKey),
+      dayKey,
       customerName,
       soldByUid: input.soldByUid ?? null,
       soldByName: (input.soldByName ?? "").trim() || null,
-      teamUid: input.teamUid ?? null,
-      teamName: (input.teamName ?? "").trim() || null,
+      soldByRole: input.soldByRole ?? null,
       description: (input.description ?? "").trim() || null,
       amountReceived,
-      staffCommission,
-      teamCommission,
-      companyCommission,
-      totalCost,
-      /** What the business keeps once the three cuts are paid. */
-      netIncome: Math.round((amountReceived - totalCost) * 100) / 100,
-      // Named `amount` as well so the generic payment path can read the
-      // obligation the same way it reads every other module's.
+      // Stored **and** recomputed on read — the percentages are the record, the
+      // rupees are a convenience for exports and reports.
+      cuts: split.lines,
+      totalCost: split.totalCost,
+      totalPercent: split.totalPercent,
+      /** What the business keeps once every cut is paid. */
+      netIncome: split.companyKeeps,
+      accountId,
+      // Named `amount` too, so anything reading obligations generically sees it.
       amount: amountReceived,
       updatedAt: FieldValue.serverTimestamp(),
       updatedByUid: auth.uid,
     };
 
-    if (recordId) {
-      const ref = adminDb.collection(MARKETING).doc(recordId);
-      if (!(await ref.get()).exists) throw new UserFacingError("That record no longer exists.");
-      await ref.update(payload);
-      return { recordId };
-    }
+    const ref = recordId
+      ? adminDb.collection(MARKETING).doc(recordId)
+      : adminDb.collection(MARKETING).doc();
 
-    const ref = adminDb.collection(MARKETING).doc();
-    await ref.create({
-      ...payload,
-      paidAmount: 0,
-      paymentStatus: "UNPAID",
+    const previousProfit = await adminDb.runTransaction(async (t) => {
+      const snap = await t.get(ref);
+      if (recordId && !snap.exists) throw new UserFacingError("That record no longer exists.");
+      const before = snap.exists ? money(snap.data()?.netIncome) : 0;
+
+      t.set(
+        ref,
+        recordId
+          ? {
+              ...payload,
+              history: FieldValue.arrayUnion({
+                at: new Date().toISOString(),
+                action: "EDITED",
+                byUid: auth.uid,
+                byName: auth.name ?? auth.email ?? null,
+                amount: split.companyKeeps,
+              }),
+            }
+          : {
+              ...payload,
+              createdByUid: auth.uid,
+              createdAt: FieldValue.serverTimestamp(),
+              history: [
+                {
+                  at: new Date().toISOString(),
+                  action: "CREATED",
+                  byUid: auth.uid,
+                  byName: auth.name ?? auth.email ?? null,
+                  amount: split.companyKeeps,
+                },
+              ],
+            },
+        { merge: Boolean(recordId) }
+      );
+
+      return before;
+    });
+
+    /*
+      **One transaction per sale, updated in place.** `set` with a deterministic
+      id rather than `create`, so editing a sale rewrites the movement it
+      already posted instead of leaving the old one beside the new — which is
+      how an account ends up holding one sale twice.
+    */
+    const txnRef = adminDb.collection(TRANSACTIONS_FOR_SLABS).doc(`marketing_${ref.id}`);
+    await txnRef.set({
+      accountId,
+      direction: "IN",
+      amount: split.companyKeeps,
+      type: "INCOME",
+      dayKey,
+      sourceModule: "MARKETING_INCOME",
+      sourceId: ref.id,
+      sourceLabel: label,
+      groupId: null,
+      status: "POSTED",
+      note: input.description?.trim() || null,
+      idempotencyKey: `MARKETING_INCOME:${ref.id}:${accountId}`,
       createdByUid: auth.uid,
+      createdByName: auth.name ?? auth.email ?? null,
       createdAt: FieldValue.serverTimestamp(),
     });
-    return { recordId: ref.id };
+
+    // The cache moves by the **difference**, so an edit does not double-count.
+    const delta = Math.round((split.companyKeeps - previousProfit) * 100) / 100;
+    if (delta !== 0) {
+      await adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).update({
+        cachedBalance: FieldValue.increment(delta),
+      });
+    }
+
+    return { recordId: ref.id, profit: split.companyKeeps };
   });
 }
 
-export async function deleteMarketingIncome(token: string, recordId: string): Promise<ActionResult> {
+/**
+ * Deletes a sale, and takes its profit back out of the account.
+ *
+ * **Refused once the account has spent below what this sale put in** — deleting
+ * would leave the balance short of money that has already gone out on
+ * something else, and an account cannot un-spend. The message says how much and
+ * what to do instead.
+ */
+export async function deleteMarketingIncome(
+  token: string,
+  recordId: string
+): Promise<ActionResult<{ reversed: number }>> {
   return runAction("deleteMarketingIncome", async () => {
     await requireAdmin(token);
-    await adminDb.collection(MARKETING).doc(recordId).delete();
+
+    const ref = adminDb.collection(MARKETING).doc(recordId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new UserFacingError("That record no longer exists.");
+
+    const profit = money(snap.data()?.netIncome);
+    const accountId = (snap.data()?.accountId as string) ?? MARKETING_ACCOUNT_ID;
+
+    const accountSnap = await adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).get();
+    const balance = money(accountSnap.data()?.cachedBalance);
+    if (profit > 0 && balance < profit) {
+      throw new UserFacingError(
+        `Mahziyar Marketing holds ${formatMoney(balance)}, less than the ${formatMoney(profit)} this sale put in — some of it has already been spent. Remove those payments first, or edit the sale instead of deleting it.`
+      );
+    }
+
+    const batch = adminDb.batch();
+    batch.delete(adminDb.collection(TRANSACTIONS_FOR_SLABS).doc(`marketing_${recordId}`));
+    batch.delete(ref);
+    await batch.commit();
+
+    if (profit !== 0) {
+      await adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).update({
+        cachedBalance: FieldValue.increment(-profit),
+      });
+    }
+
+    return { reversed: profit };
   });
 }
+
+/**
+ * What deleting a sale would cost, read before the confirmation.
+ *
+ * The question changed with the model. It used to be "how many receipts came
+ * in"; now the profit is banked automatically, so the only thing worth asking
+ * is whether the account can give it back — and if not, by how much it falls
+ * short.
+ */
+export async function countMarketingIncomeReceipts(
+  token: string,
+  recordId: string
+): Promise<ActionResult<{ profit: number; balance: number; shortBy: number }>> {
+  return runAction("countMarketingIncomeReceipts", async () => {
+    await verifyAuth(token);
+
+    const snap = await adminDb.collection(MARKETING).doc(recordId).get();
+    const profit = money(snap.data()?.netIncome);
+    const accountId = (snap.data()?.accountId as string) ?? MARKETING_ACCOUNT_ID;
+    const balance = money(
+      (await adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).get()).data()?.cachedBalance
+    );
+
+    return { profit, balance, shortBy: Math.max(0, Math.round((profit - balance) * 100) / 100) };
+  });
+}
+

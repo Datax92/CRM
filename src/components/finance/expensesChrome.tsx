@@ -17,6 +17,7 @@
  */
 
 import type { CSSProperties, ReactNode } from "react";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { Download } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
@@ -528,6 +529,16 @@ export interface ExpenseRowModel {
   /** A second pill, for the payment state. Absent means no money has moved. */
   payment?: { label: string; tone: Tone } | null;
   notes?: ReactNode;
+  /**
+   * A **full-width band under the row**, for records whose figures do not fit
+   * in a title and an amount.
+   *
+   * `notes` sits inside the title column and is right for a sentence; a marketing
+   * receipt has five figures that each need a label, and squeezing those into a
+   * `minmax(0,1fr)` column beside the amount and the actions is how a row
+   * becomes unreadable. This spans the whole card instead — see `FigureStrip`.
+   */
+  detail?: ReactNode;
   actions: RowAction[];
   /** Opens the detail panel. The action pills stop propagation so they cannot. */
   onOpen: () => void;
@@ -593,6 +604,7 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
     </span>
   );
 
+  /** Desktop only — the phone puts these on their own row, see below. */
   const tags = (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
       <Tag label={row.status.label} tone={row.status.tone} />
@@ -644,18 +656,37 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
       <article role="button" tabIndex={0} onClick={row.onOpen}
         onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); row.onOpen(); } }}
         style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 20, padding: "15px 16px", minWidth: 0, cursor: "pointer", textAlign: "left" }}>
+        {/*
+          **The third column holds the amount and nothing else.**
+
+          The design draws one short tag ("Approved") tucked under the figure,
+          and that works right up until a tag is a sentence — StateLife's read
+          "Rs 125,354 to come". An `auto` column sizes to its widest child, so
+          two long tags took the row and `minmax(0,1fr)` did what it is told
+          and shrank the name to **"M."** with the date at "2…". A card whose
+          only job is to say whose policy this is was showing one letter of it.
+
+          So the tags moved to their own full-width row underneath. Every value
+          the design specifies is unchanged — radius, padding, type sizes, the
+          tag geometry — only the position, which the design could not have
+          anticipated because it never drew two tags or a long one.
+        */}
         <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) auto", alignItems: "center", gap: 13 }}>
           {icon}
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.35px", color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.title}</div>
-            <div style={{ fontSize: 11.5, fontWeight: 500, color: X.faint, marginTop: 3, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.meta}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.35px", color: X.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title}</div>
+            <div style={{ fontSize: 11.5, fontWeight: 500, color: X.faint, marginTop: 3, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.meta}</div>
           </div>
-          <div style={{ textAlign: "right", flexShrink: 0, display: "grid", gap: 5, justifyItems: "end" }}>
-            {amount}
-            {tags}
-          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>{amount}</div>
         </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
+          <Tag label={row.status.label} tone={row.status.tone} />
+          {row.payment && <Tag label={row.payment.label} tone={row.payment.tone} />}
+        </div>
+
         {row.notes}
+        {row.detail}
         {row.actions.length > 0 && (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(3, row.actions.length)}, 1fr)`, gap: 8, marginTop: 13, paddingTop: 12, borderTop: `1px solid ${X.rowLine}` }}>
             {row.actions.map((action) => pill(action, true))}
@@ -669,7 +700,7 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
     <div role="button" tabIndex={0} onClick={row.onOpen}
       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); row.onOpen(); } }}
       className="oe-row"
-      style={{ display: "grid", gridTemplateColumns: "44px minmax(0,1fr) auto auto", alignItems: "center", gap: 16, padding: "15px 20px", borderBottom: `1px solid ${X.rowLine}`, cursor: "pointer", textAlign: "left" }}>
+      style={{ display: "grid", gridTemplateColumns: "44px minmax(0,1fr) auto auto", alignItems: "center", columnGap: 16, rowGap: 0, padding: "15px 20px", borderBottom: `1px solid ${X.rowLine}`, cursor: "pointer", textAlign: "left" }}>
       {icon}
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 15.5, fontWeight: 700, letterSpacing: "-0.35px", color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.title}</div>
@@ -683,6 +714,99 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 7, flexShrink: 0 }}>
         {row.actions.map((action) => pill(action, false))}
       </div>
+      {/* The band spans all four columns, under everything above it. */}
+      {row.detail && <div style={{ gridColumn: "1 / -1" }}>{row.detail}</div>}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The figure strip                                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface Figure {
+  label: string;
+  value: string;
+  /** Colours the figure. `strong` also gives it the row's heaviest weight. */
+  tone?: "ink" | "good" | "warn" | "bad" | "muted";
+  strong?: boolean;
+  /** A second line under the figure — who a cut belongs to, say. */
+  hint?: string | null;
+}
+
+const FIGURE_COLOR = {
+  ink: X.ink,
+  good: "#2f7d78",
+  warn: "#a5762a",
+  bad: "#a8483c",
+  muted: X.faint,
+} as const;
+
+/**
+ * A row of labelled figures, so a record with many numbers can be read at a
+ * glance rather than decoded.
+ *
+ * **The label is the point.** Five bare amounts in a row are five numbers
+ * somebody has to count along to identify; each one captioned in 9.5px
+ * uppercase over a tabular figure means the eye lands on "TEAM" and reads
+ * across. Cells wrap to `auto-fit` rather than scrolling sideways, so the same
+ * strip works at 390px and at full width without a second implementation.
+ */
+export function FigureStrip({ figures, isMobile }: { figures: Figure[]; isMobile: boolean }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: isMobile
+          ? "repeat(auto-fit, minmax(84px, 1fr))"
+          : `repeat(${figures.length}, minmax(96px, 1fr))`,
+        gap: 1,
+        marginTop: 11,
+        paddingTop: 11,
+        borderTop: `1px solid ${X.rowLine}`,
+        background: X.rowLine,
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      {figures.map((figure) => (
+        <div key={figure.label} style={{ background: "#fff", padding: isMobile ? "9px 10px" : "9px 12px", minWidth: 0 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.9px", textTransform: "uppercase", color: X.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {figure.label}
+          </div>
+          <div
+            style={{
+              fontSize: figure.strong ? 15 : 13.5,
+              fontWeight: figure.strong ? 800 : 700,
+              letterSpacing: "-0.3px",
+              marginTop: 3,
+              color: FIGURE_COLOR[figure.tone ?? "ink"],
+              fontVariantNumeric: "tabular-nums",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {figure.value}
+          </div>
+          {figure.hint && (
+            <div style={{ fontSize: 10.5, fontWeight: 500, color: X.faint, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {figure.hint}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The same labelled pair, for a detail panel's own facts. */
+export function FactRow({ label, value, hint }: { label: string; value: string; hint?: string | null }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ ...designLabel, fontSize: 9.5 }}>{label}</div>
+      <div style={{ fontSize: 13.5, fontWeight: 700, color: X.ink, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      {hint && <div style={{ fontSize: 11, color: X.faint, marginTop: 2 }}>{hint}</div>}
     </div>
   );
 }
@@ -805,6 +929,10 @@ export function ExpenseDetail({
    */
   legsIn?: boolean;
 }) {
+  // Measured, never a media query — the standing rule in this project, and it
+  // measures the viewport the panel is actually drawn in.
+  const isNarrow = useIsMobile();
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {/* The headline: the figure, what it is, and where it stands. */}
@@ -832,15 +960,48 @@ export function ExpenseDetail({
 
       {extra}
 
+      {/*
+        **On a phone these are rows, not a grid.**
+
+        Two columns of 9.5px uppercase labels fits, in the sense that nothing
+        overflows — and reads badly: "PASS — THE COMMISSION BASE" wraps to three
+        shouted lines above its number, and the eye has to zig-zag to pair
+        fourteen labels with fourteen values. A phone has one column of
+        attention. Label left, value right, one fact per line, and the values
+        line up in a column somebody can read down.
+
+        The desktop keeps the grid, where two columns of short labels are
+        genuinely faster to scan than a long list.
+      */}
       <Panel heading="Details">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, padding: "14px 16px" }}>
-          {fields.map((field) => (
-            <div key={field.label} style={{ minWidth: 0, gridColumn: field.wide ? "1 / -1" : undefined }}>
-              <div style={{ ...designLabel, fontSize: 9.5 }}>{field.label}</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: X.ink, marginTop: 4, wordBreak: "break-word" }}>{field.value || "—"}</div>
-            </div>
-          ))}
-        </div>
+        {isNarrow ? (
+          <div>
+            {fields.map((field, index) => (
+              <div key={field.label}
+                style={{
+                  display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                  gap: 14, padding: "10px 16px",
+                  borderTop: index === 0 ? undefined : `1px solid ${X.rowLine}`,
+                }}>
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: X.faint, flexShrink: 0, maxWidth: "52%" }}>
+                  {field.label}
+                </span>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: X.ink, textAlign: "right", minWidth: 0, wordBreak: "break-word" }}>
+                  {field.value || "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, padding: "14px 16px" }}>
+            {fields.map((field) => (
+              <div key={field.label} style={{ minWidth: 0, gridColumn: field.wide ? "1 / -1" : undefined }}>
+                <div style={{ ...designLabel, fontSize: 9.5 }}>{field.label}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: X.ink, marginTop: 4, wordBreak: "break-word" }}>{field.value || "—"}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </Panel>
 
       <Panel heading={legsHeading} hint={legs.length ? `${legs.length} movement${legs.length === 1 ? "" : "s"}` : undefined}>

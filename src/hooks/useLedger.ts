@@ -12,8 +12,9 @@
  * document, so neither query has to carry a scope. See `firestore.rules`.
  */
 
-import { useState, useEffect, useMemo } from 'react';
-import { collection, query, orderBy, limit, where, onSnapshot } from 'firebase/firestore';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { collection, query, orderBy, limit, where, type Query, type DocumentData } from 'firebase/firestore';
+import { subscribeLive, liveState, SERVER_STATE } from '@/lib/liveCollection';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
 import {
@@ -45,39 +46,47 @@ export interface TransactionDoc extends Omit<LedgerTransaction, 'id'> {
 /** Guards against an unbounded read once the ledger has years in it. */
 const TRANSACTION_PAGE = 2000;
 
+/**
+ * One shared subscription per collection, joined rather than opened.
+ *
+ * Every screen in this section wants the same two lists, and each used to open
+ * its own listener — so tabbing between Office Expenses, StateLife and Committee
+ * paid for the whole transaction collection once per visit. `useLive` joins the
+ * subscription that already exists, and `lib/liveCollection` keeps it alive for
+ * a minute after the last screen closes, which makes moving around the section
+ * free. See that module for why.
+ */
+function useLive(key: string, build: () => Query<DocumentData>, enabled: boolean) {
+  /*
+    **`build` must be stable** — every call site wraps it in `useCallback`.
+    An unstable one would resubscribe on every render and undo the whole point
+    of sharing, so it is a dependency here rather than something smuggled past
+    the linter in a ref.
+  */
+  const subscribe = useCallback(
+    (notify: () => void) => {
+      if (!enabled) return () => {};
+      return subscribeLive(key, build, (error) => describeFirestoreError(error as { code?: string; message?: string }), notify);
+    },
+    [key, enabled, build]
+  );
+
+  const read = useCallback(() => (enabled ? liveState(key) : SERVER_STATE), [key, enabled]);
+  return useSyncExternalStore(subscribe, read, () => SERVER_STATE);
+}
+
 export function useLedger(enabled = true) {
-  const [accounts, setAccounts] = useState<AccountDoc[] | null>(null);
-  const [transactions, setTransactions] = useState<TransactionDoc[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const buildAccounts = useCallback(() => query(collection(db, 'accounts'), orderBy('name')), []);
+  const buildTxns = useCallback(
+    () => query(collection(db, 'transactions'), orderBy('dayKey', 'desc'), limit(TRANSACTION_PAGE)),
+    []
+  );
 
-  useEffect(() => {
-    if (!enabled) return;
-    const unsubAccounts = onSnapshot(
-      query(collection(db, 'accounts'), orderBy('name')),
-      (snap) => setAccounts(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as AccountDoc)),
-      (err) => {
-        console.error('[useLedger:accounts]', err);
-        setAccounts([]);
-        setError(describeFirestoreError(err));
-      }
-    );
-    const unsubTxns = onSnapshot(
-      query(collection(db, 'transactions'), orderBy('dayKey', 'desc'), limit(TRANSACTION_PAGE)),
-      (snap) => setTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as TransactionDoc)),
-      (err) => {
-        console.error('[useLedger:transactions]', err);
-        setTransactions([]);
-        setError(describeFirestoreError(err));
-      }
-    );
-    return () => {
-      unsubAccounts();
-      unsubTxns();
-    };
-  }, [enabled]);
+  const accountsLive = useLive('accounts', buildAccounts, enabled);
+  const txnsLive = useLive('transactions', buildTxns, enabled);
 
-  const rows = useMemo(() => transactions ?? [], [transactions]);
-  const list = useMemo(() => accounts ?? [], [accounts]);
+  const list = useMemo(() => accountsLive.rows as unknown as AccountDoc[], [accountsLive.rows]);
+  const rows = useMemo(() => txnsLive.rows as unknown as TransactionDoc[], [txnsLive.rows]);
 
   /**
    * **Balances are recomputed here, not read from `cachedBalance`.**
@@ -96,65 +105,40 @@ export function useLedger(enabled = true) {
     balances: balances.byAccount,
     totalBalance: balances.total,
     summary,
-    loading: enabled && (accounts === null || transactions === null),
-    error,
+    loading: enabled && (accountsLive.loading || txnsLive.loading),
+    error: accountsLive.error ?? txnsLive.error,
   };
 }
 
 /** One employee's own claims — the only financial list an employee may read. */
 export function useMyPersonalExpenses(uid: string | undefined, enabled = true) {
-  const [records, setRecords] = useState<Record<string, unknown>[] | null>(null);
-
-  useEffect(() => {
-    if (!enabled || !uid) return;
-    // The clause the Security Rule checks. An unscoped query here is refused
-    // outright rather than filtered — see the note in `firestore.rules`.
-    const unsub = onSnapshot(
-      query(collection(db, 'personalExpenses'), where('employeeUid', '==', uid)),
-      (snap) => setRecords(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => {
-        console.error('[useMyPersonalExpenses]', err);
-        setRecords([]);
-      }
-    );
-    return () => unsub();
-  }, [uid, enabled]);
-
-  return { records: records ?? [], loading: enabled && Boolean(uid) && records === null };
+  // Keyed by the uid, or two people on one device would share one list. The
+  // clause is the one the Security Rule checks: an unscoped query here is
+  // refused outright rather than filtered — see the note in `firestore.rules`.
+  const build = useCallback(
+    () => query(collection(db, 'personalExpenses'), where('employeeUid', '==', uid)),
+    [uid]
+  );
+  const live = useLive(`personalExpenses:${uid ?? ''}`, build, enabled && Boolean(uid));
+  return { records: live.rows as Record<string, unknown>[], loading: enabled && Boolean(uid) && live.loading };
 }
 
 /** Every claim, for the approvers. */
 export function usePersonalExpenses(enabled = true) {
-  const [records, setRecords] = useState<Record<string, unknown>[] | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    const unsub = onSnapshot(
-      query(collection(db, 'personalExpenses'), orderBy('dayKey', 'desc'), limit(1000)),
-      (snap) => setRecords(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => {
-        console.error('[usePersonalExpenses]', err);
-        setRecords([]);
-      }
-    );
-    return () => unsub();
-  }, [enabled]);
-  return { records: records ?? [], loading: enabled && records === null };
+  const build = useCallback(
+    () => query(collection(db, 'personalExpenses'), orderBy('dayKey', 'desc'), limit(1000)),
+    []
+  );
+  const live = useLive('personalExpenses:all', build, enabled);
+  return { records: live.rows as Record<string, unknown>[], loading: enabled && live.loading };
 }
 
 /** A simple live collection read, for the two record-keeping modules. */
 export function useFinanceCollection(name: string, enabled = true) {
-  const [records, setRecords] = useState<Record<string, unknown>[] | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    const unsub = onSnapshot(
-      query(collection(db, name), orderBy('dayKey', 'desc'), limit(2000)),
-      (snap) => setRecords(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => {
-        console.error(`[useFinanceCollection:${name}]`, err);
-        setRecords([]);
-      }
-    );
-    return () => unsub();
-  }, [name, enabled]);
-  return { records: records ?? [], loading: enabled && records === null };
+  const build = useCallback(
+    () => query(collection(db, name), orderBy('dayKey', 'desc'), limit(2000)),
+    [name]
+  );
+  const live = useLive(`finance:${name}`, build, enabled);
+  return { records: live.rows as Record<string, unknown>[], loading: enabled && live.loading };
 }

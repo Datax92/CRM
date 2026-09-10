@@ -1,6 +1,12 @@
 "use client";
 
 import type { StateLifeSlab, StateLifeRates } from '@/lib/stateLife';
+import {
+  saveCapitalSpending as _saveCapitalSpending,
+  deleteCapitalSpending as _deleteCapitalSpending,
+  countCapitalSpendingPayments as _countCapitalSpendingPayments,
+  type CapitalSpendingInput,
+} from '@/app/actions/capitalInvestment';
 import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
@@ -143,6 +149,7 @@ import {
   deleteStateLifePolicy as _deleteStateLifePolicy,
   saveMarketingIncome as _saveMarketingIncome,
   deleteMarketingIncome as _deleteMarketingIncome,
+  countMarketingIncomeReceipts as _countMarketingIncomeReceipts,
   type PersonalExpenseInput,
   type StateLifeInputRow,
   type MarketingIncomeInput,
@@ -1107,6 +1114,22 @@ export async function unreceiveStateLifeSlab(token: string, policyId: string, sl
   return _unreceiveStateLifeSlab(token, policyId, slab);
 }
 
+export async function saveCapitalSpending(
+  token: string,
+  input: CapitalSpendingInput,
+  spendingId?: string
+) {
+  return _saveCapitalSpending(token, input, spendingId);
+}
+
+export async function deleteCapitalSpending(token: string, spendingId: string) {
+  return _deleteCapitalSpending(token, spendingId);
+}
+
+export async function countCapitalSpendingPayments(token: string, spendingId: string) {
+  return _countCapitalSpendingPayments(token, spendingId);
+}
+
 export async function getStateLifeRates(token: string) {
   return _getStateLifeRates(token);
 }
@@ -1125,6 +1148,10 @@ export async function saveMarketingIncome(token: string, input: MarketingIncomeI
 
 export async function deleteMarketingIncome(token: string, recordId: string) {
   return _deleteMarketingIncome(token, recordId);
+}
+
+export async function countMarketingIncomeReceipts(token: string, recordId: string) {
+  return _countMarketingIncomeReceipts(token, recordId);
 }
 
 export async function updateTransaction(

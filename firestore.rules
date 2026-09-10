@@ -338,6 +338,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /**
+     * What a capital investment has been spent on.
+     *
+     * The obligation, not the money: the movement that funds one is a row in
+     * `transactions`, which carries its own rule. Admin and HR read, and
+     * **nobody writes from the browser** — every change goes through a Server
+     * Action so the payment guard and the audit trail cannot be walked around.
+     */
+    match /capitalSpendings/{spendingId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
     // Accounts module (Committee, Investment, Capital Investments, Personal
     // Expense, Receivable, Income Sheet) — admin-only, both directions, same
     // as Office Expenses above. Not part of the original PRD module list but

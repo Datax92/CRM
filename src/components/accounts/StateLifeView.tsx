@@ -351,8 +351,8 @@ export function StateLifeView() {
     if (next) {
       actions.push({
         key: "receive",
-        label: compact ? `Get ${next.short}` : `Receive ${next.short}`,
-        shortLabel: next.short,
+        label: compact ? "Receive" : `Receive ${next.short}`,
+        shortLabel: "Receive",
         d: ICON.wallet, tone: "good",
         onClick: () => setReceiving({ policy, slab: next.slab, due: next.amount }),
       });
@@ -586,7 +586,7 @@ export function StateLifeView() {
                     <span style={{ fontSize: 11, fontWeight: 600, color: X.faint }}>{formatMoney(position.received)} of {formatMoney(position.net)} in</span>
                   </div>
                   {position.slabs.map((entry) => (
-                    <div key={entry.slab} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", borderTop: `1px solid ${X.rowLine}` }}>
+                    <div key={entry.slab} style={{ display: "flex", alignItems: isMobile ? "stretch" : "center", flexDirection: isMobile ? "column" : "row", justifyContent: "space-between", flexWrap: "wrap", gap: isMobile ? 9 : 10, padding: "12px 16px", borderTop: `1px solid ${X.rowLine}` }}>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 13, fontWeight: 700, color: X.ink }}>{entry.label}</span>
@@ -604,8 +604,8 @@ export function StateLifeView() {
                             : entry.hint}
                         </div>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                        <span style={{ fontSize: 14, fontWeight: 800, color: entry.amount < 0 ? "#a8483c" : X.ink, fontVariantNumeric: "tabular-nums" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: isMobile ? "space-between" : "flex-end", gap: 10, flexShrink: 0 }}>
+                        <span style={{ fontSize: isMobile ? 15 : 14, fontWeight: 800, color: entry.amount < 0 ? "#a8483c" : X.ink, fontVariantNumeric: "tabular-nums" }}>
                           {formatMoney(entry.received ? entry.received.amount : entry.amount)}
                         </span>
                         {entry.received ? (
@@ -628,9 +628,9 @@ export function StateLifeView() {
                 { label: "Sold by", value: openedPolicy.srName ?? "—" },
                 { label: "SR code", value: openedPolicy.srCode ?? "—" },
                 { label: "FYP", value: formatMoney(openedPolicy.fyp) },
-                { label: "PASS — the commission base", value: formatMoney(openedPolicy.pass) },
-                { label: "30% less 8% tax", value: formatMoney(c.firstCommission) },
-                { label: "10% less 8% tax", value: formatMoney(c.secondCommission) },
+                { label: "PASS (commission base)", value: formatMoney(openedPolicy.pass) },
+                { label: `${toPercent(normalizeRates(openedPolicy.rates).first)}% after tax`, value: formatMoney(c.firstCommission) },
+                { label: `${toPercent(normalizeRates(openedPolicy.rates).second)}% after tax`, value: formatMoney(c.secondCommission) },
                 { label: "Discount given back", value: formatMoney(c.discount) },
                 { label: "Status", value: openedPolicy.description ?? "—", wide: true },
               ]}

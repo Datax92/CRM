@@ -72,10 +72,16 @@ export function tabsForRole(role: string | undefined): Tab[] {
     : isSubAdmin
       ? "/subadmin/team"
       : "/employee/performance/stats";
-  // "Money" replaces "Reports": a report was one screen among several, and one
-  // of five slots on a phone should open the whole money side of the product.
-  // Each role lands on its own hub — see `MoneyHub`.
-  const money = isAdmin ? "/admin/money" : isSubAdmin ? "/subadmin/money" : "/employee/money";
+  /*
+    **"Accounts" replaces "Money" — for the admin only.**
+
+    Money was a hub of links to reports and payouts; Accounts is where the money
+    actually is, and it is the section the product has grown around: every
+    module now pays from the same ledger. But Accounts is admin-and-HR, and its
+    routes live under `/admin`, so a sub admin or an employee keeps Money — a
+    tab that lands on a permission error is worse than the tab it replaced.
+  */
+  const money = isAdmin ? "/admin/accounts" : isSubAdmin ? "/subadmin/money" : "/employee/money";
 
   return [
     { key: "home", label: "Home", d: "M4 11 12 4l8 7v9H4z", href: "/home" },
@@ -96,7 +102,7 @@ export function tabsForRole(role: string | undefined): Tab[] {
     },
     {
       key: "money",
-      label: "Money",
+      label: isAdmin ? "Accounts" : "Money",
       // A wallet rather than a document: the slot is about money now, and the
       // page icon should say so before the label is read.
       d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M16 13h2",
@@ -143,10 +149,19 @@ export function MobileTabBar({
             );
           }
 
-          // `/admin/leads` must not light up on `/admin/leads/campaigns`, and
-          // `/home` must match only itself.
+          /*
+            `/home` matches only itself. **Accounts matches its whole section**,
+            because it is the one tab you navigate *within*: an unlit tab on
+            `/admin/accounts/statelife` would say you had left the section you
+            are standing in. Leads keeps its exact match — `/admin/leads/campaigns`
+            is a different destination, not a page inside the leads tab.
+          */
           const active =
-            tab.href === "/home" ? pathname === "/home" : pathname === tab.href;
+            tab.href === "/home"
+              ? pathname === "/home"
+              : tab.key === "money"
+                ? pathname === tab.href || pathname.startsWith(`${tab.href}/`)
+                : pathname === tab.href;
 
           return (
             <button
