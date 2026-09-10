@@ -13,23 +13,40 @@
  * report, which is worse than the write cost. **Removing does not**: it takes
  * the name out of the dropdown and leaves the history alone, because rewriting
  * records to tidy a list is not a trade worth making.
+ *
+ * **Two lists, one dialog.** Office expenses and personal expenses keep
+ * separate categories — "Rent" is not something somebody paid for out of their
+ * own pocket, and "Fuel" is not an office invoice — but the dialog that edits
+ * them is identical, so `kind` picks the pair of Server Actions and nothing
+ * else about it differs. Two copies would drift.
  */
 
 import { useEffect, useState } from "react";
 import { Check, Pencil, Plus, Tags, Trash2, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
-import { getExpenseCategories, manageExpenseCategory } from "@/lib/clientActions";
+import {
+  getExpenseCategories,
+  manageExpenseCategory,
+  getPersonalExpenseCategories,
+  managePersonalExpenseCategory,
+} from "@/lib/clientActions";
 import { Banner, F, PrimaryButton, fieldStyle } from "./financeChrome";
 
 export function ExpenseCategoriesModal({
   onClose,
   onChanged,
+  kind = "OFFICE",
 }: {
   onClose: () => void;
   onChanged: (message: string) => void;
+  /** Which list this dialog edits. Office expenses when unset. */
+  kind?: "OFFICE" | "PERSONAL";
 }) {
   const { getIdToken } = useAuth();
+  const personal = kind === "PERSONAL";
+  const load = personal ? getPersonalExpenseCategories : getExpenseCategories;
+  const manage = personal ? managePersonalExpenseCategory : manageExpenseCategory;
 
   const [all, setAll] = useState<string[]>([]);
   const [custom, setCustom] = useState<string[]>([]);
@@ -46,7 +63,7 @@ export function ExpenseCategoriesModal({
       const token = await getIdToken().catch(() => "");
       if (cancelled || !token) return;
 
-      const result = await getExpenseCategories(token);
+      const result = await load(token);
       if (cancelled) return;
 
       if (result.ok) {
@@ -60,7 +77,7 @@ export function ExpenseCategoriesModal({
     return () => {
       cancelled = true;
     };
-  }, [getIdToken, nonce]);
+  }, [getIdToken, nonce, load]);
 
   const run = async (
     action: "ADD" | "RENAME" | "REMOVE",
@@ -71,7 +88,7 @@ export function ExpenseCategoriesModal({
     setError(null);
     setBusy(true);
     const token = await getIdToken();
-    const result = await manageExpenseCategory(token, action, name, renameTo);
+    const result = await manage(token, action, name, renameTo);
     setBusy(false);
 
     if (!result.ok) {
@@ -80,6 +97,7 @@ export function ExpenseCategoriesModal({
     }
 
     setAll(result.data.categories);
+    if (result.data.custom) setCustom(result.data.custom);
     setNonce((value) => value + 1);
     onChanged(
       message ??
@@ -91,8 +109,10 @@ export function ExpenseCategoriesModal({
 
   return (
     <OverlayPanel
-      title="Expense categories"
-      subtitle="Used by the form, the filters and every report"
+      title={personal ? "Personal expense categories" : "Expense categories"}
+      subtitle={personal
+        ? "Used by the form and the filters on this screen"
+        : "Used by the form, the filters and every report"}
       icon={<Tags size={18} color="#fff" />}
       maxWidth={560}
       onClose={onClose}
@@ -110,7 +130,7 @@ export function ExpenseCategoriesModal({
             <input
               value={adding}
               onChange={(event) => setAdding(event.target.value)}
-              placeholder="Legal & professional"
+              placeholder={personal ? "Parking" : "Legal & professional"}
               disabled={busy}
               style={{ ...fieldStyle, flex: "1 1 200px" }}
             />
@@ -132,7 +152,7 @@ export function ExpenseCategoriesModal({
           {custom.length === 0 ? (
             <p style={{ fontSize: 12.5, color: F.faint, lineHeight: 1.6 }}>
               Categories you add appear here and can be renamed or removed. The built-in ones below
-              cannot be changed — the reports and every existing record are written against them.
+              cannot be changed — {personal ? "every existing record is" : "the reports and every existing record are"} written against them.
             </p>
           ) : (
             <div style={{ display: "grid", gap: 8 }}>

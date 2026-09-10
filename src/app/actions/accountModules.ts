@@ -23,11 +23,13 @@ import { karachiDayKey } from "@/lib/dates";
 import { money } from "@/lib/ledger";
 import { formatMoney } from "@/lib/money";
 import { stateLifeCommission } from "@/lib/stateLife";
+import { PERSONAL_EXPENSE_CATEGORIES } from "@/lib/personalExpenses";
 import { FieldValue } from "firebase-admin/firestore";
 
 const PERSONAL = "personalExpenses";
 /** The ledger owns this collection; named here only to restore a balance. */
 const ACCOUNTS_FOR_RESTORE = "accounts";
+const PERSONAL_CATEGORY_DOC = "personalExpenseCategories";
 const STATELIFE = "stateLifePolicies";
 const MARKETING = "marketingIncome";
 
@@ -39,6 +41,119 @@ async function requireFinance(token: string): Promise<DecodedAuth> {
 
 const dayOrToday = (raw?: string) =>
   raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : karachiDayKey();
+
+/* -------------------------------------------------------------------------- */
+/* Personal expense categories                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The categories the personal expense form offers.
+ *
+ * Same shape as the office expense list and deliberately **a separate list**:
+ * "Rent" and "Utilities" are things the company pays and have no business in a
+ * dropdown of what somebody spent out of their own pocket, and mixing them
+ * would make both lists longer and less useful.
+ *
+ * **Read by anybody, edited by the admin or HR.** Everybody files their own
+ * expenses, so everybody needs the list to fill the form in; but the list is
+ * shared company configuration, and one person renaming a category renames it
+ * on everybody's records.
+ */
+export async function getPersonalExpenseCategories(
+  token: string
+): Promise<ActionResult<{ categories: string[]; custom: string[] }>> {
+  return runAction("getPersonalExpenseCategories", async () => {
+    await verifyAuth(token);
+
+    const snap = await adminDb.collection("config").doc(PERSONAL_CATEGORY_DOC).get();
+    const custom = ((snap.data()?.categories ?? []) as unknown[])
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+
+    // Deduplicated, so somebody adding a name that is already built in is a
+    // no-op rather than a second entry in every dropdown.
+    return {
+      categories: [...new Set([...PERSONAL_EXPENSE_CATEGORIES, ...custom])],
+      custom,
+    };
+  });
+}
+
+/**
+ * Adds, renames or removes a personal expense category.
+ *
+ * **Renaming rewrites the records that use it**, in batches — leaving old ones
+ * pointing at a name that no longer exists would split one category into two
+ * everywhere it is counted, which is worse than the write cost. **Removing does
+ * not**: it takes the name out of the dropdown and leaves the history alone,
+ * because rewriting records to tidy a list is not a trade worth making.
+ *
+ * The built-in names cannot be renamed or removed, only added to. They are what
+ * existing records are written against, and letting them be edited from a
+ * settings dialog would rewrite history from the wrong place.
+ */
+export async function managePersonalExpenseCategory(
+  token: string,
+  action: "ADD" | "RENAME" | "REMOVE",
+  name: string,
+  renameTo?: string
+): Promise<ActionResult<{ categories: string[]; custom: string[]; moved?: number }>> {
+  return runAction("managePersonalExpenseCategory", async () => {
+    const auth = await requireFinance(token);
+    const ref = adminDb.collection("config").doc(PERSONAL_CATEGORY_DOC);
+
+    const snap = await ref.get();
+    const custom = ((snap.data()?.categories ?? []) as unknown[])
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+
+    const label = name.trim();
+    if (!label) throw new UserFacingError("Give the category a name.");
+    if (label.length > 40) throw new UserFacingError("That name is too long for a category.");
+
+    let next = custom;
+    let moved: number | undefined;
+
+    if (action === "ADD") {
+      const known = new Set<string>([...PERSONAL_EXPENSE_CATEGORIES, ...custom]);
+      if (known.has(label)) throw new UserFacingError(`"${label}" is already a category.`);
+      next = [...custom, label];
+    } else if (action === "REMOVE") {
+      next = custom.filter((entry) => entry !== label);
+      if (next.length === custom.length) {
+        throw new UserFacingError("Only categories you added can be removed.");
+      }
+    } else {
+      const target = (renameTo ?? "").trim();
+      if (!target) throw new UserFacingError("Give the category its new name.");
+      if (!custom.includes(label)) {
+        throw new UserFacingError("Only categories you added can be renamed.");
+      }
+      next = custom.map((entry) => (entry === label ? target : entry));
+
+      const affected = await adminDb.collection(PERSONAL).where("category", "==", label).get();
+      moved = affected.size;
+      for (let index = 0; index < affected.docs.length; index += 400) {
+        const batch = adminDb.batch();
+        for (const doc of affected.docs.slice(index, index + 400)) {
+          batch.update(doc.ref, { category: target });
+        }
+        await batch.commit();
+      }
+    }
+
+    await ref.set(
+      { categories: next, updatedAt: FieldValue.serverTimestamp(), updatedByUid: auth.uid },
+      { merge: true }
+    );
+
+    return {
+      categories: [...new Set([...PERSONAL_EXPENSE_CATEGORIES, ...next])],
+      custom: next,
+      moved,
+    };
+  });
+}
 
 /* -------------------------------------------------------------------------- */
 /* Personal expenses — one person's own spending                               */

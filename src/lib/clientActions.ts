@@ -131,6 +131,8 @@ import {
 import {
   savePersonalExpense as _savePersonalExpense,
   deletePersonalExpense as _deletePersonalExpense,
+  getPersonalExpenseCategories as _getPersonalExpenseCategories,
+  managePersonalExpenseCategory as _managePersonalExpenseCategory,
   countPersonalExpensePayments as _countPersonalExpensePayments,
   saveStateLifePolicy as _saveStateLifePolicy,
   deleteStateLifePolicy as _deleteStateLifePolicy,
@@ -955,7 +957,7 @@ export async function manageExpenseCategory(
   action: 'ADD' | 'RENAME' | 'REMOVE',
   name: string,
   renameTo?: string
-): Promise<ActionResult<{ categories: string[]; moved?: number }>> {
+): Promise<ActionResult<{ categories: string[]; custom: string[]; moved?: number }>> {
   if (IS_DEMO) return demo.manageExpenseCategory(action, name, renameTo);
   return _manageExpenseCategory(token, action, name, renameTo);
 }
@@ -1067,6 +1069,19 @@ export async function deletePersonalExpense(token: string, expenseId: string) {
 
 export async function countPersonalExpensePayments(token: string, expenseId: string) {
   return _countPersonalExpensePayments(token, expenseId);
+}
+
+export async function getPersonalExpenseCategories(token: string) {
+  return _getPersonalExpenseCategories(token);
+}
+
+export async function managePersonalExpenseCategory(
+  token: string,
+  action: 'ADD' | 'RENAME' | 'REMOVE',
+  name: string,
+  renameTo?: string
+) {
+  return _managePersonalExpenseCategory(token, action, name, renameTo);
 }
 
 export async function saveStateLifePolicy(token: string, input: StateLifeInputRow, policyId?: string) {

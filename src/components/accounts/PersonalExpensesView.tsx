@@ -24,7 +24,7 @@
  * is refused outright rather than filtered.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Wallet2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useMyPersonalExpenses, useLedger } from "@/hooks/useLedger";
@@ -38,11 +38,12 @@ import {
   savePersonalExpense,
   deletePersonalExpense,
   countPersonalExpensePayments,
+  getPersonalExpenseCategories,
 } from "@/lib/clientActions";
+import { ExpenseCategoriesModal } from "@/components/finance/ExpenseCategoriesModal";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { readHistoryEntry, readPaid, HISTORY_LABELS } from "@/lib/officeExpenses";
 import {
-  PERSONAL_EXPENSE_CATEGORIES,
   PAYMENT_STATES,
   PAYMENT_STATE_LABELS,
   paymentState,
@@ -135,6 +136,13 @@ export function PersonalExpensesView() {
     is absent the row simply has no Pay button rather than one that errors.
   */
   const canPay = role === "admin" || role === "subadmin";
+
+  /*
+    The list is shared configuration — renaming a category renames it on
+    everybody's records — so editing it is the admin's or HR's. Reading it is
+    everybody's, because everybody has to fill the form in.
+  */
+  const canManageCategories = canPay;
   const ledger = useLedger(canPay);
   const isMobile = useIsMobile();
 
@@ -144,6 +152,17 @@ export function PersonalExpensesView() {
   const [state, setState] = useState<PaymentState | "ALL">("ALL");
   const [category, setCategory] = useState("ALL");
   const [showPeriod, setShowPeriod] = useState(false);
+  /*
+    **The categories are configuration, not a constant.** The built-in seven
+    are a starting list; anything the business adds is read back from
+    `config/personalExpenseCategories`. Loaded through a Server Action rather
+    than a live listener — the list changes about once a month, and a
+    subscription would cost a read on every mount for something that does not
+    move.
+  */
+  const [categories, setCategories] = useState<string[]>([]);
+  const [managingCategories, setManagingCategories] = useState(false);
+  const [categoryNonce, setCategoryNonce] = useState(0);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [adding, setAdding] = useState(false);
   const [paying, setPaying] = useState<Expense | null>(null);
@@ -156,6 +175,17 @@ export function PersonalExpensesView() {
     () => (records as Record<string, unknown>[]).map(readExpense),
     [records]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const token = await getIdToken().catch(() => "");
+      if (cancelled || !token) return;
+      const result = await getPersonalExpenseCategories(token);
+      if (!cancelled && result.ok) setCategories(result.data.categories);
+    })();
+    return () => { cancelled = true; };
+  }, [getIdToken, categoryNonce]);
 
   /** The range first — every figure on the screen belongs to the same period. */
   const inRange = useMemo(
@@ -362,12 +392,29 @@ export function PersonalExpensesView() {
           { label: "PAID BACK", value: summary.paid },
           { label: "LEFT", value: summary.unpaid },
         ]}
-        mobileAction={<HeroTile onClick={() => setAdding(true)} label="Add expense" d="M12 5v14M5 12h14" />}
+        mobileAction={
+          /*
+            The phone gets one glass tile and Add is the floating button, so
+            the tile is Categories — the same arrangement Office Expenses has.
+            Where somebody may not edit the list, it is Add instead of nothing.
+          */
+          canManageCategories
+            ? <HeroTile onClick={() => setManagingCategories(true)} label="Manage categories" d={ICON.tags} />
+            : <HeroTile onClick={() => setAdding(true)} label="Add expense" d="M12 5v14M5 12h14" />
+        }
         actions={
-          <HeroButton onClick={() => setAdding(true)} solid
-            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>}>
-            Add expense
-          </HeroButton>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {canManageCategories && (
+              <HeroButton onClick={() => setManagingCategories(true)}
+                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={ICON.tags} /></svg>}>
+                Categories
+              </HeroButton>
+            )}
+            <HeroButton onClick={() => setAdding(true)} solid
+              icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>}>
+              Add expense
+            </HeroButton>
+          </div>
         }
       >
         {isMobile && (
@@ -395,7 +442,7 @@ export function PersonalExpensesView() {
                 active: state === value,
                 pick: () => { setState(value); setCategory("ALL"); },
               })),
-              ...PERSONAL_EXPENSE_CATEGORIES.map((value) => ({
+              ...categories.map((value) => ({
                 label: value,
                 active: category === value,
                 pick: () => { setCategory(value); setState("ALL"); },
@@ -416,7 +463,7 @@ export function PersonalExpensesView() {
             },
             {
               label: "Category", width: "168px", value: category, onChange: setCategory,
-              options: [{ value: "ALL", label: "All" }, ...PERSONAL_EXPENSE_CATEGORIES.map((v) => ({ value: v, label: v }))],
+              options: [{ value: "ALL", label: "All" }, ...categories.map((v) => ({ value: v, label: v }))],
             },
           ]}
         />
@@ -520,9 +567,18 @@ export function PersonalExpensesView() {
         </OverlayPanel>
       )}
 
+      {managingCategories && (
+        <ExpenseCategoriesModal
+          kind="PERSONAL"
+          onClose={() => setManagingCategories(false)}
+          onChanged={(text) => { setBanner({ ok: true, text }); setCategoryNonce((value) => value + 1); }}
+        />
+      )}
+
       {(adding || editing) && (
         <ExpenseForm
           expense={editing}
+          categories={categories}
           onClose={() => { setAdding(false); setEditing(null); }}
           getIdToken={getIdToken}
           onSaved={(text) => { setBanner({ ok: true, text }); setAdding(false); setEditing(null); }}
@@ -563,8 +619,9 @@ export function PersonalExpensesView() {
 /* -------------------------------------------------------------------------- */
 
 /** New and Edit as one component, so the two cannot ask for different fields. */
-function ExpenseForm({ expense, onClose, getIdToken, onSaved }: {
+function ExpenseForm({ expense, categories, onClose, getIdToken, onSaved }: {
   expense: Expense | null;
+  categories: string[];
   onClose: () => void;
   getIdToken: () => Promise<string>;
   onSaved: (message: string) => void;
@@ -572,7 +629,7 @@ function ExpenseForm({ expense, onClose, getIdToken, onSaved }: {
   const isMobile = useIsMobile();
   const [form, setForm] = useState({
     title: expense?.title ?? "",
-    category: expense?.category ?? (PERSONAL_EXPENSE_CATEGORIES[0] as string),
+    category: expense?.category ?? categories[0] ?? "Other",
     amount: expense ? String(expense.amount) : "",
     dayKey: expense?.dayKey ?? karachiDayKey(),
     vendor: expense?.vendor ?? "",
@@ -628,7 +685,14 @@ function ExpenseForm({ expense, onClose, getIdToken, onSaved }: {
           </L>
           <L label="Category">
             <select value={form.category} onChange={(e) => set("category", e.target.value)} style={{ ...field, cursor: "pointer" }}>
-              {PERSONAL_EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {/*
+                An expense filed under a category that has since been removed
+                keeps it, and it is offered here so editing the record does not
+                silently re-file it under something else.
+              */}
+              {[...new Set([...categories, form.category].filter(Boolean))].map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
             </select>
           </L>
           <L label="Paid to">

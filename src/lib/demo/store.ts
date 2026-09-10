@@ -2806,6 +2806,7 @@ export const demo = {
       categories: [
         ...new Set([...DEFAULT_EXPENSE_CATEGORIES, ...next, ...LEGACY_EXPENSE_CATEGORIES]),
       ],
+      custom: next,
       moved,
     });
   },

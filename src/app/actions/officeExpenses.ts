@@ -90,7 +90,7 @@ export async function manageExpenseCategory(
   action: "ADD" | "RENAME" | "REMOVE",
   name: string,
   renameTo?: string
-): Promise<ActionResult<{ categories: string[]; moved?: number }>> {
+): Promise<ActionResult<{ categories: string[]; custom: string[]; moved?: number }>> {
   return runAction("manageExpenseCategory", async () => {
     const auth = await requireExpenseAccess(token);
     const ref = adminDb.collection("config").doc(CATEGORY_DOC);
@@ -146,8 +146,11 @@ export async function manageExpenseCategory(
       { merge: true }
     );
 
+    // `custom` comes back too, so the dialog's own list is correct the instant
+    // a rename returns rather than after the refetch it also triggers.
     return {
       categories: [...new Set([...DEFAULT_EXPENSE_CATEGORIES, ...next, ...LEGACY_EXPENSE_CATEGORIES])],
+      custom: next,
       moved,
     };
   });
