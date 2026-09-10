@@ -83,7 +83,7 @@ Meta Lead Ads intake and the SLA timers need credentials and a cron schedule;
 see [`SETUP_STATUS.md`](SETUP_STATUS.md) for exactly what is still outstanding.
 
 ### Commands
-
+.
 ```bash
 npm run check           # typecheck + unit tests + lint
 npm run test            # unit tests only
