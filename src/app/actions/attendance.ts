@@ -900,19 +900,58 @@ export async function adjustAttendance(
     const auth = await requireManager(token);
     const { hr, teamOf } = await attendanceScope(auth);
 
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+      throw new UserFacingError("That is not a valid date.");
+    }
+
     const employeeSnap = await adminDb.collection("users").doc(uid).get();
     if (!employeeSnap.exists) throw new UserFacingError("That employee no longer exists.");
 
-    // A Sales manager may correct their own team and nobody else's.
-    if (!hr && employeeSnap.data()?.subAdminUid !== teamOf) {
+    // A Sales manager may correct their own team (or themselves) and nobody else's.
+    if (!hr && employeeSnap.data()?.subAdminUid !== teamOf && uid !== teamOf) {
       throw new UserFacingError("That employee is not on your team.");
     }
 
+    const policy = await readPolicy();
     const ref = adminDb.collection("attendance").doc(attendanceDocId(uid, dayKey));
 
     await adminDb.runTransaction(async (t: Transaction) => {
       const snap = await t.get(ref);
       const existing = snap.data() ?? {};
+
+      const effectiveIn =
+        change.checkIn !== undefined
+          ? change.checkIn
+          : (existing.adjustedCheckIn ?? formatKarachiClock(existing.firstActionAt?.toDate?.() ?? null));
+      const effectiveOut =
+        change.checkOut !== undefined
+          ? change.checkOut
+          : (existing.adjustedCheckOut ?? formatKarachiClock(existing.lastActionAt?.toDate?.() ?? null));
+
+      let workedMinutes: number | undefined = undefined;
+      if (effectiveIn && effectiveOut) {
+        const inMin = parseClock(effectiveIn);
+        const outMin = parseClock(effectiveOut);
+        if (inMin !== null && outMin !== null && outMin >= inMin) {
+          workedMinutes = outMin - inMin;
+        }
+      }
+
+      let late = change.late;
+      if (late === undefined) {
+        if (change.status === "LATE") {
+          late = true;
+        } else if (change.status === "PRESENT" || change.status === "ABSENT") {
+          late = false;
+        } else if (change.checkIn) {
+          const start = parseClock(policy.startTime) ?? 0;
+          const grace = Math.max(0, Math.floor(policy.graceMinutes || 0));
+          const checkInMin = parseClock(change.checkIn);
+          if (checkInMin !== null) {
+            late = checkInMin > start + grace;
+          }
+        }
+      }
 
       const entry = {
         at: new Date(),
@@ -926,7 +965,7 @@ export async function adjustAttendance(
         },
         to: {
           status: change.status ?? null,
-          late: change.late ?? Boolean(existing.late),
+          late: late ?? Boolean(existing.late),
           checkIn: change.checkIn ?? null,
           checkOut: change.checkOut ?? null,
         },
@@ -937,12 +976,15 @@ export async function adjustAttendance(
         ref,
         {
           uid,
+          email: existing.email ?? employeeSnap.data()?.email ?? null,
           dayKey,
           monthKey: dayKey.slice(0, 7),
           ...(change.status ? { overrideStatus: change.status } : null),
-          ...(change.late === undefined ? null : { late: change.late }),
+          ...(late === undefined ? null : { late }),
           ...(change.checkIn === undefined ? null : { adjustedCheckIn: change.checkIn }),
           ...(change.checkOut === undefined ? null : { adjustedCheckOut: change.checkOut }),
+          ...(workedMinutes === undefined ? null : { workedMinutes }),
+          ...(effectiveOut ? { checkedOut: true } : null),
           overrideNote: (change.note ?? "").trim() || null,
           adjustedAt: FieldValue.serverTimestamp(),
           adjustedByUid: auth.uid,

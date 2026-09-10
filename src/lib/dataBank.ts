@@ -230,6 +230,33 @@ export function phoneKey(raw: string | null | undefined): string {
   return rest.slice(-10);
 }
 
+/**
+ * What the reader is told when a number is already in the folder.
+ *
+ * **It names the person, not only the number.** "That number is already in
+ * this folder" leaves somebody hunting for a row they can only find by
+ * searching the number they have just been told not to use; the name is the
+ * thing they can act on — it is usually a colleague's typo, an old enquiry, or
+ * the same client under a second spelling.
+ *
+ * Here rather than in the action so the Server Action, the demo store and the
+ * tests all produce the same sentence — a message that differs between the
+ * real path and demo mode is a message nobody can test.
+ */
+export function duplicatePhoneMessage(
+  /** As the person typed it, falling back to the normalised key. */
+  written: string | null | undefined,
+  holder: string | null | undefined,
+  /** True when the row that holds it has been handed to a manager. */
+  handedOff = false
+): string {
+  const number = (written ?? "").trim() || "That number";
+  const name = (holder ?? "").trim() || "an unnamed record";
+  return handedOff
+    ? `${number} is already in this folder's records — it belongs to ${name}, whose row has been handed to a manager.`
+    : `${number} is already in this folder — it belongs to ${name}.`;
+}
+
 /** True when two written numbers are the same line. */
 export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = phoneKey(a);

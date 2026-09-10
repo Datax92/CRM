@@ -63,12 +63,13 @@ function karachiParts(at: Date) {
  * instant itself rather than hard-coding +05:00, so it stays correct if that
  * ever changes.
  */
-export function startOfKarachiDay(at: Date, daysBack = 0): Date {
+export function startOfKarachiDay(at: Date = new Date(), daysBack = 0): Date {
   const p = karachiParts(at);
-  const localMidnightAsUtc = Date.UTC(p.year, p.month - 1, p.day - daysBack, 0, 0, 0);
-  const localNowAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-  const offsetMs = localNowAsUtc - at.getTime();
-  return new Date(localMidnightAsUtc - offsetMs);
+  const targetDate = new Date(Date.UTC(p.year, p.month - 1, p.day - daysBack));
+  const y = targetDate.getUTCFullYear();
+  const m = String(targetDate.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(targetDate.getUTCDate()).padStart(2, '0');
+  return new Date(Date.parse(`${y}-${m}-${d}T00:00:00.000+05:00`));
 }
 
 /** Midnight in Karachi on the 1st of the month containing `at`. */
@@ -91,9 +92,7 @@ export function startOfKarachiWeek(at: Date): Date {
 /** Midnight in Karachi on 1 January of the year containing `at`. */
 export function startOfKarachiYear(at: Date): Date {
   const p = karachiParts(at);
-  const localMidnightAsUtc = Date.UTC(p.year, 0, 1, 0, 0, 0);
-  const localNowAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-  return new Date(localMidnightAsUtc - (localNowAsUtc - at.getTime()));
+  return new Date(Date.parse(`${p.year}-01-01T00:00:00.000+05:00`));
 }
 
 /**
@@ -124,8 +123,11 @@ export function karachiDayKey(at: Date = new Date()): string {
 
 export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
   switch (key) {
-    case 'TODAY':
-      return { key, label: RANGE_LABELS.TODAY, from: startOfKarachiDay(now), to: null };
+    case 'TODAY': {
+      const from = startOfKarachiDay(now);
+      const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+      return { key, label: RANGE_LABELS.TODAY, from, to };
+    }
     case 'WEEK':
       return { key, label: RANGE_LABELS.WEEK, from: startOfKarachiWeek(now), to: null };
     case 'MONTH':
@@ -136,14 +138,44 @@ export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
   }
 }
 
+/**
+ * One named calendar day in Karachi, as a range.
+ *
+ * The dossier's date picker hands back a `YYYY-MM-DD`, and "what did this
+ * person do on the 7th of July" has to mean the 7th **there** — a range built
+ * from the browser's own midnight would start five hours late in Karachi and
+ * take five hours of the 8th with it, which is precisely the kind of quiet
+ * off-by-a-day the report is being asked to stop.
+ *
+ * Karachi is a fixed UTC+5 with no daylight saving, so the offset is written
+ * into the parsed string rather than derived. `to` is the *next* midnight and
+ * `withinRange` treats it as exclusive, so the day is whole and no instant
+ * belongs to two days.
+ *
+ * Returns the ALL range for anything that is not a date, because a picker that
+ * has not been used yet must not silently filter everything away.
+ */
+export function karachiDayRange(dayKey: string | null | undefined): DateRange {
+  if (!dayKey || !/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return resolveRange('ALL');
+  const from = Date.parse(`${dayKey}T00:00:00.000+05:00`);
+  if (!Number.isFinite(from)) return resolveRange('ALL');
+  return {
+    key: 'ALL',
+    label: dayKey,
+    from: new Date(from),
+    to: new Date(from + 24 * 60 * 60 * 1000),
+  };
+}
+
 /** Whether a Firestore Timestamp-ish value falls inside the range. */
 export function withinRange(value: { toDate?: () => Date } | Date | null | undefined, range?: DateRange): boolean {
   if (!range || (range.from === null && range.to === null)) return true;
   if (!value) return false;
-  const date = value instanceof Date ? value : value.toDate?.();
-  if (!date) return false;
-  if (range.from && date < range.from) return false;
-  if (range.to && date >= range.to) return false;
+  const date = value instanceof Date ? value : typeof value.toDate === 'function' ? value.toDate() : null;
+  if (!date || Number.isNaN(date.getTime())) return false;
+  const time = date.getTime();
+  if (range.from && time < range.from.getTime()) return false;
+  if (range.to && time >= range.to.getTime()) return false;
   return true;
 }
 
@@ -175,3 +207,31 @@ export function formatBusinessDateTime(value: { toDate?: () => Date } | Date | n
     hour12: true,
   }).format(date);
 }
+
+/**
+ * Offsets a YYYY-MM-DD day key by a given number of days in Karachi time.
+ */
+export function offsetDayKey(dayKey: string, deltaDays: number): string {
+  if (!dayKey || !/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+    return karachiDayKey();
+  }
+  const ms = Date.parse(`${dayKey}T12:00:00.000+05:00`);
+  if (!Number.isFinite(ms)) return karachiDayKey();
+  return karachiDayKey(new Date(ms + deltaDays * 24 * 60 * 60 * 1000));
+}
+
+/**
+ * Formats a YYYY-MM-DD day key for human display:
+ * e.g. "Today · 09 Sep 2026", "Yesterday · 08 Sep 2026", or "07 Jul 2026".
+ */
+export function formatDayKeyDisplay(dayKey: string): string {
+  const todayKey = karachiDayKey();
+  const yesterday = offsetDayKey(todayKey, -1);
+  const ms = Date.parse(`${dayKey}T12:00:00.000+05:00`);
+  const dateObj = Number.isFinite(ms) ? new Date(ms) : new Date();
+  const formatted = formatBusinessDate(dateObj);
+  if (dayKey === todayKey) return `Today · ${formatted}`;
+  if (dayKey === yesterday) return `Yesterday · ${formatted}`;
+  return formatted;
+}
+

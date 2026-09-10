@@ -50,10 +50,10 @@ import {
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import {
-  readTotalPrice,
-  readDownPayment,
-  readAdjustment,
-  readRemaining,
+  dealFigureRows,
+  dealCutRows,
+  readDealType,
+  DEAL_TYPE_LABELS,
 } from "@/lib/dealAmounts";
 import { formatPhone } from "@/lib/phone";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
@@ -138,17 +138,15 @@ export function ClosedDealRecord({
         </span>
       }
       headerExtra={
+        /* The deal's own type's fields, from `dealFigureRows` — the one place
+           that decides which boxes a lump sum has. A null value is a figure
+           that was never recorded and shows as a dash, not a confident Rs 0. */
         <OverlayFigures
-          items={[
-            { label: "Total Price", value: formatMoney(readTotalPrice(deal)) },
-            {
-              label: "Down Payment",
-              // Null, not zero, for a deal closed before the form asked.
-              value: readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal)),
-            },
-            { label: "Adjustment", value: formatMoney(readAdjustment(deal)) },
-            { label: "Remaining", value: formatMoney(readRemaining(deal)), strong: true },
-          ]}
+          items={dealFigureRows(deal).map((row) => ({
+            label: row.label,
+            value: row.value === null ? "—" : formatMoney(row.value),
+            strong: row.strong,
+          }))}
         />
       }
     >
@@ -172,6 +170,22 @@ export function ClosedDealRecord({
         <Facts
           rows={[
             { icon: <FileText size={12} />, label: "Sold", value: deal.serviceDescription },
+            // The type, because it is what decides how every figure above is
+            // read. A deal recorded before the selector reads as Installments,
+            // which is the shape it is in.
+            { icon: <Wallet size={12} />, label: "Deal type", value: DEAL_TYPE_LABELS[readDealType(deal)] },
+            /*
+             * **The two Cut figures, on the historical record.**
+             *
+             * They are what the split was — or will be — computed from, and on
+             * three of the four types they are different numbers. A record that
+             * showed only one of them could not be checked afterwards.
+             */
+            ...dealCutRows(deal).map((row) => ({
+              icon: <Wallet size={12} />,
+              label: row.label,
+              value: formatMoney(row.value),
+            })),
             { icon: <Wallet size={12} />, label: "Category", value: deal.dealCategory },
             { icon: <Wallet size={12} />, label: "Payment method", value: deal.paymentMethod },
             {
@@ -248,7 +262,9 @@ export function ClosedDealRecord({
               lines={distribution.lines}
               netProfit={distribution.netProfit}
               companyTotalAmount={distribution.companyTotalAmount}
-              remainingAmount={distribution.remainingAmount}
+              cutBase={distribution.cutBase}
+              payoutSource={distribution.payoutSource}
+              companyRetained={distribution.companyRetained}
             />
           ) : (
             <Empty>

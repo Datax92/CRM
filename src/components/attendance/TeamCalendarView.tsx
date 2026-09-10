@@ -33,6 +33,24 @@ import {
 import { MonthStepper } from "./MyAttendanceView";
 import { DayDetailPanel } from "./DayDetailPanel";
 
+function resolveDay(dayKey: string, existing?: TeamAttendanceDay): TeamAttendanceDay {
+  return (
+    existing ?? {
+      dayKey,
+      status: "UNRECORDED",
+      late: false,
+      lateByMinutes: 0,
+      minutes: 0,
+      network: "UNKNOWN",
+      checkIn: null,
+      checkOut: null,
+      leaveType: null,
+      note: null,
+      adjusted: false,
+    }
+  );
+}
+
 /**
  * A server row is not a hook row: it has no `Date` objects, because it came
  * over the wire. The detail panel takes the hook's shape, so one adapter here
@@ -59,6 +77,8 @@ function toAttendanceDay(day: TeamAttendanceDay): AttendanceDay {
       lateByMinutes: day.lateByMinutes,
       network: day.network,
       overrideNote: day.note,
+      adjustedCheckIn: day.checkIn,
+      adjustedCheckOut: day.checkOut,
       leaveType: (day.leaveType as "CASUAL" | "MEDICAL" | undefined) ?? undefined,
     },
   };
@@ -205,8 +225,10 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
               cells={cells}
               today={karachiDayKey()}
               onSelect={(dayKey) => {
-                const day = person?.days.find((entry) => entry.dayKey === dayKey);
-                if (day && person) setOpen({ uid: person.uid, name: person.name, day });
+                if (!person) return;
+                const existingDay = person.days.find((entry) => entry.dayKey === dayKey);
+                const day = resolveDay(dayKey, existingDay);
+                setOpen({ uid: person.uid, name: person.name, day });
               }}
             />
           </>
@@ -264,14 +286,15 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
                     {Array.from({ length: dayCount }, (_, index) => {
                       const dayKey = `${monthKey}-${String(index + 1).padStart(2, "0")}`;
                       const day = byDay.get(dayKey);
-                      const status: AttendanceStatus = day?.status ?? "UNRECORDED";
+                      const targetDay = resolveDay(dayKey, day);
+                      const status: AttendanceStatus = targetDay.status;
                       const tone = ATTENDANCE_TONES[status];
                       return (
                         <button
                           key={dayKey}
                           type="button"
-                          disabled={!day}
-                          onClick={() => day && setOpen({ uid: row.uid, name: row.name, day })}
+                          disabled={!canAdjust && !day}
+                          onClick={() => (canAdjust || day) && setOpen({ uid: row.uid, name: row.name, day: targetDay })}
                           aria-label={`${row.name} — ${dayKey}`}
                           title={`${dayKey} · ${status}`}
                           style={{
@@ -282,7 +305,7 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
                             color: tone.text,
                             fontSize: 9,
                             fontWeight: 800,
-                            cursor: day ? "pointer" : "default",
+                            cursor: canAdjust || day ? "pointer" : "default",
                             padding: 0,
                           }}
                         >

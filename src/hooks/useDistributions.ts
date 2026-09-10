@@ -45,13 +45,25 @@ export interface DealDistribution {
    */
   amountReceived: number;
   payableAmount: number;
+  /** Which of the four the deal was. Absent on splits finalised before it. */
+  dealType?: string;
+  /**
+   * **The two Cut figures, frozen with the split.** `cutBase` is what the
+   * percentages multiplied; `payoutSource` is the pot they came out of.
+   * Absent on splits finalised before 2026-09-09, when there was a single pot
+   * and `netProfit` was both.
+   */
+  cutBase?: number;
+  payoutSource?: number;
+  companyRetained?: number;
   netProfit: number;
   lines: DistributionLine[];
   distributedPercentage: number;
   distributedAmount: number;
-  remainingPercentage: number;
-  remainingAmount: number;
-  companyBaseAmount: number;
+  /** Only on splits finalised under the single-pot rule. Read, never written. */
+  remainingPercentage?: number;
+  remainingAmount?: number;
+  companyBaseAmount?: number;
   companyTotalAmount: number;
   finalizedByUid: string;
   finalizedAt?: FirestoreTimestamp;

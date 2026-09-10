@@ -47,11 +47,15 @@ import {
   lastTouchAt,
   applyDealPeriod,
   applyActivityPeriod,
-  DEFAULT_DOSSIER_FILTERS,
+  entryActivityToEntries,
+  defaultDossierFilters,
+  describeDossierCount,
+  dossierRangeKeys,
   type DossierFilters,
 } from "@/components/employees/directoryChrome";
 import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "@/components/employees/AnalyticsPanels";
 import { countByFilter } from "@/lib/leadBuckets";
+import { useDossierActivity } from "@/hooks/useDossierActivity";
 import { DossierFilterBar, Pager } from "@/components/employees/DossierControls";
 
 /** Roster cards, and rows inside a profile tab, per page. */
@@ -1017,7 +1021,7 @@ function ProfileOverlay({
     role === "admin" || role === "subadmin" ? role : "employee";
 
   const [tab, setTab] = useState<ProfileTab>("leads");
-  const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
+  const [filters, setFilters] = useState<DossierFilters>(defaultDossierFilters);
   /**
    * The lead being read. `MobileLeadDetail` is the phone's equivalent of the
    * desktop dossier's `LeadDetailPane` — the same document, the same actions,
@@ -1083,14 +1087,26 @@ function ProfileOverlay({
     () => buildDirectoryAnalytics(subject, leads, deals, owners),
     [subject, leads, deals, owners]
   );
-  const activity = useMemo(
-    () => buildActivity(employee, leads, deals, owners),
-    [employee, leads, deals, owners]
-  );
+  const activityRange = useMemo(() => dossierRangeKeys(filters), [filters]);
+  const ownerUids = useMemo(() => [...owners], [owners]);
+  const entryActivity = useDossierActivity(ownerUids, activityRange, getIdToken);
+
+  // Depends on `items` by a plain reference, not `entryActivity?.items` — the
+  // optional chain makes the dependency unverifiable and the React Compiler
+  // then skips optimising the whole component.
+  const activityItems = entryActivity.items;
+  const activity = useMemo(() => {
+    const base = buildActivity(employee, leads, deals, owners);
+    const entries = entryActivityToEntries(activityItems);
+    return [...entries, ...base].sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+  }, [employee, leads, deals, owners, activityItems]);
 
   // The filters cut the tab bodies only — the hero figures keep describing the
   // employee's whole record, exactly as on the desktop dossier.
-  const shownLeads = useMemo(() => applyLeadFilters(ownLeads, filters), [ownLeads, filters]);
+  const shownLeads = useMemo(
+    () => applyLeadFilters(ownLeads, filters, entryActivity.tallies),
+    [ownLeads, filters, entryActivity.tallies]
+  );
   /**
    * How many leads sit under each cut, within the chosen period.
    *
@@ -1099,14 +1115,20 @@ function ProfileOverlay({
    * is the same function the leads workspace counts with.
    */
   const cutCounts = useMemo(
-    () => countByFilter(applyLeadFilters(ownLeads, { ...filters, cut: "ALL" })),
-    [ownLeads, filters]
+    () =>
+      countByFilter(
+        applyLeadFilters(ownLeads, { ...filters, cut: "ALL" }, entryActivity.tallies),
+        undefined,
+        "admin",
+        entryActivity.tallies
+      ),
+    [ownLeads, filters, entryActivity.tallies]
   );
 
-  const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters.period), [ownDeals, filters.period]);
+  const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters), [ownDeals, filters]);
   const shownActivity = useMemo(
-    () => applyActivityPeriod(activity, filters.period),
-    [activity, filters.period]
+    () => applyActivityPeriod(activity, filters),
+    [activity, filters]
   );
 
   const leadPages = usePagination(shownLeads, PROFILE_PAGE_SIZE);
@@ -1350,11 +1372,8 @@ function ProfileOverlay({
                 onChange={setFilters}
                 variant="mobile"
                 counts={cutCounts}
-                countLine={
-                  filters.period === "ALL"
-                    ? `${shownLeads.length} / ${ownLeads.length}`
-                    : `${shownLeads.length} / ${ownLeads.length} worked`
-                }
+                activity={entryActivity}
+                countLine={describeDossierCount(shownLeads.length, ownLeads.length, filters, "mobile", entryActivity.loading)}
               />
               <MobileAssignedLeads
                 leads={leadPages.items}
@@ -1383,17 +1402,21 @@ function ProfileOverlay({
           )}
           {tab === "activity" && (
             <>
+              {/* Same day summary as the Leads tab — this tab lists the day's
+                  entries, so the figures that count them belong over it. */}
               <DossierFilterBar
                 filters={filters}
                 onChange={setFilters}
                 variant="mobile"
                 showCut={false}
-                countLine={`${shownActivity.length} / ${activity.length}`}
+                activity={entryActivity}
+                countLine={`${shownActivity.length} entr${shownActivity.length === 1 ? "y" : "ies"}`}
               />
               <ActivityFeed
                 entries={activityPages.items}
                 variant="mobile"
                 formatWhen={(at) => (at ? formatBusinessDateTime(at) : "—")}
+                emptyMessage="No activity recorded for this employee on this date."
               />
               <Pager pagination={activityPages} variant="mobile" noun="entries" />
             </>

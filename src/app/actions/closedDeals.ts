@@ -3,7 +3,7 @@
 import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
-import { dealAmounts, validateDealAmounts } from "@/lib/dealAmounts";
+import { dealAmounts, describeDealAmounts, validateDealAmounts } from "@/lib/dealAmounts";
 import { toE164Digits } from "@/lib/phone";
 import { isTerminal } from "@/lib/leadStatus";
 import { karachiMonthKey } from "@/lib/dates";
@@ -33,12 +33,26 @@ export interface DealCustomerInput {
 export interface DealEntryInput {
   customer: DealCustomerInput;
   serviceDescription: string;
-  /** The sale price agreed with the client. */
-  totalPrice: number;
-  /** What they have paid so far — the cash the payouts come out of. */
-  downPayment: number;
+  /**
+   * Which of the four the deal is. Decides which of the figures below are read
+   * at all — see `lib/dealAmounts`. Absent means Installments, which is what
+   * every deal recorded before the selector existed is.
+   */
+  dealType?: string;
+  /** Down Payment / Confirmation: the sale price agreed with the client. */
+  totalPrice?: number;
+  /** Down Payment: what they have handed over so far. */
+  downPayment?: number;
+  /** Confirmation: what they have handed over to confirm. */
+  confirmationAmount?: number;
   /** Anything knocked off the price: a discount, or an old file traded in. */
   adjustment?: number;
+  /** Installments / Lump Sum: the money received. */
+  receivedAmount?: number;
+  /** Installments / Lump Sum: what is payable out of it. */
+  payableAmount?: number;
+  /** Lump Sum only: what the builder pays us. **Typed, never derived.** */
+  commission?: number;
   paymentMethod?: string;
   /** Rental / Installment / Investment — drives the portfolio breakdown. */
   dealCategory?: string;
@@ -82,19 +96,26 @@ export async function closeDeal(
     /**
      * **The money, computed here and never read from the payload** (BR-19).
      *
-     * `remaining = totalPrice − adjustment` is the commission base, and
-     * `profit` is set to it so the distribution screen — which splits `profit`
-     * by percentage — applies those percentages to exactly the number the
-     * owner specified. See `lib/dealAmounts` for why that single expression
-     * covers both the adjusted and unadjusted case.
+     * Every figure below comes out of `lib/dealAmounts` from the deal type and
+     * the typed fields, so the form's live preview and the stored record cannot
+     * disagree. The two that matter downstream are deliberately separate:
+     * `cutBase` is what a Cut percentage multiplies and `payoutSource` is what
+     * the finalised Cut comes out of — see the table in that module.
+     *
+     * **The Cut itself is not decided here.** Deal Entry stores the figures;
+     * the admin finalises the percentage in Profit Distribution. There is one
+     * source of truth for each and this is not it.
      */
     const amountErrors = validateDealAmounts(input);
     if (amountErrors.length > 0) throw new UserFacingError(amountErrors[0]);
 
     const amounts = dealAmounts(input);
-    const { totalPrice, downPayment, adjustment, remaining, profit } = amounts;
-    // The two fields every existing revenue rollup reads. Mirrors, not inputs.
-    const { amountReceived, payableAmount } = amounts;
+    const { dealType, totalPrice, downPayment, confirmationAmount, adjustment } = amounts;
+    const { receivedAmount, commission, remaining, cutBase, payoutSource, profit } = amounts;
+    // The two fields every existing revenue rollup reads. Mirrors, not inputs:
+    // for a Lump Sum they carry the Commission, because the client's money goes
+    // to the builder and is not the company's revenue.
+    const { amountReceived, legacyPayableAmount } = amounts;
 
     const email = (input.customer?.email ?? "").trim();
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -162,20 +183,41 @@ export async function closeDeal(
         dealCategory,
         notes: (input.notes ?? "").trim() || null,
 
-        // The deal as it is now recorded.
+        // The deal as it is now recorded. Every type's fields are written,
+        // because a figure that is meaningless for this type is zero rather
+        // than absent — an absent field and a zero one are indistinguishable
+        // later, and `dealType` is what says which ones to read.
+        dealType,
         totalPrice,
         downPayment,
+        confirmationAmount,
         adjustment,
+        // Null for a Lump Sum, which has no Remaining at all. Stored as null
+        // rather than 0 so nothing can print a confident "Rs 0 remaining".
         remaining,
+        receivedAmount,
+        commission,
+
         /*
-         * Written for the ~30 readers that predate the four-field form — every
+         * **The two Cut numbers, stored apart on purpose.** `cutBase` is what
+         * the admin's percentage multiplies; `payoutSource` is the pot it comes
+         * out of. They differ on every type but Installments-with-no-payable,
+         * and collapsing them is the mistake this pair exists to prevent.
+         * Frozen here at entry so a later edit to the deal cannot silently
+         * restate what somebody was paid.
+         */
+        cutBase,
+        payoutSource,
+
+        /*
+         * Written for the ~30 readers that predate the type selector — every
          * revenue rollup, the KPI portfolio, the income sheet, campaign ROI.
-         * `amountReceived − payableAmount` still equals the commission base, so
-         * none of them had to change and no historical deal needs migrating.
+         * `amountReceived − payableAmount` still equals what the company books,
+         * so none of them had to change and no historical deal needs migrating.
          * Nothing new should read these; use `lib/dealAmounts`.
          */
         amountReceived,
-        payableAmount,
+        payableAmount: legacyPayableAmount,
         profit,
 
         // Denormalised so campaign reporting doesn't need a lead join.
@@ -227,9 +269,10 @@ export async function closeDeal(
       );
 
       // The admin has to be told, because nothing else in the product would
-      // surface a deal sitting unsplit. Profit rather than the headline amount:
-      // the split is a percentage of profit, so that is the number the admin
-      // needs before opening the screen.
+      // surface a deal sitting unsplit. The sentence names the Cut base and the
+      // payment source rather than one headline figure: those are the two
+      // numbers the admin is about to work with, and on three of the four types
+      // they are not the same number.
       t.create(adminDb.collection("notifications").doc(), {
         type: "DEAL_CLOSED_REVIEW",
         leadId,
@@ -237,17 +280,18 @@ export async function closeDeal(
         targetRole: "admin",
         targetUid: null,
         payload: {
-          message:
-            `${customerName} closed for ${totalPrice.toLocaleString("en-PK")}` +
-            (adjustment > 0 ? ` less ${adjustment.toLocaleString("en-PK")} adjustment` : "") +
-            ` — commission base ${remaining.toLocaleString("en-PK")}, ` +
-            `paid from a down payment of ${downPayment.toLocaleString("en-PK")}. ` +
-            "Finalize Profit Distribution.",
+          message: `${customerName}: ${describeDealAmounts(amounts)} Finalize Profit Distribution.`,
+          dealType,
           netProfit: profit,
+          cutBase,
+          payoutSource,
           totalPrice,
           downPayment,
+          confirmationAmount,
           adjustment,
           remaining,
+          receivedAmount,
+          commission,
           amountReceived,
         },
         createdAt: FieldValue.serverTimestamp(),
@@ -261,12 +305,18 @@ export async function closeDeal(
         meta: {
           dealId: leadId,
           creditedTo: lead.assignedUserId,
+          dealType,
           totalPrice,
           downPayment,
+          confirmationAmount,
           adjustment,
           remaining,
+          receivedAmount,
+          commission,
+          cutBase,
+          payoutSource,
           amountReceived,
-          payableAmount,
+          payableAmount: legacyPayableAmount,
           profit,
         },
       });

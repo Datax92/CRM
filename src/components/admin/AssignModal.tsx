@@ -71,8 +71,14 @@ export function AssignModal({
               className="w-full rounded-xl border border-slate-200/80 bg-slate-50/50 p-3 text-xs font-medium text-slate-800 outline-none focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10"
             >
               <option value="" disabled>Choose an employee…</option>
+              {/* The job title is on the option because the list is no longer
+                  always one team: an HR manager assigns across the whole
+                  company, and "which of these is a Sales Executive" is the
+                  question they are answering at this select. */}
               {active.map((emp) => (
-                <option key={emp.uid} value={emp.uid}>{emp.name} — priority {emp.priority}</option>
+                <option key={emp.uid} value={emp.uid}>
+                  {emp.name} — {emp.jobTitle} · priority {emp.priority}
+                </option>
               ))}
             </select>
           )}

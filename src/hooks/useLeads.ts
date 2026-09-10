@@ -195,15 +195,30 @@ interface LeadState {
  * | role | query |
  * |---|---|
  * | admin | everything, newest first |
- * | sub admin | `subAdminUid == me` — their team's leads (§10) |
+ * | HR manager | everything — their reach is the company, see `isHrManager` |
+ * | Sales manager | `subAdminUid == me` — their team's leads (§10) |
  * | employee | `assignedUserId == me` |
  */
-export function useLeads(role: 'admin' | 'subadmin' | 'employee' | null, uid?: string) {
+export function useLeads(
+  role: 'admin' | 'subadmin' | 'employee' | null,
+  uid?: string,
+  /**
+   * Read the whole pipeline rather than one team's slice. True for an **HR
+   * manager**, whose reach is the company (`isHrManager`) — the Security Rule
+   * on `leads` carries the matching `isHr()` clause, so this is not the UI
+   * widening its own scope: without that clause the unscoped query would be
+   * refused outright, which is what an unscoped list query does here.
+   */
+  companyWide = false
+) {
   const [state, setState] = useState<LeadState | null>(null);
   const demoState = useDemoState();
 
-  const key =
-    !role || (role !== 'admin' && !uid) ? 'idle' : role === 'admin' ? 'admin' : `${role}:${uid}`;
+  // The admin and an HR manager ask the same question of Firestore, so they
+  // share one subscription key: two keys for one query would resubscribe for
+  // no reason every time the role resolved.
+  const wholePipeline = role === 'admin' || (role === 'subadmin' && companyWide);
+  const key = !role || (!wholePipeline && !uid) ? 'idle' : wholePipeline ? 'all' : `${role}:${uid}`;
 
   useEffect(() => {
     if (IS_DEMO || key === 'idle') return;
@@ -211,7 +226,7 @@ export function useLeads(role: 'admin' | 'subadmin' | 'employee' | null, uid?: s
     const leadsRef = collection(db, 'leads');
     const scopeField = role === 'subadmin' ? 'subAdminUid' : 'assignedUserId';
     const q =
-      key === 'admin'
+      key === 'all'
         ? query(leadsRef, orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE))
         : query(
             leadsRef,
@@ -241,12 +256,11 @@ export function useLeads(role: 'admin' | 'subadmin' | 'employee' | null, uid?: s
   }, [key]);
 
   if (IS_DEMO) {
-    const leads =
-      role === 'admin'
-        ? demoState.leads
-        : demoState.leads.filter((lead) =>
-            role === 'subadmin' ? lead.subAdminUid === uid : lead.assignedUserId === uid
-          );
+    const leads = wholePipeline
+      ? demoState.leads
+      : demoState.leads.filter((lead) =>
+          role === 'subadmin' ? lead.subAdminUid === uid : lead.assignedUserId === uid
+        );
     return { leads, loading: false, error: null };
   }
 

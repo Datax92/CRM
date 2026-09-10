@@ -19,6 +19,7 @@ import {
 } from "@/lib/constants/distribution";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
+import { canAssignLeadTo } from "@/lib/constants/hierarchy";
 
 /**
  * Manual assignment inside the 5-minute window (FR-8, BR-4).
@@ -35,8 +36,9 @@ export async function assignLead(
   userId: string
 ): Promise<ActionResult> {
   return runAction("assignLead", async () => {
-    // A sub admin hands out leads to their own team; the ownership check is in
-    // `readAssignableEmployee` below, which refuses anyone else's employee.
+    // A Sales manager hands out leads to their own team, an HR manager to
+    // anybody; the reach check is in `readAssignableEmployee` below, which
+    // refuses another manager's employee to everyone but the admin and HR.
     const actor = await requireManager(token);
 
     await adminDb.runTransaction(async (t: Transaction) => {
@@ -469,7 +471,8 @@ export async function assignLeadsBulk(
     if (employee.status === "DISABLED") {
       throw new UserFacingError("That employee is paused — resume them or choose someone else.");
     }
-    if (actor.role === "subadmin" && employee.subAdminUid !== actor.uid) {
+    // Same reach rule as `readAssignableEmployee`, from the same predicate.
+    if (!canAssignLeadTo(actor, { subAdminUid: employee.subAdminUid ?? null })) {
       throw new UserFacingError("That team member is not on your team.");
     }
 
@@ -615,9 +618,15 @@ async function readAssignableEmployee(t: Transaction, uid: string, actor?: Decod
   if (user.status === "DISABLED") {
     throw new UserFacingError("That employee is disabled and cannot receive new leads.");
   }
-  // A sub admin may only feed their own team. Checked here rather than at the
-  // top of the action so it reads from the transaction's snapshot.
-  if (actor && actor.role === "subadmin" && user.subAdminUid !== actor.uid) {
+  // Reach — a Sales manager feeds their own team, HR feeds anybody. Asked here
+  // rather than at the top of the action so it reads from the transaction's
+  // snapshot: an employee moved between teams mid-assignment cannot slip
+  // through the gap between the check and the write.
+  //
+  // The lead still files under the **recipient's** manager: `assignmentStamp`
+  // takes `subAdminUid` off the employee, never off the person assigning, so a
+  // lead HR gives to one of B's people lands in B's pipeline, not in HR's.
+  if (actor && !canAssignLeadTo(actor, { subAdminUid: user.subAdminUid ?? null })) {
     throw new UserFacingError("That team member is not on your team.");
   }
 

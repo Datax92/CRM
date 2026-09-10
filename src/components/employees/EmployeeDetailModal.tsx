@@ -46,13 +46,17 @@ import {
   lastTouchAt,
   applyDealPeriod,
   applyActivityPeriod,
-  DEFAULT_DOSSIER_FILTERS,
+  entryActivityToEntries,
+  defaultDossierFilters,
+  describeDossierCount,
+  dossierRangeKeys,
   type DossierFilters,
 } from "./directoryChrome";
 import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "./AnalyticsPanels";
 import { buildManagerMetrics } from "@/lib/managerMetrics";
 import { formatCompactMoney } from "@/lib/money";
 import { countByFilter } from "@/lib/leadBuckets";
+import { useDossierActivity } from "@/hooks/useDossierActivity";
 import { DossierFilterBar, Pager } from "./DossierControls";
 
 /** Rows per page inside the dossier's tabs. */
@@ -104,7 +108,7 @@ export function EmployeeDetailModal({
    */
   const [openLead, setOpenLead] = useState<Lead | null>(null);
   const { getIdToken } = useAuth();
-  const [filters, setFilters] = useState<DossierFilters>(DEFAULT_DOSSIER_FILTERS);
+  const [filters, setFilters] = useState<DossierFilters>(defaultDossierFilters);
 
   const isManager = team !== undefined;
 
@@ -180,31 +184,48 @@ export function EmployeeDetailModal({
     () => buildDirectoryAnalytics(subject, leads, deals, owners),
     [subject, leads, deals, owners]
   );
-  const activity = useMemo(
-    () => buildActivity(employee, leads, deals, owners),
-    [employee, leads, deals, owners]
-  );
+  const activityRange = useMemo(() => dossierRangeKeys(filters), [filters]);
+  const ownerUids = useMemo(() => [...owners], [owners]);
+  const entryActivity = useDossierActivity(ownerUids, activityRange, getIdToken);
 
-  // The filters cut the tab bodies only. The figure strip and the Analytics
-  // tab keep describing the employee's whole record — a headline that moved
-  // when you clicked "Today" would read as their career having shrunk.
-  const shownLeads = useMemo(() => applyLeadFilters(ownLeads, filters), [ownLeads, filters]);
+  // Depends on `items` by a plain reference, not `entryActivity?.items` — the
+  // optional chain makes the dependency unverifiable and the React Compiler
+  // then skips optimising the whole component.
+  const activityItems = entryActivity.items;
+  const activity = useMemo(() => {
+    const base = buildActivity(employee, leads, deals, owners);
+    const entries = entryActivityToEntries(activityItems);
+    return [...entries, ...base].sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+  }, [employee, leads, deals, owners, activityItems]);
+
+  const shownLeads = useMemo(
+    () => applyLeadFilters(ownLeads, filters, entryActivity.tallies),
+    [ownLeads, filters, entryActivity.tallies]
+  );
   /**
    * How many leads sit under each cut, within the chosen period.
    *
    * Counted on the period-filtered list rather than the whole record, so the
    * numbers on the chips are the numbers the chips will produce. `countByFilter`
-   * is the same function the leads workspace counts with.
+   * is the same function the leads workspace counts with — given the period's
+   * entries, so the activity chips count leads *worked in these dates* rather
+   * than leads that have ever been worked.
    */
   const cutCounts = useMemo(
-    () => countByFilter(applyLeadFilters(ownLeads, { ...filters, cut: "ALL" })),
-    [ownLeads, filters]
+    () =>
+      countByFilter(
+        applyLeadFilters(ownLeads, { ...filters, cut: "ALL" }, entryActivity.tallies),
+        undefined,
+        "admin",
+        entryActivity.tallies
+      ),
+    [ownLeads, filters, entryActivity.tallies]
   );
 
-  const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters.period), [ownDeals, filters.period]);
+  const shownDeals = useMemo(() => applyDealPeriod(ownDeals, filters), [ownDeals, filters]);
   const shownActivity = useMemo(
-    () => applyActivityPeriod(activity, filters.period),
-    [activity, filters.period]
+    () => applyActivityPeriod(activity, filters),
+    [activity, filters]
   );
 
   const leadPages = usePagination(shownLeads, PAGE_SIZE);
@@ -236,7 +257,7 @@ export function EmployeeDetailModal({
     ...(isManager
       ? [{ key: "team" as Tab, label: "Team", count: (team ?? []).length }]
       : []),
-    { key: "activity", label: "Activity", count: activity.length },
+    { key: "activity", label: "Activity", count: shownActivity.length },
     { key: "analytics", label: "Analytics", count: null },
   ];
 
@@ -578,15 +599,8 @@ export function EmployeeDetailModal({
                   onChange={setFilters}
                   variant="web"
                   counts={cutCounts}
-                  countLine={
-                    // Says which leads, and on what — "3 of 40" against a period
-                    // control reads as a total until it names the rule.
-                    filters.period === "ALL"
-                      ? `${shownLeads.length} of ${ownLeads.length} lead${ownLeads.length === 1 ? "" : "s"}`
-                      : `${shownLeads.length} of ${ownLeads.length} lead${
-                          ownLeads.length === 1 ? "" : "s"
-                        } — worked in this period`
-                  }
+                  activity={entryActivity}
+                  countLine={describeDossierCount(shownLeads.length, ownLeads.length, filters, "web", entryActivity.loading)}
                 />
                 <AssignedLeads
                   leads={leadPages.items}
@@ -613,17 +627,22 @@ export function EmployeeDetailModal({
 
             {activeTab === "activity" && (
               <>
+                {/* The same day summary as the Leads tab: this tab lists the
+                    day's entries, so the four figures that count them belong
+                    over the list they describe. */}
                 <DossierFilterBar
                   filters={filters}
                   onChange={setFilters}
                   variant="web"
                   showCut={false}
-                  countLine={`${shownActivity.length} of ${activity.length} entr${activity.length === 1 ? "y" : "ies"}`}
+                  activity={entryActivity}
+                  countLine={`${shownActivity.length} entr${shownActivity.length === 1 ? "y" : "ies"}`}
                 />
                 <ActivityFeed
                   entries={activityPages.items}
                   variant="web"
                   formatWhen={(at) => (at ? formatBusinessDateTime(at) : "—")}
+                  emptyMessage="No activity recorded for this employee on this date."
                 />
                 <Pager pagination={activityPages} variant="web" noun="entries" />
               </>

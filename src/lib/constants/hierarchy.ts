@@ -81,10 +81,16 @@ export function outranks(role: UserRole, subject: UserRole): boolean {
  * A sub admin is either an **HR Manager** or a **Sales Manager**.
  *
  * Not a fourth role: they share every permission the hierarchy already grants a
- * manager, and differ in exactly one dimension — attendance reach. HR runs
- * attendance for the whole company (§13); Sales sees only their own team's, and
- * none of the company-wide settings. Adding a role would have meant re-deciding
- * every existing rule for it; a flag on the manager decides only the new thing.
+ * manager, and differ in exactly one dimension — **reach**. A Sales manager
+ * sees their own team and nobody else's. HR runs the company: attendance and
+ * leave (§13), the salary figures, and — since the owner asked for it — the
+ * **lead pipeline**, so HR can hand any lead to any active employee whatever
+ * team they are on. Adding a role would have meant re-deciding every existing
+ * rule for it; a flag on the manager decides only the new thing.
+ *
+ * The distinction is one predicate, `isHrManager`, read by the server actions,
+ * the read hooks and the Security Rules alike — a second spelling of "is this
+ * person HR" is how two surfaces end up disagreeing about one person.
  *
  * Absent means `SALES`, so every manager who existed before this module keeps
  * exactly the reach they had.
@@ -102,7 +108,44 @@ export function normalizeManagerKind(value: unknown): ManagerKind {
   return value === 'HR' ? 'HR' : 'SALES';
 }
 
-/** Whether this person may run attendance for everybody, not just their team. */
+/**
+ * Whether this person's reach is the whole company rather than one team.
+ *
+ * True for the admin and for an HR manager. It governs attendance, leave,
+ * office expenses, salary, the report subjects — and lead distribution: an HR
+ * manager reads the whole pipeline and may assign or reassign any lead to any
+ * active employee, exactly as the admin does.
+ */
 export function isHrManager(role: unknown, managerKind: unknown): boolean {
   return role === 'admin' || (role === 'subadmin' && normalizeManagerKind(managerKind) === 'HR');
+}
+
+/**
+ * Whether `actor` may hand a lead to `employee`.
+ *
+ * The one place this question is answered. `assignLead`, `reassignLeadManual`
+ * and `assignLeadsBulk` all ask it, and the two read hooks build their
+ * assignment list from the same distinction — three call sites restating
+ * "unless they are HR" is how one of them ends up not saying it.
+ *
+ * | actor | reach |
+ * |---|---|
+ * | admin | anybody |
+ * | HR manager | anybody — their reach is the company (§13) |
+ * | Sales manager | their own team: `employee.subAdminUid === actor.uid` |
+ * | employee | nobody |
+ *
+ * It answers *reach* only. Whether the recipient exists, is an employee rather
+ * than a manager, and is still active are separate checks the actions make
+ * against the document itself — this function is given the link, not the
+ * person's whole state, precisely so it cannot be mistaken for all of them.
+ */
+export function canAssignLeadTo(
+  actor: { role: unknown; uid: string; managerKind?: unknown },
+  employee: { subAdminUid?: string | null }
+): boolean {
+  if (actor.role === 'admin') return true;
+  if (actor.role !== 'subadmin') return false;
+  if (isHrManager(actor.role, actor.managerKind)) return true;
+  return employee.subAdminUid === actor.uid;
 }

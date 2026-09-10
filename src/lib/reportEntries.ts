@@ -1,0 +1,118 @@
+/**
+ * Reading a date range's follow-up entries, server side.
+ *
+ * Lifted out of `app/actions/reports.ts` when the employee dossier needed the
+ * same entries: a `"use server"` module may only export Server Actions, so a
+ * helper two of them share has to live outside one. **There is one query for
+ * "what was written between these dates", and both screens run it** — the
+ * dossier's activity cuts and the report's activity columns are the same
+ * question asked of the same records, and a second implementation is how they
+ * came to disagree in the first place.
+ *
+ * The range is matched on `dayKey`, the `YYYY-MM-DD` Karachi string already
+ * stored on every entry: string comparison on that format *is* date
+ * comparison, and it sidesteps the timezone question entirely.
+ */
+
+import { adminDb } from "@/lib/firebase/server";
+import type { CountableEntry } from "@/lib/leadBuckets";
+
+/**
+ * Every follow-up entry in the range.
+ *
+ * One collection-group query, which needs the `followUps.dayKey` field
+ * exemption: Firestore's automatic single-field indexes are collection-scoped
+ * only.
+ *
+ * **When that index is missing the report no longer fails.** It falls back to
+ * querying each lead's own `followUps` subcollection — a *collection* query,
+ * which the automatic index already covers. That is one round trip per lead
+ * instead of one in total, which is why it is a fallback and not the plan; but
+ * a slower report is worth incomparably more than a screen that says something
+ * went wrong.
+ */
+export async function loadEntries(
+  from: string,
+  to: string,
+  leadIds: string[]
+): Promise<{ entries: FirebaseFirestore.QueryDocumentSnapshot[]; warning: string | null }> {
+  try {
+    const snap = await adminDb
+      .collectionGroup("followUps")
+      .where("dayKey", ">=", from)
+      .where("dayKey", "<=", to)
+      .get();
+    return { entries: snap.docs, warning: null };
+  } catch (error) {
+    // **Match on the message, not only the code.** Measured against the live
+    // project: over the REST transport this arrives as HTTP `400`, not the
+    // gRPC `9`/`failed-precondition` you would expect — and the wording is
+    // "requires a COLLECTION_GROUP_ASC index", not "requires an index".
+    const code = (error as { code?: number | string })?.code;
+    const message = (error as { message?: string })?.message ?? "";
+    const missingIndex =
+      code === 9 ||
+      code === "failed-precondition" ||
+      /requires a[n]?[^.]*index/i.test(message) ||
+      /index.*(is not ready|does not exist)/i.test(message);
+
+    if (!missingIndex) throw error;
+
+    const entries: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+    const BATCH = 25;
+    for (let index = 0; index < leadIds.length; index += BATCH) {
+      const slice = leadIds.slice(index, index + BATCH);
+      const snaps = await Promise.all(
+        slice.map((leadId) =>
+          adminDb
+            .collection("leads")
+            .doc(leadId)
+            .collection("followUps")
+            .where("dayKey", ">=", from)
+            .where("dayKey", "<=", to)
+            .get()
+        )
+      );
+      for (const snap of snaps) entries.push(...snap.docs);
+    }
+
+    return {
+      entries,
+      // Names the command rather than a console path. The console's
+      // "Single field → Add exemption" screen is genuinely hard to find, and
+      // `npm run deploy:indexes` creates this override and every other missing
+      // index in one go from `firestore.indexes.json`.
+      /**
+       * **Not "these figures are correct".** They usually are, and the wording
+       * used to promise it — but the fallback can only look inside leads the
+       * subject holds *now*, so work somebody did on a lead that has since been
+       * reassigned is missing from it and present on the fast path. Saying so
+       * costs nothing and stops the fallback being trusted as identical.
+       */
+      warning:
+        "The report ran the slow way: the followUps.dayKey collection-group index is " +
+        "missing. Figures may under-count work done on leads that have since been " +
+        "reassigned to somebody else. A developer can create the index with " +
+        "`npm run deploy:indexes` — see docs/deployment-runbook.md for the one IAM " +
+        "role that needs granting first.",
+    };
+  }
+}
+
+/** Every entry in the range, reduced to what a tally needs. */
+export function toCountableEntries(
+  docs: FirebaseFirestore.QueryDocumentSnapshot[]
+): CountableEntry[] {
+  return docs.map((doc) => {
+    const entry = doc.data();
+    return {
+      // The parent of a `followUps` document is its lead. Read from the
+      // reference rather than a denormalised field, which these entries have
+      // never carried.
+      leadId: doc.ref.parent.parent?.id ?? "",
+      uid: (entry.creditUid as string) ?? (entry.authorUid as string) ?? "",
+      kind: (entry.kind as string | undefined) ?? null,
+      connect: entry.connect === true,
+    };
+  });
+}

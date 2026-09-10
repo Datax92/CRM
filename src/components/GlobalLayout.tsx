@@ -164,20 +164,25 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           { title: "Closed Deals", path: "/admin/financials/deals", icon: Handshake },
           { title: "Profit Distribution", path: "/admin/financials/distribution", icon: PieChart },
           { title: "Salary / Payroll", path: "/admin/financials/payroll", icon: BadgeDollarSign },
-          { title: "Office Expenses", path: "/admin/financials/expenses", icon: Receipt },
           { title: "Reports", path: "/admin/financials/reports", icon: FileBarChart }
         ]
       },
       {
+        // Accounts is the financial home now: every module below pays from the
+        // same ledger, so "where did this money come from" has one answer.
+        // Committee and Capital Investment are **accounts**, not modules —
+        // they open as statements under All Accounts.
         title: "Accounts", icon: Wallet,
         subItems: [
-          { title: "Committee", path: "/admin/accounts/committee", icon: Users2 },
+          { title: "All Accounts", path: "/admin/accounts", icon: Wallet },
           { title: "Office Expenses", path: "/admin/accounts/office-expenses", icon: Building2 },
-          { title: "Investment", path: "/admin/accounts/investment", icon: TrendingUp },
+          { title: "Personal Expenses", path: "/admin/accounts/personal-expense", icon: Wallet2 },
+          { title: "StateLife", path: "/admin/accounts/statelife", icon: ReceiptText },
+          { title: "Marketing Income", path: "/admin/accounts/marketing-income", icon: TrendingUp },
           { title: "Capital Investments", path: "/admin/accounts/capital-investments", icon: PiggyBank },
+          { title: "Committee", path: "/admin/accounts/committee", icon: Users2 },
           { title: "Receivable", path: "/admin/accounts/receivable", icon: ReceiptText },
-          { title: "Income Sheet", path: "/admin/accounts/income-sheet", icon: BarChart3 },
-          { title: "Personal Expense", path: "/admin/accounts/personal-expense", icon: Wallet2 }
+          { title: "Income Sheet", path: "/admin/accounts/income-sheet", icon: BarChart3 }
         ]
       },
       {

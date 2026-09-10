@@ -31,6 +31,7 @@
 import { useMemo } from "react";
 import { Users, Plus, Pencil, FolderOpen, TrendingUp } from "lucide-react";
 import { buildAllManagerMetrics } from "@/lib/managerMetrics";
+import { MANAGER_KIND_LABELS } from "@/lib/constants/hierarchy";
 import { formatCompactMoney } from "@/lib/money";
 import type { EmployeeMetrics } from "@/lib/metrics";
 import type { DataBankFolder } from "@/hooks/useDataBank";
@@ -208,6 +209,26 @@ export function SubAdminPanel({
                       >
                         {manager.email}
                       </p>
+                      {/* Which kind of manager, on the card. It used to be
+                          visible only inside the edit form, so an admin had no
+                          way to see at a glance who runs attendance for the
+                          company — and no way to confirm a change to it stuck. */}
+                      <span
+                        style={{
+                          display: "inline-block",
+                          marginTop: 6,
+                          borderRadius: 999,
+                          padding: "2px 8px",
+                          fontSize: 10.5,
+                          fontWeight: 700,
+                          letterSpacing: 0.3,
+                          border: `1px solid ${manager.managerKind === "HR" ? "#c9dedb" : E.border}`,
+                          background: manager.managerKind === "HR" ? "#e2f0ee" : E.surface,
+                          color: manager.managerKind === "HR" ? E.teal : E.faint,
+                        }}
+                      >
+                        {MANAGER_KIND_LABELS[manager.managerKind ?? "SALES"].toUpperCase()}
+                      </span>
                     </div>
 
                     <button

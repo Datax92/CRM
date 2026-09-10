@@ -13,6 +13,7 @@ follow-ups, attendance, payroll and financial reporting.
 | `docs/implementation-notes.md` | **Shipped vs planned** — Server Actions + cron sweep instead of Cloud Functions/Tasks |
 | `docs/deployment-runbook.md` | Deploy steps |
 | `docs/design/*.dc.html` | The authoritative design files. Transcribe values from these, never measure a screenshot |
+| `docs/accounts-ledger.md` | **The central ledger** — model, split-payment rule, StateLife's exact columns, migration plan. `components/accounts/accountsChrome.tsx` is the section's visual language |
 | `files.md` | Full repo tree |
 
 ## Stack
@@ -66,17 +67,41 @@ follow-ups, attendance, payroll and financial reporting.
 - **The admin edits a manager from the manager's own record, not only from the card.** `DirectoryView` owns `ManagerFormModal`, because it has to open from two places — the manager card and the Edit inside their dossier — and a modal owned by `SubAdminPanel` could only open from that panel. The dossier's Edit picks the form by subject: the Manager form for a manager, the Employee form for an employee. It briefly had none at all for a manager, on the reasoning that offering the wrong form is worse than offering none; the cost of that was an admin who could open a manager and change nothing about them, not even Active/Inactive.
 - **A Manager is not an employee.** Own Add Manager form: no lane priority, no KPI targets, no auto-assign, no job title, no leads. Their analytics are **their team's plus their own**, summed on read (`lib/managerMetrics.ts`) with conversion team-wide (won ÷ handled), never an average of per-person rates — the same set `reportScope.teamOf` builds, so the directory card, the manager's dossier and Reports agree on one number. `headcount` stays the *team* size. **Clicking a manager opens the same `EmployeeDetailModal` an employee row does**, given their team: pass `team` and it is a manager's dossier (Team Leads / Deals / Team / Activity / Analytics, team-scoped), omit it and it is an employee's. One component, because two would drift. Their lead view is read-only for **their team's** leads — the server books follow-ups and deals against the *assigned employee*, so a manager logging one would credit somebody else's KPI. **A lead assigned to the manager themselves is theirs to work**: a Data Bank record promoted into their Client section, or one handed to them, carries `assignedUserId = their uid`, so the entry credits them. `canWorkLead` always allowed it; only the two panes refused, which is why a manager could open a lead in Clients and not write a word on it.
 - `managerKind` (SALES / HR) rides in the **auth claim**, because the sidebar must know before it can draw. Changing it re-issues the claim and revokes the token. An older manager with no claim reads as SALES.
+- **HR's reach is the company; a Sales manager's is their team.** One predicate, `isHrManager`, and every surface asks it: attendance, leave, office expenses, salary, the report subjects — and, since 2026-09-09, **lead distribution**. An HR manager reads the whole pipeline (`useLeads(..., companyWide)`, mirrored by `isHr()` on the `leads` rule) and hands any lead to any active employee whatever team they are on (`canAssignLeadTo`, asked by `assignLead`, `reassignLeadManual` and `assignLeadsBulk` alike). **The lead files under the recipient's manager, never the assigner's** — `assignmentStamp` takes `subAdminUid` off the employee — so a lead HR gives to one of B's people lands in B's pipeline. A Sales manager is unchanged.
 - Employees see only their own leads; a sub admin only their team's — enforced in rules *and* server actions. **Every read hook takes a scope for this reason**, not as an optimisation: `useLeads`, `useEmployees`, `useDataBankFolders`, `useFinancials` and `useClientFolderMembers` all add the clause their rule checks, and an unscoped list query is refused outright rather than returning less. This has now shipped as a bug three times — the symptom is always a screen that renders with *nothing in it* rather than an error.
 - **The admin directory and a sub admin's Team page are one component** (`DirectoryView`), because two implementations of "the team" drift. Every mutating employee action is `requireAdmin`, so a sub admin gets the same screen with those controls **absent** rather than present and failing.
 
 ## Money
 
-- **A deal is four figures.** Total Price and Down Payment are typed, Adjustment is typed when there is one, and **Remaining = Total Price − Adjustment** is calculated and read-only. `lib/dealAmounts` owns the arithmetic and the form, the phone and the Server Action all run it, so a deal cannot come out differently depending on where it was entered.
-- **The commission base is Remaining, and that is one rule, not two.** The owner stated it as two cases — the cut comes off the Total Price, or off the Remaining if there was an adjustment — but with no adjustment Remaining *is* the Total Price, so a single expression covers both and there is no branch to wire up backwards. On the worked example: 50 lakh total, 10 lakh adjustment, base 40 lakh; 1% to the employee is 40,000. Every percentage on the distribution screen is a percentage of this.
-- **The Down Payment funds the payouts; it never changes them.** It is what the client has actually handed over, so the distribution screen shows it beside the allocated total and says how much of it is left — or how far past it the split goes. Shown, never enforced: a shortfall is often covered elsewhere, and refusing the split would be that screen inventing a rule about the company's cash flow.
-- **The company still banks the remainder**, exactly as before — its own percentage plus everything nobody was allocated. Confirmed by the owner when the base changed.
-- `amountReceived` and `payableAmount` are still written, as **mirrors**: `amountReceived := totalPrice`, `payableAmount := adjustment`, so the old `profit = received − payable` lands exactly on the new base. That is why ~30 readers — every revenue rollup, the KPI portfolio, the income sheet, campaign ROI, employee metrics, Reports — needed no change and no historical deal needed migrating. Nothing new should read them; use `lib/dealAmounts`, whose accessors fall back for older deals. `readDownPayment` returns **null**, not 0, for a deal closed before the form asked — a confident `Rs 0` reads as a client who paid nothing.
-- Profit = the commission base; net profit = gross − expenses.
+- **A deal has a type, and the type decides everything.** Down Payment · Confirmation · Installments · Lump Sum, chosen first on the form; `lib/dealAmounts` owns the arithmetic and the desktop form, the phone and the Server Action all run it, so a deal cannot come out differently depending on where it was entered.
+
+  | type | typed | calculated |
+  |---|---|---|
+  | Down Payment | Total Price, Down Payment, Adjustment | `Remaining = Total − Adjustment` |
+  | Confirmation | Total Price, **Confirmation**, Adjustment | `Remaining = Total − Adjustment` |
+  | Installments | Amount Received, Payable Amount | `Remaining = Received − Payable` |
+  | Lump Sum | Amount Received, Payable, **Commission** | **nothing — there is no Remaining** |
+
+- **The Cut has two different numbers and confusing them is the whole risk.** The **base** is what the admin's percentage multiplies; the **source** is the pot the money leaves. `readCutBase` and `readPayoutSource`, never one for the other:
+
+  | type | Cut calculated on | Cut paid out of |
+  |---|---|---|
+  | Down Payment | **Total Price** | Remaining |
+  | Confirmation | **Total Price** | Remaining |
+  | Installments | **Amount Received** | Remaining |
+  | Lump Sum | **Amount Received** | **Commission** |
+
+  50 lakh total less a 10 lakh adjustment: base 50 lakh, source 40 lakh, so 1% is **50,000** taken out of the 40 lakh. A lump sum where the client paid the builder 40 lakh and the builder paid us 4 lakh: base 40 lakh, source 4 lakh, 1% is **40,000**, leaving the company 3.6 lakh. Both numbers are stored on the deal at entry and frozen again on the split, so a later rule change cannot restate what anybody was paid.
+  - **This supersedes the single-base rule** recorded on 2026-09-05, under which the same 50 lakh deal gave a 1% cut of 40,000. Nothing needed migrating: no deal had ever been saved in that shape.
+- **The Cut itself is the admin's, in Profit Distribution.** Deal Entry stores the figures and offers no percentage — a second place to set it would be a second answer to a question that must have one.
+- **The company is not a recipient; it keeps what is left of the source.** `companyRetained = payoutSource − every finalised cut`. There is **no company percentage** any more and no "remainder of the base": a company share of the *base* would be charged against money the base does not represent — 4% of a lump sum's 40 lakh is 1.6 lakh out of a 4 lakh commission. `COMPANY_BASE` survives in the types only so splits finalised before this still render.
+- **Over-allocation is refused in rupees, not percent.** With a base larger than the source, cuts well under 100% can still exceed the pot: 11% of a 40 lakh base overdraws a 4 lakh commission. Refused, never clamped.
+- **A Lump Sum's revenue is the Commission, not the client's money**, which goes to the builder. The mirrors carry it, so no rollup books 40 lakh the company never had.
+- **The Down Payment funds the payouts; it never changes them.** Shown beside the allocated total on the distribution screen, never enforced: a shortfall is often covered elsewhere. Not shown at all for a Lump Sum, where the commission *is* the pot.
+- `amountReceived` and `payableAmount` are still written, as **per-type mirrors** chosen so `profit = received − payable` still lands on what the company books: `totalPrice`/`adjustment` for the two priced types, the typed pair for Installments, and **`commission`/0** for a Lump Sum. That is why ~30 readers — every revenue rollup, the KPI portfolio, the income sheet, campaign ROI, employee metrics, Reports — needed no change and no historical deal needed migrating. Nothing new should read them; use `lib/dealAmounts`, whose accessors fall back for older deals. `readDownPayment` returns **null**, not 0, for a deal closed before the form asked — a confident `Rs 0` reads as a client who paid nothing.
+- **A deal with no `dealType` is an Installments deal.** `amountReceived − payableAmount` is literally the Installments formula, so all seven existing deals keep displaying exactly what they displayed; their Cut base becomes Amount Received like any other Installments deal, at the owner's instruction, so one type never carries two rules depending on when the deal was entered. **Splits already finalised are frozen and are never recomputed.**
+- **One display shape, four surfaces.** `dealFigureRows` and `dealCutRows` decide which boxes a deal has; the lead pane, the phone sheet, Closed Deals and the distribution header all render them. Four copies of "does a lump sum have a Remaining" is four chances to print one that does not exist.
+- Profit = what the company books before the cut; net profit = gross − expenses.
 - **A closed deal waits for the admin to split its profit.** `closeDeal` writes `distributionStatus: 'PENDING'` and notifies the admin.
 - `dealDistributions` holds the whole split (**admin only**); `dealPayouts` holds one row per recipient (that person, their sub admin, the admin). Two collections because Firestore grants a whole document or none — one document holding all four lines could never satisfy the privacy rule. The company's share is never written to `dealPayouts`.
 - Over-allocation is **refused, not clamped**. The remainder is the company's and is reported as its own line *and* inside the company total.
@@ -110,6 +135,13 @@ follow-ups, attendance, payroll and financial reporting.
 - Approved leave leaves the denominator rather than counting against the employee. A request over balance is allowed to be *sent* — the form says how far over and the approver decides.
 - **A closed month is frozen.** `finalizeAttendanceDeductions` copies the amounts, the salaries behind them and the rule each charge was made under, in words, into `attendancePeriods/{YYYY-MM}`. Open months recompute live. Reopening is its own action.
 - `recordAttendancePing` is kept but no longer called — it is the only writer that could reconstruct a day from observed activity.
+- **Calendar attendance editing (Admin & Sub-Admin):** Admin and Sub-Admin can edit any employee's attendance record (past or present) directly from the calendar (`/admin/attendance/calendar`, `/subadmin/attendance/calendar`).
+  - Permissions are enforced on the backend: `adjustAttendance` in `src/app/actions/attendance.ts` requires manager tokens (`requireManager`) and allows Sub-Admins to edit their assigned team members as well as themselves (`uid === teamOf`). Employees cannot adjust.
+  - Sub-Admin calendar page passes `canAdjust={true}` across all sub-admin types (not limited to HR).
+  - Days without an existing Firestore document can be clicked and adjusted (`resolveDay` synthesizes default unrecorded day state).
+  - Pre-populates check-in, check-out, and status in `DayDetailPanel` pinned to `Asia/Karachi` timezone without UTC date shift.
+  - Changing times automatically recalculates `workedMinutes` and checks `classifyCheckIn` for tardiness against the active `AttendancePolicy`.
+  - Audits adjustments in the `adjustments` array tracking `adjustedBy`, `adjustedAt`, `previousStatus`, `previousCheckIn`, and `previousCheckOut`.
 
 ## KPI
 
@@ -119,10 +151,34 @@ follow-ups, attendance, payroll and financial reporting.
 - Counters (`users/{uid}/kpiMonths/{YYYY-MM}`) are incremented **inside the same transaction as the work they count**, credited to `lead.assignedUserId` rather than the author, and dated by when the work happened — so a backfilled March deal lands in March.
 - **There is no backfill.** Counters only count work logged since the KPI module shipped; a real account starts near 0% and climbs. Writing one needs a decision on whether historical calls, whose duration was never recorded, may count as Connects. They cannot be verified after the fact.
 - `kpiScore` weights the three 40/40/20 with each **capped at 150% first**, or one runaway metric masks two failing ones. `recalculatePriorities` ranks the active roster and assigns 1..N, ties broken on uid; **an admin-pinned priority (`autoPriority: false`) is never moved**. Shared by the button and the 00:30 PKT cron.
-- **The dossier's activity cuts partition the worked leads.** Remarks is *exactly one
-  entry* — the first follow-up moves a lead out of it — and Follow-ups is two or more.
-  Connected cuts across both, reading `connectCount`, so a call under 1:10 is contact
-  and not a connect.
+- **The dossier's activity cuts count entries written in the period, not the lead's
+  record.** Five cuts — Remarks · New connects · Follow-ups · Follow-up connects ·
+  Connected — each asking whether an entry of that shape was written *inside the
+  chosen dates*. A remark that connected counts in **both** Remarks and New
+  connects: the connect columns are a subset, never a second count. The entries come
+  from `buildActivityBreakdown` (a Server Action — they are a subcollection per
+  lead, so a range is a collection-group query) and are classified by `entryTally`,
+  the same function Reports folds into its rows.
+  - They used to read the lead's **all-time** `followUpCount` / `connectCount` with
+    only the lead's *last touch* filtered to the period, so "Connected · Today"
+    returned every lead touched today that had ever been connected with. Measured
+    2026-09-09: an employee's dossier read **7 connects on a day she made 3**.
+  - `tallyFor` keeps three states apart and they are not interchangeable: a tally
+    (answer from the entries), **`null`** (the period's entries have not arrived —
+    match nothing, never fall back), `undefined` (this caller has no periods at
+    all — the all-time reading). Falling back while loading flashes the wrong
+    answer before settling on the right one.
+  - Remarks and Follow-ups are **no longer disjoint**: over one day a lead can be
+    remarked *and* followed up, and both happened. The old "exactly one entry"
+    reading answered "remarked and not chased yet", which is a question about the
+    record, not about a day.
+  - **The period can be one picked date** (`DossierFilters.day`, `karachiDayRange`)
+    — a native date input, so every platform draws its own calendar. `DAY` is a
+    `DossierPeriod`, deliberately **not** a `RangeKey`: five unrelated screens build
+    their period dropdown from `Object.keys(RANGE_LABELS)` and would each grow a
+    "pick a date" option with no date behind it.
+- **The dossier opens on today, and the day is read when it opens** — `defaultDossierFilters()`, never a module-level constant: one evaluated at import time freezes "today" at whenever the bundle loaded, so a tab left open overnight shows yesterday under a control saying Today. `lib/dossierPeriod` is the single place a selection becomes a query, in the two shapes the data needs: a `Date` interval `[midnight, next midnight)` for the lists, and two identical `YYYY-MM-DD` keys for the entry query, so **one day's entries come back from Firestore rather than being hidden in the browser**.
+- **The dossier's day summary counts entries; the chips count leads.** Same four words, different units, which is why the summary is headed with the date and the chip row is prefixed *Leads*. It is the row that used to read "Written in this period" — not redundant, but unlabelled enough to read as a duplicate.
 - **A dossier period means "worked in", a report column means "entries written".** They are neighbouring questions and were being read as the same one. An employee's dossier counts **leads** and filters the period on **last touch** (`applyLeadFilters`); Reports counts **entries** in the range. Somebody who logs 30 follow-ups today across 30 leads is `30 / 41 worked` on their record and `5 Remarks + 25 Follow-ups` in Reports — both right. The dossier used to filter on `createdAt`, which answered "which of their leads were *created* today" and showed **nothing at all** for that employee; the two screens then looked like they were contradicting each other. The chip hints name their unit for the same reason.
 - Reports (`buildTeamReport`, a Server Action) have **one subject at a time** — an employee, a manager (their own work *and* their team's), the admin, All Employees, or All Managers. Every figure is built per person once (`lib/reportScope`), and a composite subject is the sum of a *set of people*, which is what makes double-counting impossible rather than merely unlikely. New Connects is the *first* connected contact on a lead (its Remark), Follow-up Connects every later one — disjoint, or the columns sum to more than the work that happened. **Remarks and Follow-ups count every entry, connected or not**, and are deliberately not disjoint from the connect columns: a day of unanswered calls is real work and must not read as a zero. The activity columns are range-scoped; P1/P2/P3 describe where the leads stand today and say so.
 
@@ -138,6 +194,15 @@ follow-ups, attendance, payroll and financial reporting.
   - `lib/fieldMapping` imports **nothing**, because it is unit-tested under the raw `--experimental-strip-types` loader; `lib/fieldMappingTargets` holds the labels and is where `KYC_FIELDS` is read.
 - **Fields are per folder**, labelled in the source's own words. One is designated the name and one the phone — without them the app cannot dial, dedupe or promote. **Keys are generated and permanent; only labels are editable.**
 - Import maps columns rather than matching header names exactly, remembers corrections on the folder, and dedupes on a normalised phone key (`0300 1234567` / `+92 300…` / Excel's zero-eaten `3001234567` all collapse to one). Junk yields `""`, which never matches.
+- **A number is refused if the folder already holds it, and the message names who
+  holds it** (`duplicatePhoneMessage`) — "0300 1234567 is already in this folder —
+  it belongs to Imran Khan." The name is the actionable half; a reader told only
+  "already in this folder" has to search for the row by the number they were just
+  told not to use. Scope is the folder plus its manager mirrors and **deliberately
+  no wider**: two source lists legitimately hold one number, and a global rule would
+  make importing a fresh sheet impossible. **Editing had no check at all** until
+  2026-09-09 — adding a duplicate was refused, retyping an existing row's number to
+  the same value was not, which walked straight round the only rule the folder has.
 - **Nothing is dropped silently** — `prepareImport` reports every rejected row by line number. Existing numbers are skipped, never overwritten, and **a row handed to a manager still counts as held**: the dedupe scans the folder plus its mirrors (one query each, reusing the `folderId, phoneKey` index, and skipped entirely when `handedOffCount` is 0), or re-importing last month's sheet would recreate every handed-over row and put two people on one number.
 - CSV is parsed in-house (quoted fields, embedded newlines, CRLF, the UTF-8 BOM). **.xlsx is still not parsed** — the importer says so and points at Save As → CSV.
 - Chunks close on **whichever ceiling comes first, rows or bytes** (`chunkRowsByPayload`); a 500-row chunk of a 40-column sheet serialises to 1.93 MB against Next's 1 MB Server Action limit. `next.config.ts` sets `bodySizeLimit: 4mb` as headroom — raise the two together or not at all. Chunks stay sequential: each one's duplicate check reads what the previous committed.
@@ -222,6 +287,7 @@ and an element rule beats a family inherited from a container.
 - `verifyIdToken(token, true)` is a **network round trip**, not a local verify. It is gone: `disableEmployee` writes `status: 'DISABLED'`, which `verifyAuth` reads anyway, *and* disables the Auth account and revokes refresh tokens.
 
 **CSS that looks correct and is not**
+- **`position: fixed` is broken on every page in this app** — the shell wraps each one in `.animate-page-transition`, whose `will-change: transform` makes it the containing block for `fixed` descendants. A "floating" button then drifts with the page instead of the viewport. Portal it, or use `position: sticky` against the scrolling column, which is also the only option that respects the phone's tab bar — that bar is a flow row after the scroll area, so a viewport-fixed control lands on top of it. The committee FAB had both faults at once.
 - A **Tailwind arbitrary value only exists if the content scanner saw that exact string.** A stale cache or a partial copy drops the rule silently — the element renders with no background and the global `h1–h6` colour takes over. Critical screens are inline-styled.
 - A rule in `globals.css` can be missing from a compiled stylesheet the same way. **Breakpoints that must not fail are measured in JS** (`useElementWidth` / `useIsMobile`), which also measures the *container* rather than the viewport, so a sidebar cannot fool it.
 - **`will-change: transform` makes an element the containing block for its `position: fixed` descendants.** Every page is wrapped in `.animate-page-transition`, so an un-portalled `fixed; inset: 0` panel is pinned to the page's content box — cropped, offset, "stuck in half a window". Portal it.
@@ -323,6 +389,558 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-10 (fourth round) — the committee screen, transcribed from the design files
+
+`~/Downloads/Website redesign in teal CRM style/` holds
+**`Committee Account.dc.html`** and **`Committee Account Mobile.dc.html`**.
+`components/accounts/CommitteeStatement.tsx` is transcribed from them —
+**values copied, never measured** — and a script diffs ~30 of them (grids,
+radii, type sizes, the `KIND_META` colour/path table, the share gradient, the
+empty-state copy and padding) against the source files. All match.
+
+Desktop: the 48px teal tile and 29px/800/−1px title, three stat cards on
+`minmax(272px,1fr)` with a 3px accent stripe and a 7px progress bar, the pill
+search, seven filter chips, the `#fdf7f6` Spendings bar with its count pill and
+Add, and rows on `42px minmax(0,1fr) 128px auto auto` carrying a share bar and
+a per-row percentage.
+
+Mobile: the 115° gradient hero with the design's three rings, an 88px dial
+showing **% used**, a three-up COMMITTEE / SPENT / REMAINING strip in `short()`
+notation (lakhs, then thousands), cards at radius 20, and the floating Add.
+
+**One deliberate departure**: the mobile file draws a 390×844 phone with a 9:41
+status bar and signal bars. Reproducing that inside a real phone would put a
+second status bar under the real one — the CRM's standing rule. The FAB sits
+above `env(safe-area-inset-bottom)` for the same reason.
+
+Only **committees** use it. Every other account kind keeps the generic in/out
+statement: the design covers committees, and inventing the rest from it would
+be guessing.
+
+- **Validation**: `typecheck` 0 errors, `test` 528/528, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings. Six routes served
+  200, including the live committee at `/admin/accounts/ledger/…`.
+
+  **Not seen rendered** — Chrome tooling is still not enabled for this session.
+  The transcription is verified against the files by diff, not by eye.
+
+### 2026-09-10 (third round) — the Accounts section gets its design, and its phone
+
+The ledger and the modules were already built and proven. This round was the
+**UI/UX bar and mobile**, which the brief weighted most heavily.
+
+**`components/accounts/accountsChrome.tsx`** is now the section's language:
+glass cards over the CRM's own greys and teal, semantic money colours
+(`positive` / `negative` / `pending` / `neutral`), the account-kind icon set,
+`SummaryCard`, `StatusPill`, `Trend`, `Skeleton`, `EmptyState`, `Button`,
+`Chip`. Eight screens, one vocabulary.
+
+**Trends refuse to be invented.** `accountMovement` and `compareToPrevious`
+return `changePct: null` whenever there is no comparable prior month — no data,
+or a previous month of exactly zero, where the percentage is undefined rather
+than infinite. The card then shows the arrow and no number. The brief asked for
+this explicitly and it is the kind of thing that otherwise ships as a confident
+"↑ 100%" because last month happened to be blank.
+
+**Colour is never the only signal**: every trend carries its arrow and a
+screen-reader word, every amount carries `+`/`−`, every status is a word.
+
+**The allocation meter.** The split-payment panel now shows Total / Allocated /
+Remaining with a progress bar that turns red the moment the lines exceed what is
+owed — the one state that must be impossible to miss.
+
+**The phone is not the desktop shrunk.** `useIsMobile` drives: the balance hero
+first, summary cards that scroll by thumb with snap points, account cards full
+width, transactions as cards on **both** surfaces, payment lines that stack, and
+16px inputs so iOS does not zoom. The three wide tables — marketing income
+(11 columns), personal expenses, StateLife (20 columns) — become **cards below
+820px** carrying every figure, rather than a horizontal scrollbar nobody uses.
+
+**Micro-interactions** are transform/opacity only, 120–300ms, and fully disabled
+under `prefers-reduced-motion`.
+
+- **Validation**: `typecheck` 0 errors, `test` **528/528** (519 → 528: movement,
+  and the four cases where a percentage must come back `null`), `build`
+  compiles, `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **The brief's Final Acceptance Test, run against the live project — every
+  line passing.** 50,000 office expense paid 30,000 + 10,000 + 10,000 → Main
+  Bank 500k→470k, Cash 100k→90k, **Committee 75k→65k**; the expense reads
+  **Paid — PKR 50,000**; the Committee's own row reads *Office Expense —
+  Outflow — PKR 10,000* and links back to it; the monthly total is **50,000,
+  not 100,000**; the audit trail carries creator, payer, allocations and
+  accounts. Plus regression: transfer leaves total company money unchanged,
+  personal expense submit → approve → reimburse, StateLife net commission
+  **125,354** (the workbook's own row 4), marketing income total cost derived.
+  Ten routes served 200. Every probe row deleted; 10 expenses, 9 receivables,
+  7 deals, 249 leads untouched.
+
+  **Still not built**: the standalone monthly **Reports** screen (dashboard
+  totals and per-account statements are live; the cross-module filtered report
+  is not), **receipt upload** on personal expenses, and **notifications** on
+  approval events. Office expenses are not yet grouped by day within the month.
+
+### 2026-09-10 (second round) — Accounts becomes the ledger, and everything pays from it
+
+**The de-risking fact, found by looking:** `committee`, `investments`,
+`capitalInvestments` and `personalExpenses` are **all empty**. Only `expenses`
+(9) and `receivables` (9) hold anything. So the migration questions from the
+morning were moot — nothing had to be moved, and the nine office expenses keep
+their records, their history and their ids.
+
+**Built, on the tested `lib/ledger` core:**
+
+- `app/actions/ledger.ts` — accounts, `payFromAccounts`, transfers, reversals.
+  **Every rupee moves through one of two functions**; no module writes a
+  transaction itself.
+- `app/actions/accountModules.ts` — personal expenses (submit → approve →
+  reimburse, **no self-approval**, enforced server-side), StateLife, Mahziyar
+  marketing income.
+- `components/accounts/` — the dashboard, the account statement in the
+  workbook's **received/spent** layout, `PayFromAccounts` (the split control),
+  StateLife, marketing income, personal expenses, and Committee/Capital
+  Investment as lists of accounts.
+- Office Expenses **moved from Money to Accounts** and gained *Pay from…*.
+  Rules deployed; `accounts`, `transactions`, `stateLifePolicies` and
+  `marketingIncome` are admin+HR, and an employee reads **only their own**
+  personal expenses.
+
+**The guard that makes duplicate payment impossible** is a re-read inside the
+Firestore transaction, against the record's current `paidAmount` — not a check
+in the browser. Two people paying at once: one commits, the other is refused.
+
+**Two bugs the live run caught that nothing else would have:**
+
+1. **A `"use server"` file may only export async functions.** `accountModules`
+   exported a const array; typecheck, lint and `next build` all passed and the
+   route died at runtime with *"found object"*. The statuses moved to
+   `lib/personalExpenses`.
+2. **Voiding a transaction *and* posting its reversal corrects the mistake
+   twice.** The balance moved by the amount again, in the wrong direction. The
+   right model keeps the original **POSTED** and adds an equal opposite leg, so
+   the two cancel and both rows stay on the statement; `reversedBy` is a marker,
+   not a status. **A unit test had asserted the buggy number as correct** — it
+   is now inverted and kept, as the thing that must not come back.
+
+- **Validation**: `typecheck` 0 errors, `test` **519/519**, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings. Rules released to
+  `leadway-crm`.
+
+  **Driven end to end against the live project — 30 checks, all passing.** The
+  owner's scenario in full: three accounts with opening balances; a 50,000
+  office expense paid **30,000 + 10,000 + 10,000**; the expense **still
+  50,000**; Bank 200k→170k, Cash 50k→40k, **Committee 100k→90k with its own
+  −10,000 named for the expense**; three legs summing to 50,000, each linking
+  back; a second payment refused, and one rupee more refused; a transfer typed
+  TRANSFER on both legs; approve-then-reimburse with approval moving no money;
+  marketing income received in with `totalCost` derived; and a reversal leaving
+  the original posted. Every probe row deleted afterwards — 9 expenses, 9
+  receivables, 7 deals, 249 leads all exactly as before.
+
+  **Not built**: monthly Reports over the ledger (the dashboard totals are
+  there; the filtered report screen is not), receipts upload on personal
+  expenses, and the phone layouts for the new Accounts screens — they render
+  responsively but are not the separate phone product `components/mobile/`
+  gives the rest of the CRM.
+
+### 2026-09-10 — Accounts: the ledger foundation, and what the spreadsheets settled
+
+**Inspected first, and the inspection settled the architecture.**
+
+**The root cause: there was no ledger.** "Accounts" was five collections —
+`committee`, `investments`, `capitalInvestments`, `personalExpenses`,
+`receivables` — all written by *one* 40-line helper holding
+`{title, amount, description, date, addedByUid}`. No account, no balance, no
+direction (the sign of `amount` is nowhere recorded), no status, no link to
+what caused the entry, no audit. Office expenses were the one real module and
+they lived under **Money**, with no idea which account paid. Two halves of the
+money story in different places, neither aware of the other.
+
+**The owner's own files said what the shape is.** Read, not guessed —
+`Committe.jpg`, `Capital Investment.jpg`, `20260907_143519.jpg` and
+`statelife.xlsx`. Every committee and investment block is the *same* layout: a
+named pot ("DECEMBER COMMITTEE", "CAR INVESTMENT", "STATE LIFE LOAN") with
+`Amount Received | Description` on one side and `SPENDINGS: Amount Spent |
+Description` on the other, both totalled. **That is an account statement drawn
+by hand.** So Committee is not a module, it is an *account* — and so is Capital
+Investment. Which is why "Committee must automatically receive a transaction
+when it is a payment source" needs no Committee code: an allocation names an
+account and Committee is one. There is no occurrence of the word in
+`lib/ledger.ts`.
+
+**StateLife's arithmetic, from the sheet.** Every commission is a percentage of
+column **E `PASS`** — not `FYP` — with 8% tax folded into the multiplier:
+30% → `E × 0.276`, 10% → `E × 0.092`, quarter 2.5% → `E × 0.023`, Dec 7.5% →
+`E × 0.069`; `Remaining = M + N − O`, `Net = P + Q + R`. Guessing would have
+used FYP and left the tax out. Full column table in the doc.
+
+**Built: `lib/ledger.ts`**, the pure core everything else will run on —
+accounts, transactions, **derived** balances, split allocations, transfers,
+reversals, report summaries. The rules that matter:
+- **Balances are derived**, never typed: `opening + Σ in − Σ out`. One
+  definition, recomputable at any time.
+- **A split payment is one obligation and N movements.** The 50,000 expense
+  stays 50,000; three legs of 30/10/10 explain the funding. *Money movement is
+  read from transactions, obligations from module records — a report that adds
+  both is the double count.*
+- **Over-allocation is refused, never trimmed**, and one account may appear
+  once; idempotency is `sourceModule:sourceId:accountId`, deliberately
+  excluding the date so a retry a day later still collides.
+- **Transfers are neither income nor expense** — counting them as either
+  inflates both sides equally and leaves net movement looking right while
+  everything else is wrong.
+- **Nothing posted is ever edited or deleted**: void + `reversalOf`.
+
+- **Validation**: `typecheck` 0 errors, `test` **512/512** (482 → 512: 30 on the
+  ledger, including the owner's 50,000 = 30+10+10 worked through to three
+  account balances and the Committee leg, the duplicate-payment collision,
+  part-payment then balance, transfer netting, and void-plus-reversal), `build`
+  compiles, `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **Blocked, and it blocks a lot: the project's daily Firestore quota is still
+  exhausted** — every read returns `RESOURCE_EXHAUSTED` in under a second. So
+  no count of the existing records, no migration dry-run, and no end-to-end
+  test. Yesterday's 5,500-document delete is the likely spender.
+
+  **Deliberately not built**: the Server Actions, the Firestore rules, the
+  migration script and every screen. Building eight modules blind against a
+  database that cannot be read or tested is the failure mode the brief warns
+  about; the foundation is in and tested, and the rest is mechanical once the
+  three migration questions below are answered.
+
+  **Three things the migration cannot infer** and must be answered first — the
+  legacy schema simply does not record them: the **sign** of every existing row,
+  **which pot** each `committee` / `capitalInvestments` row belongs to (the
+  sheets have several named pots, the collection has none), and each account's
+  **opening balance**.
+
+### 2026-09-09 (fourth round) — the dossier's date, and what "Written in this period" actually was
+
+**Traced before touching anything, and the trace changed the answer.**
+
+**What that row was.** `EntriesLine` in `DossierControls.tsx`, fed by
+`entryActivity.totals` from `buildActivityBreakdown` — a Server Action that
+reads `followUps` by `dayKey` over the selected range and folds them with
+`entryTally`. It counted **entries**: Remarks, New Connects, Follow-ups,
+Follow-up Connects, for the selected period, credited to the lead's assignee.
+The same four numbers Reports prints, from the same records through the same
+function.
+
+**It was not redundant, and it had already been deleted.** The chips below it
+carry the same four words and count **leads**, not entries — 30 follow-ups
+across 5 leads is "5" on a chip and "30" on the row, and both are right. So the
+row was the only place on the screen with the figures §7 and §8 of the brief
+ask for, and the working tree had it removed with `totals` still being fetched
+on every render and thrown away.
+
+**Restored, renamed and restructured** rather than re-added as it was, because
+the complaint about it was fair — two rows, four identical words, different
+numbers:
+
+- headed **"Activity · Today · 09 Sep 2026"** with the qualifier *entries
+  written*, so it reads as a day rather than as a second copy of the chips;
+- the chip row is now prefixed **LEADS**, naming its unit once;
+- a day with nothing on it says **"Nothing logged on this day."** rather than
+  showing four zeroes that look like a broken screen — and a failed load says
+  so separately, because "nothing" and "did not load" must not look alike;
+- it now shows on the **Activity tab too**, where it sits over the very entries
+  it counts.
+
+**The date bug named in §3 was real, and it was the default.**
+`DEFAULT_DOSSIER_FILTERS` was a module-level constant holding
+`day: karachiDayKey()` — evaluated **once, when the bundle first loads**. A tab
+left open overnight, or a session started yesterday, opened every dossier on
+*yesterday* while the control said "Today". Now `defaultDossierFilters()`, a
+function called from the `useState` initialiser, so the clock is read when the
+dossier is opened; each dossier also gets its own object.
+
+**One date implementation, and now a testable one.** `lib/dossierPeriod.ts`
+holds `defaultDossierFilters`, `dossierDay`, `resolveDossierRange` (a `Date`
+interval for the lead/deal/activity lists) and `dossierRangeKeys` (the two
+`YYYY-MM-DD` keys the entry query takes). It was in `directoryChrome.tsx`,
+where **none of it could be tested** — the raw `--experimental-strip-types`
+runner cannot load a `.tsx`. `directoryChrome` re-exports it, so no call site
+moved.
+
+**Filtering is in the query, not the browser.** For a picked day `from` and
+`to` are the same key and `loadEntries` matches `dayKey >= from && dayKey <=
+to`, so one day's entries come back from Firestore. `dayKey` is stamped in
+Karachi from `occurredAt`, so the midnight boundary is the business's midnight,
+not UTC's. The list ranges use `[midnight, next midnight)` — upper bound
+exclusive, so no instant is in two days and none falls between them.
+
+**Cached results cannot leak across dates**: `useDossierActivity` stamps its
+state with the key it came from and returns `loading` when the key changes, so
+switching day never shows the previous day's numbers while the new ones load.
+
+- **Validation**: `typecheck` 0 errors, `test` **482/482** (469 → 482: the
+  month-boundary and 40-day round-trip steps, the picked-day window at both
+  ends, the fallback for a junk date, that the default reads the clock and
+  returns a fresh object, and that the `Date` range and the `dayKey` range
+  describe the same day), `build` compiles, `eslint src` back at the 7
+  pre-existing errors and 34 warnings — the tree had drifted to 9/37, and the
+  two extra errors were `entryActivity?.items` in a `useMemo` dependency, which
+  the React Compiler cannot verify and which made it skip optimising both
+  dossiers. `src/lib/dates.test.ts` existed but was never wired into the `test`
+  script; it is now.
+
+  **The live re-verification could not be run: the project's daily Firestore
+  quota is exhausted.** Even a single document read comes back
+  `RESOURCE_EXHAUSTED` in under a second — `preferRest` working exactly as
+  intended. The 5,500-document folder deletion earlier today is the likely
+  spender. It resets at midnight Pacific.
+
+  What *was* verified live earlier today, on this same unchanged query path:
+  `buildActivityBreakdown` against an independent Firestore count on
+  **2026-09-09, 2026-09-07 and 2026-09-03** — identical every time, including a
+  back-dated day. This round changed the default, the summary UI and moved pure
+  functions between modules; it did not touch the query. Re-run the
+  consecutive-date leakage check once quota resets.
+
+  **Not driven in a browser** — Chrome tooling is still not enabled for this
+  session and the project has no Playwright.
+
+### 2026-09-09 (third round) — Deal Entry becomes four types, and the Cut gets two numbers
+
+**Inspected before touching anything, and the inspection changed the plan
+twice.**
+
+**1 · All seven existing deals are in the *pre-2026-09-05* shape** —
+`amountReceived` / `payableAmount` only, no `totalPrice`. The four-field form
+shipped four days ago and **no deal has ever been saved through it**. That made
+the whole change far safer than it looked: `received − payable` is literally the
+new Installments formula, so every existing deal reads as an Installments deal
+and keeps displaying exactly what it displayed. No migration, no backfill.
+
+**2 · The new Cut rule reverses the one the code says the owner confirmed.**
+`lib/dealAmounts` recorded, in prose, that the base is `Remaining` — decided on
+their own 50 lakh / 10 lakh example, giving a 1% cut of 40,000. The new rule
+makes that same deal 50,000. Raised it explicitly rather than quietly flipping
+it; no data was at risk, because of point 1.
+
+**3 · The rule breaks the Profit Distribution model, and that needed a
+decision.** The old screen split one pot and gave the company its own
+percentage plus the unallocated remainder. With the percentage multiplying one
+number and the money leaving a different, smaller one, "the remainder of the
+base" is not the company's money. **The owner chose: cuts are a percentage of
+the base, the company keeps `source − cuts`, the company percentage is
+removed, and an over-allocation is refused rather than capped.** Rules in
+**Business rules → Money**.
+
+**4 · Legacy deals take the new rule too**, at the owner's instruction — one
+rule per type, never a second one depending on when the deal was entered. For
+the five unsplit deals the base moves from `profit` to Amount Received (one goes
+from 1,000,000 to 5,000,000), which is why both figures are now printed on the
+distribution screen with the field each came from. The two finalised splits are
+frozen records and are untouched.
+
+**What the code now holds:**
+
+- `cutBase` and `payoutSource` are stored on the deal at entry and **frozen
+  again on the split**, so a later rule change cannot restate what anybody was
+  paid. Older deals derive both from the same table.
+- **A Lump Sum has no Remaining at all** and its Commission is typed, never
+  `received − payable`. Its mirrors carry the **Commission**, so the ~30 revenue
+  readers book 4 lakh and not the 40 lakh that went to the builder.
+- Validation is per type and only judges boxes that are on that type's form.
+  `commission > receivedAmount` is refused as a transposed pair — it would put a
+  10× cut base into the ledger permanently.
+- `dealFigureRows` / `dealCutRows`: one decision about which boxes a deal has,
+  rendered by all four surfaces that display one.
+
+- **Validation**: `typecheck` 0 errors, `test` **469/469** (435 → 469: the four
+  worked examples on both the deal arithmetic and the split, the base-is-not-the-
+  source proofs, per-type validation, the legacy readings including the
+  loss-making deal, and the rupee over-allocation test), `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **Driven end to end against the live project.** A throwaway
+  `/api/probe-deal` route called the real `closeDeal` and
+  `finalizeProfitDistribution` from inside the running dev server with a real
+  admin token, on four throwaway leads:
+
+  | type | stored |
+  |---|---|
+  | Down Payment | remaining 40L · cutBase 50L · payoutSource 40L · profit 40L |
+  | Confirmation | remaining 40L · cutBase 50L · payoutSource 40L · profit 40L |
+  | Installments | remaining 3L · cutBase 10L · payoutSource 3L · profit 3L |
+  | Lump Sum | **remaining null** · cutBase 40L · payoutSource 4L · profit **4L** |
+
+  A 1% split on the lump sum produced a **40,000** cut — 1% of the client's 40
+  lakh, not of the commission — a 40,000 payout row, and **360,000** retained.
+  A 20% share was **refused**: *"The cuts come to Rs 800,000, more than the Rs
+  400,000 available."* All four probe leads, their deals, events,
+  notifications, distribution, payout and KPI increment were then deleted; the
+  route and script are gone. Confirmed afterwards: 7 deals, 198 leads, 2
+  distributions, 0 probe rows — exactly as before.
+
+  **Not driven in a browser.** Chrome tooling is still not enabled for this
+  session and the project has no Playwright, so the four-button type selector
+  and the conditional fields are reasoned from the shared components rather
+  than clicked. The server path they feed is proven above.
+
+  **Nothing to deploy** — no new index, no rules change.
+
+### 2026-09-09 (second round) — the dossier was counting the record, not the day
+
+**Reported:** an employee's connects, remarks, follow-ups and follow-up connects
+"are not aligned with what they actually are"; picking Today should show only
+what was written today; and a calendar to pick any date.
+
+**Measured first, against the live project.** For Aroosa on 2026-09-09:
+
+| | Remarks | Follow-ups | New connects | Follow-up connects |
+|---|---|---|---|---|
+| written that day | 0 | 11 | 0 | **3** |
+| the dossier showed | 0 | 11 | — | **Connected 7** |
+
+Reports was right. The dossier was answering its activity cuts from the lead's
+**all-time** `followUpCount` and `connectCount`, with only the lead's *last
+touch* filtered to the period — so a lead touched today that had been connected
+with a fortnight ago counted as a connect today. Four of those seven happened on
+other days.
+
+**Now the cuts count entries, on the day they were written.** Five of them —
+Remarks · New connects · Follow-ups · Follow-up connects · Connected — and a
+remark that connected lands in Remarks *and* New connects, which is what the
+owner asked for. Rules in **Business rules → KPI**.
+
+- **One classification, `entryTally`.** Reports folds it into a person's row,
+  the dossier folds it per lead, and the demo store uses it too. The report's
+  own inline copy of "is this a Remark, and which connect column" is gone —
+  two readings of that question is how the two screens came to disagree.
+- **One query, `lib/reportEntries`.** `loadEntries` moved out of
+  `app/actions/reports.ts`, because a `"use server"` module may only export
+  Server Actions and two of them now need it. The collection-group index
+  fallback moved with it, unchanged.
+- **A four-figure strip above the chips**, showing what was *written* in the
+  period. The chips count **leads** and the strip counts **entries** — 30
+  follow-ups across 5 leads is "5" on a chip and "30" on the strip, both right,
+  and that is precisely the comparison that was being made. Loading shows "—"
+  and a failure shows the error: four zeroes would read as a person who did
+  nothing all day, which is the worst way for this screen to be wrong.
+- **A calendar.** "Pick a date…" plus a native date input, so 7 July is two
+  clicks. `karachiDayRange` makes it the whole day *in Karachi* — a range built
+  from the browser's midnight starts five hours late and takes five hours of the
+  8th with it.
+
+**Also fixed: a Data Bank record could be *edited* onto a number the folder
+already held.** Adding a duplicate was refused and named the holder; changing an
+existing row's number to a colliding one was not checked at all, on either the
+real path or the demo one. Both now run `refuseDuplicatePhone`, ignoring the row
+being edited so saving a record without touching its number is not reported as
+its own duplicate. The message was rewritten to lead with the person —
+`duplicatePhoneMessage`, shared so the action, demo mode and the tests cannot
+produce different sentences. Scope stays **per folder**, at the owner's
+instruction.
+
+- **Validation**: `typecheck` 0 errors, `test` **435/435** (413 → 435: the
+  connected-remark-is-both rule, the three tally states, the Karachi day
+  boundary in both directions, and the duplicate message), `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 34 warnings.
+
+  **Proven end to end against the live project.** A throwaway
+  `/api/probe-activity` route called `buildActivityBreakdown` from inside the
+  running dev server with a real ID token, and its output was compared with an
+  independent count taken straight out of Firestore, on three days:
+
+  | day | Firestore | the action |
+  |---|---|---|
+  | 2026-09-09 | 0 / 11 / 0 / 3, 11 leads | identical |
+  | 2026-09-07 | 8 / 26 / 2 / 4, 34 leads | identical |
+  | 2026-09-03 | 14 / 7 / 6 / 2, 21 leads | identical |
+
+  The route and the script were deleted afterwards; nothing was written.
+
+  **Not driven in a browser** — Chrome tooling is still not enabled for this
+  session and the project has no Playwright or Puppeteer. The strip, the chips
+  and the date input are reasoned from the shared components, not observed.
+
+  **Found and not fixed, because fixing it means inventing data:** the folder
+  `7ADU0uFu3X30QsipfceC` is an **empty document** — `{}` — with **5,500
+  records pointing at it**. It has no name, no fields and no roles, so the app
+  cannot render it and those rows are unreachable through the UI. It is by far
+  the largest folder in the project. Recreating the field definitions is a guess
+  about what the source sheet's columns meant; the owner should say.
+
+### 2026-09-09 — the manager kind was saving all along; HR runs the pipeline
+
+**1 · "Changing a manager to HR does not stick."** It was sticking. Read
+straight out of the live project before touching anything: **Tayyab Ali** is
+`managerKind: 'HR'` on the document *and* `managerKind: 'HR'` on the auth claim,
+and so is Dilawar Riaz. `updateEmployee` had always written it, and had always
+re-issued the claim and revoked the token with it.
+
+**The read was broken, in the mapper.** `useSubAdmins` types `managerKind` on
+`EmployeeData` and never took it out of the snapshot — so every manager arrived
+in the directory as `SALES`. Two consequences, and the second is the one that
+made it look like a failed save: the edit form initialises from
+`manager?.managerKind ?? "SALES"`, so it **opened on Sales Manager** for an HR
+manager; and it sends `managerKind` on every submit, so **editing a manager's
+phone number quietly wrote Sales back over HR**. The field is now read, along
+with `monthlySalary`, `salaryAccess` and `kpiScore`, which the same mapper was
+also dropping.
+
+This is the **fifth** outing for that bug class (`phone`/`joinedAt`/`notes`/
+`autoAssign`, `monthlySalary`, the payroll fields, the client-folder fields).
+Check the mapper, not just the type.
+
+**The kind is now on the manager card**, a Sales/HR pill under the email. It had
+been visible in exactly one place — inside the edit form — which is why a wrong
+value could sit there unnoticed, and why the owner had no way to confirm a
+change had taken.
+
+**2 · An HR manager now runs lead distribution for the whole company.** The
+owner's call, asked and confirmed: HR sees every lead and may hand any of them
+to any active employee, whatever team that employee is on; a Sales manager is
+unchanged. It reuses `isHrManager` rather than adding a fourth role — HR already
+means "company-wide" for attendance, leave, salary and the report subjects, and
+a second flag would be a second thing to keep in step.
+
+- **The reach rule is one function.** `canAssignLeadTo` in
+  `constants/hierarchy.ts`, asked by `readAssignableEmployee` and by
+  `assignLeadsBulk`, with 7 tests. Three call sites each restating "unless they
+  are HR" is how one of them ends up not saying it.
+- **The lead files under the recipient's manager.** `assignmentStamp` already
+  took `subAdminUid` off the employee rather than off the assigner, so a lead HR
+  hands to one of B's people lands in B's pipeline and B's rules — no change
+  needed, but it is the thing that makes the feature safe.
+- **`DecodedAuth` now carries `managerKind` and `isHr`**, resolved once in
+  `verifyAuth` from a profile document it was already reading. The **document
+  wins over the claim** here: a manager whose kind changed a moment ago still
+  holds the old claim, and reading the claim first would leave an ex-HR manager
+  with HR reach until their token refreshed.
+- **Both read hooks take a `companyWide` flag**, and the Security Rules carry
+  the matching `isHr()` clause on `leads`, `users`, the two lead subcollections
+  and the `closedDeals` **get**. Not the `closedDeals` *list*: the deal ledgers
+  are a different question from lead distribution and nothing HR uses lists them
+  unscoped. Without the rules the widened query is **refused outright, not
+  trimmed** — the screen would render with nothing in it, which is this
+  project's most-repeated symptom.
+- The assign select now names each person's **job title** beside their lane
+  priority. The list is no longer always one team, and "which of these is a
+  Sales Executive" is the question being answered at that control.
+
+- **Validation**: `typecheck` 0 errors, `test` **413/413** (406 → 413, all on
+  the reach rule: HR across teams, Sales confined to theirs, an employee
+  refusing outright, and a junk `managerKind` falling back rather than opening
+  up), `build` compiles, `eslint src` at the 7 pre-existing errors and 34
+  warnings. Four routes served 200 off the running dev server.
+
+  **Not driven in a browser.** Chrome tooling was not enabled for this session
+  and the project has no Playwright or Puppeteer, so nothing here was clicked.
+  What *was* proven against the live project is the part the report turned on:
+  the stored `managerKind` and the auth claims for all four managers, read with
+  the Admin SDK. The live data was **not** modified.
+
+  **`npm run test:rules` was not run** — this machine has Java but not the
+  Firebase CLI. The new HR assertions in `scripts/rules.test.mjs` are unverified.
+
+  **Owed, and the feature is inert until it lands: `npm run deploy:rules`.**
+  Until the new `isHr()` clauses are deployed, an HR manager's leads screen is
+  refused the unscoped query and renders **empty**. The CLI is not installed
+  here, so this is the owner's to run.
 
 ### 2026-09-05 (seventh round) — the deal becomes four figures, and a sheet column can fill them
 
@@ -1374,3 +1992,30 @@ has **Cloud Datastore Index Admin**. The script detects the 403 and prints the
 account, the console link and the role name rather than the raw error. Runbook
 §3a covers it, and the report's on-screen warning now names the command instead
 of a console path that is genuinely hard to find.
+
+### 2026-09-08 — Admin & Sub-Admin Attendance Editing from Calendar
+
+**Admin and Sub-Admin can now directly edit employee attendance from the calendar view.**
+Previously, attendance cells on `/admin/attendance/calendar` and `/subadmin/attendance/calendar`
+either disabled clicks on unrecorded dates, dropped check-in/out times, or restricted
+adjustments to HR managers only.
+
+1. **Permissions & Team Scope:**
+   - Server Action `adjustAttendance` in `src/app/actions/attendance.ts` validates manager claims
+     (`requireManager`). Sub-Admins are permitted to adjust their own team members and their
+     own personal attendance (`uid === teamOf`).
+   - `/subadmin/attendance/calendar/page.tsx` now passes `canAdjust={true}` to `TeamCalendarView`
+     for all Sub-Admins rather than gating on `isHr`.
+2. **Unrecorded Days Clickable:**
+   - `resolveDay` in `src/components/attendance/TeamCalendarView.tsx` resolves an unrecorded day
+     fallback so past/current dates without an existing Firestore document can be clicked to open
+     `DayDetailPanel`.
+   - In both individual and whole team grid modes, buttons are accessible for any employee and date.
+3. **Timezone & Time Inputs Pre-filling:**
+   - `DayDetailPanel.tsx` locks time rendering to `Asia/Karachi` to prevent local browser UTC offsets.
+   - Pre-fills current/adjusted check-in and check-out in `HH:mm` format and current status.
+   - Saves `adjustedCheckIn` and `adjustedCheckOut` as well as updated `workedMinutes`.
+   - Modifying check-in recalculates tardiness against the active `AttendancePolicy`.
+4. **Demo Store Parity:**
+   - `src/lib/demo/store.ts` maps `adjustedCheckIn`/`adjustedCheckOut` to `checkIn`/`checkOut`
+     and updates `workedMinutes` and the `adjustments` audit trail on `adjustAttendance`.

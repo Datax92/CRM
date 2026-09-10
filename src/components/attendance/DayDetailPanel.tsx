@@ -29,7 +29,12 @@ const ADJUSTABLE: AttendanceStatus[] = ["PRESENT", "LATE", "ABSENT", "LEAVE", "H
 
 function clock(date: Date | null | undefined): string {
   if (!date) return "—";
-  return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Karachi",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -71,10 +76,17 @@ export function DayDetailPanel({
   const { getIdToken } = useAuth();
   const record = day.record;
 
-  const [status, setStatus] = useState<AttendanceStatus | "">("");
-  const [checkIn, setCheckIn] = useState(record?.adjustedCheckIn ?? "");
-  const [checkOut, setCheckOut] = useState(record?.adjustedCheckOut ?? "");
-  const [note, setNote] = useState("");
+  const existingCheckIn =
+    record?.adjustedCheckIn ?? (day.firstAt ? clock(day.firstAt) : "");
+  const existingCheckOut =
+    record?.adjustedCheckOut ?? (day.lastAt ? clock(day.lastAt) : "");
+
+  const [status, setStatus] = useState<AttendanceStatus | "">(
+    day.status && day.status !== "UNRECORDED" ? day.status : ""
+  );
+  const [checkIn, setCheckIn] = useState(existingCheckIn === "—" ? "" : existingCheckIn);
+  const [checkOut, setCheckOut] = useState(existingCheckOut === "—" ? "" : existingCheckOut);
+  const [note, setNote] = useState(record?.overrideNote ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,8 +100,8 @@ export function DayDetailPanel({
     const token = await getIdToken();
     const result = await adjustAttendance(token, uid, day.dayKey, {
       ...(status ? { status } : {}),
-      ...(checkIn ? { checkIn } : {}),
-      ...(checkOut ? { checkOut } : {}),
+      checkIn: checkIn ? checkIn : null,
+      checkOut: checkOut ? checkOut : null,
       note,
     });
     setSaving(false);
@@ -234,7 +246,9 @@ export function DayDetailPanel({
                   onChange={(event) => setStatus(event.target.value as AttendanceStatus | "")}
                   style={fieldStyle}
                 >
-                  <option value="">Leave as recorded</option>
+                  <option value="">
+                    Leave as recorded{day.status && day.status !== "UNRECORDED" ? ` (${ATTENDANCE_STATUS_LABELS[day.status]})` : ""}
+                  </option>
                   {ADJUSTABLE.map((value) => (
                     <option key={value} value={value}>
                       {ATTENDANCE_STATUS_LABELS[value]}

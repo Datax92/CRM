@@ -201,7 +201,9 @@ export default function ProfitDistributionPage() {
                       lines={distribution.lines}
                       netProfit={distribution.netProfit}
                       companyTotalAmount={distribution.companyTotalAmount}
-                      remainingAmount={distribution.remainingAmount}
+                      cutBase={distribution.cutBase}
+                      payoutSource={distribution.payoutSource}
+                      companyRetained={distribution.companyRetained}
                       onReopen={busy ? undefined : () => reopen(deal)}
                     />
                   ) : (
@@ -477,7 +479,9 @@ export default function ProfitDistributionPage() {
                       lines={distribution.lines}
                       netProfit={distribution.netProfit}
                       companyTotalAmount={distribution.companyTotalAmount}
-                      remainingAmount={distribution.remainingAmount}
+                      cutBase={distribution.cutBase}
+                      payoutSource={distribution.payoutSource}
+                      companyRetained={distribution.companyRetained}
                       onReopen={busy ? undefined : () => reopen(deal)}
                     />
                   ) : (

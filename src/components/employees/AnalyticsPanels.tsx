@@ -487,16 +487,18 @@ export function ActivityFeed({
   entries,
   variant,
   formatWhen,
+  emptyMessage,
 }: {
   entries: ActivityEntry[];
   variant: Variant;
   formatWhen: (at: Date | null) => string;
+  emptyMessage?: string;
 }) {
   const g = GEOMETRY[variant];
   const size = variant === "web" ? 40 : 38;
 
   if (entries.length === 0) {
-    return <EmptyPanel>No activity recorded for this employee yet.</EmptyPanel>;
+    return <EmptyPanel>{emptyMessage ?? "No activity recorded for this employee yet."}</EmptyPanel>;
   }
 
   return (

@@ -54,18 +54,39 @@ export interface DealRecord {
   dealCategory?: string;
   notes?: string | null;
   /**
-   * The four figures a deal is recorded as. Optional because deals closed
-   * before the four-field form have only the mirrors below — read them through
-   * `lib/dealAmounts`, which falls back correctly.
+   * Which of the four types this deal is, and therefore which of the figures
+   * below mean anything. Absent on every deal closed before the selector —
+   * `readDealType` calls those Installments, which is the shape they are in.
+   */
+  dealType?: string;
+  /**
+   * The typed figures, all optional because which ones exist depends on the
+   * type and on when the deal was entered. **Read them through
+   * `lib/dealAmounts`**, whose accessors fall back correctly for older deals;
+   * reading these directly is how a Lump Sum ends up displaying a Remaining it
+   * does not have.
    */
   totalPrice?: number;
   downPayment?: number;
+  confirmationAmount?: number;
   adjustment?: number;
-  remaining?: number;
+  /** Null for a Lump Sum, which has no Remaining. */
+  remaining?: number | null;
+  receivedAmount?: number;
+  commission?: number;
   /**
-   * The original two fields, still written as mirrors of the above so every
-   * revenue rollup keeps working: `amountReceived − payableAmount` is exactly
-   * the commission base. Nothing new should read them.
+   * **The two Cut numbers, and they are different questions.** `cutBase` is
+   * what the admin's percentage multiplies; `payoutSource` is the pot the
+   * finalised Cut comes out of. Absent on older deals, where `readCutBase` and
+   * `readPayoutSource` derive them from the same table.
+   */
+  cutBase?: number;
+  payoutSource?: number;
+  /**
+   * The original two fields, still written as per-type mirrors so every revenue
+   * rollup keeps working: `amountReceived − payableAmount` is what the company
+   * books. For a Lump Sum they carry the **Commission**, because the client's
+   * money goes to the builder. Nothing new should read them.
    */
   amountReceived: number;
   payableAmount: number;

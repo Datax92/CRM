@@ -107,7 +107,7 @@ export function MobileLeads({
   basePath: string;
   scope?: LeadScope;
 }) {
-  const { user, role, getIdToken } = useAuth();
+  const { user, role, managerKind, getIdToken } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAdmin = workspaceRole === "admin";
@@ -122,7 +122,15 @@ export function MobileLeads({
   const isManager = workspaceRole === "admin" || workspaceRole === "subadmin";
   const roleReady = role === workspaceRole;
 
-  const { leads: allLeads, loading, error } = useLeads(roleReady ? workspaceRole : null, user?.uid);
+  // Same reach rule as the desktop workspace: HR runs the company's pipeline,
+  // a Sales manager runs their own team's.
+  const companyWide = workspaceRole === "subadmin" && managerKind === "HR";
+
+  const { leads: allLeads, loading, error } = useLeads(
+    roleReady ? workspaceRole : null,
+    user?.uid,
+    companyWide
+  );
   // Scoped to the folder when there is one, before anything else reads it.
   const leads = useMemo(
     () => (scope ? allLeads.filter((lead) => scope.leadIds.has(lead.id)) : allLeads),
@@ -131,6 +139,7 @@ export function MobileLeads({
   const { employees } = useEmployees(isManager && roleReady, {
     role: workspaceRole,
     uid: user?.uid,
+    companyWide,
   });
   const { isOpened, markOpened } = useOpenedLeads(user?.uid);
 

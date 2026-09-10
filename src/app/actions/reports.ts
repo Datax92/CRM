@@ -43,6 +43,8 @@ import { verifyAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { pipelineStage } from "@/lib/pipelineStage";
+import { addTally, entryTally } from "@/lib/leadBuckets";
+import { loadEntries } from "@/lib/reportEntries";
 import {
   blankMetrics,
   describeSubject,
@@ -291,33 +293,22 @@ export async function buildTeamReport(
       if (!row) continue;
 
       /**
-       * **The work, then the work that connected.**
-       *
-       * Remarks and Follow-ups count every entry; the two connect columns count
-       * the subset where somebody actually got through. They are deliberately
-       * not the same number and are not meant to add up — a day of unanswered
-       * calls is real work and shows here as remarks with no connects, which is
-       * exactly what a manager needs to be able to see.
-       *
-       * `kind` is stored by the follow-up transaction. Entries written before
-       * that field existed count as follow-ups, which is what all but the first
-       * of them were.
+       * The four activity figures come from `entryTally`, which the employee
+       * dossier folds per lead over the same range. Both screens therefore
+       * answer "is this a Remark" and "which connect column" identically — the
+       * dossier used to decide it from the lead's all-time counters instead,
+       * and the two screens contradicted each other about the same day.
        */
-      if (entry.kind === "REMARK") row.remarks += 1;
-      else row.followUps += 1;
+      addTally(row, entryTally({
+        leadId: doc.ref.parent.parent?.id ?? "",
+        uid,
+        kind: (entry.kind as string | undefined) ?? null,
+        connect: entry.connect === true,
+      }));
 
-      if (entry.connect) {
-        // **The two connect columns are disjoint**, and that is the point of
-        // having both: New Connects is the first time somebody got through to
-        // a lead, Follow-Up Connects is every time after. Counting the opening
-        // call in both would make them sum to more contact than happened.
-        //
-        // Read from the entry's own `kind`, which the follow-up transaction
-        // stores. Entries written before that field existed count as
-        // follow-ups, which is what all but the first of them were.
-        if (entry.kind === "REMARK") row.newConnects += 1;
-        else row.followUpConnects += 1;
-      }
+      // Meetings and site visits are the report's own columns — the dossier
+      // does not cut on them, so they stay here rather than in the shared
+      // tally, which holds exactly the four figures both screens show.
       if (entry.meetingHeld) row.meetings += 1;
       if (entry.siteVisit) row.siteVisits += 1;
     }
@@ -537,84 +528,3 @@ function buildOptions(people: ReportPerson[], viewerUid: string): ReportOption[]
   return options;
 }
 
-/**
- * Every follow-up entry in the range.
- *
- * One collection-group query, which needs the `followUps.dayKey` field
- * exemption: Firestore's automatic single-field indexes are collection-scoped
- * only.
- *
- * **When that index is missing the report no longer fails.** It falls back to
- * querying each lead's own `followUps` subcollection — a *collection* query,
- * which the automatic index already covers. That is one round trip per lead
- * instead of one in total, which is why it is a fallback and not the plan; but
- * a slower report is worth incomparably more than a screen that says something
- * went wrong.
- */
-async function loadEntries(
-  from: string,
-  to: string,
-  leadIds: string[]
-): Promise<{ entries: FirebaseFirestore.QueryDocumentSnapshot[]; warning: string | null }> {
-  try {
-    const snap = await adminDb
-      .collectionGroup("followUps")
-      .where("dayKey", ">=", from)
-      .where("dayKey", "<=", to)
-      .get();
-    return { entries: snap.docs, warning: null };
-  } catch (error) {
-    // **Match on the message, not only the code.** Measured against the live
-    // project: over the REST transport this arrives as HTTP `400`, not the
-    // gRPC `9`/`failed-precondition` you would expect — and the wording is
-    // "requires a COLLECTION_GROUP_ASC index", not "requires an index".
-    const code = (error as { code?: number | string })?.code;
-    const message = (error as { message?: string })?.message ?? "";
-    const missingIndex =
-      code === 9 ||
-      code === "failed-precondition" ||
-      /requires a[n]?[^.]*index/i.test(message) ||
-      /index.*(is not ready|does not exist)/i.test(message);
-
-    if (!missingIndex) throw error;
-
-    const entries: FirebaseFirestore.QueryDocumentSnapshot[] = [];
-    const BATCH = 25;
-    for (let index = 0; index < leadIds.length; index += BATCH) {
-      const slice = leadIds.slice(index, index + BATCH);
-      const snaps = await Promise.all(
-        slice.map((leadId) =>
-          adminDb
-            .collection("leads")
-            .doc(leadId)
-            .collection("followUps")
-            .where("dayKey", ">=", from)
-            .where("dayKey", "<=", to)
-            .get()
-        )
-      );
-      for (const snap of snaps) entries.push(...snap.docs);
-    }
-
-    return {
-      entries,
-      // Names the command rather than a console path. The console's
-      // "Single field → Add exemption" screen is genuinely hard to find, and
-      // `npm run deploy:indexes` creates this override and every other missing
-      // index in one go from `firestore.indexes.json`.
-      /**
-       * **Not "these figures are correct".** They usually are, and the wording
-       * used to promise it — but the fallback can only look inside leads the
-       * subject holds *now*, so work somebody did on a lead that has since been
-       * reassigned is missing from it and present on the fast path. Saying so
-       * costs nothing and stops the fallback being trusted as identical.
-       */
-      warning:
-        "The report ran the slow way: the followUps.dayKey collection-group index is " +
-        "missing. Figures may under-count work done on leads that have since been " +
-        "reassigned to somebody else. A developer can create the index with " +
-        "`npm run deploy:indexes` — see docs/deployment-runbook.md for the one IAM " +
-        "role that needs granting first.",
-    };
-  }
-}

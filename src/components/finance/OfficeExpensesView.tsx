@@ -15,15 +15,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  BarChart3,
   Check,
   Download,
-  ListFilter,
   Paperclip,
   Pencil,
-  Plus,
   Receipt,
-  Tags,
   Trash2,
   X,
 } from "lucide-react";
@@ -54,7 +50,6 @@ import {
   F,
   FinanceCard,
   EmptyState,
-  Figure,
   PrimaryButton,
   ShareBar,
   fieldStyle,
@@ -62,6 +57,9 @@ import {
   rupees,
 } from "./financeChrome";
 import { ExpenseFormModal } from "./ExpenseFormModal";
+import { PayFromAccounts } from "@/components/accounts/PayFromAccounts";
+import { useLedger } from "@/hooks/useLedger";
+import { Wallet } from "lucide-react";
 import { ExpenseCategoriesModal } from "./ExpenseCategoriesModal";
 
 /** The first of the current month — the period an expense question usually means. */
@@ -83,6 +81,13 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<ExpenseStatus | "ALL">("ALL");
   const [category, setCategory] = useState("ALL");
+  /**
+   * The expense being funded. `paidOf` reads what has already been paid
+   * against it, so a part-paid expense offers "Pay balance" and the modal only
+   * lets the remainder be allocated — the obligation itself never changes.
+   */
+  const [paying, setPaying] = useState<OfficeExpense | null>(null);
+  const ledger = useLedger(true);
   const [grain, setGrain] = useState<"day" | "month" | "year">("month");
 
   const [categories, setCategories] = useState<string[]>([]);
@@ -202,58 +207,69 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/*
+        The banner, transcribed from `Office Expenses.dc.html` — the 115°
+        gradient, its three ring outlines, the 50px glass tile and the 32px
+        figure. The mobile file uses the same gradient with a 40px tile and a
+        29px figure, so the two differ only by those values.
+      */}
       <section
         style={{
-          borderRadius: 18,
-          padding: "18px 20px",
-          background: `linear-gradient(135deg, ${F.teal} 0%, ${F.tealMid} 100%)`,
+          position: "relative",
+          overflow: "hidden",
+          borderRadius: 20,
+          background: "linear-gradient(115deg,#1f5c58 0%,#3f8f8a 66%,#4fa39c 100%)",
           color: "#fff",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 14,
+          padding: isMobile ? "18px 20px" : "22px 26px",
         }}
       >
-        <div style={{ minWidth: 0 }}>
-          <p style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.7px", opacity: 0.82 }}>
-            OFFICE EXPENSES
-          </p>
-          <h2 style={{ fontSize: 23, fontWeight: 800 }}>{rupees(summary.spend)}</h2>
-          <p style={{ fontSize: 12.5, opacity: 0.9 }}>
-            approved in this period · {summary.count} record{summary.count === 1 ? "" : "s"}
-          </p>
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            gap: 9,
-            flexWrap: "wrap",
-            width: isMobile ? "100%" : undefined,
-          }}
+        <svg
+          viewBox="0 0 400 170"
+          preserveAspectRatio="none"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.16 }}
+          aria-hidden
         >
-          <button
-            type="button"
-            onClick={() => setManagingCategories(true)}
-            style={{ ...ghostButton, flex: isMobile ? "1 1 100%" : undefined, justifyContent: "center" }}
-          >
-            <Tags size={14} /> Categories
-          </button>
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            style={{
-              ...ghostButton,
-              background: "#fff",
-              color: F.teal,
-              border: "none",
-              flex: isMobile ? "1 1 100%" : undefined,
-              justifyContent: "center",
-            }}
-          >
-            <Plus size={15} /> Add expense
-          </button>
+          <circle cx="356" cy="20" r="78" fill="none" stroke="#fff" strokeWidth="1.2" />
+          <circle cx="356" cy="20" r="120" fill="none" stroke="#fff" strokeWidth="1.2" />
+          <circle cx="296" cy="162" r="54" fill="none" stroke="#fff" strokeWidth="1.2" />
+        </svg>
+
+        <div style={{ position: "relative", display: "flex", alignItems: isMobile ? "flex-start" : "flex-end", justifyContent: "space-between", gap: isMobile ? 14 : 24, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, minWidth: 0 }}>
+            {!isMobile && (
+              <div style={{ width: 50, height: 50, borderRadius: 16, background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.42)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3" />
+                </svg>
+              </div>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: isMobile ? "1.5px" : "1.6px", textTransform: "uppercase", opacity: 0.74 }}>
+                Office Expenses
+              </div>
+              <div style={{ fontSize: isMobile ? 29 : 32, fontWeight: 800, letterSpacing: isMobile ? "-1.1px" : "-1.2px", marginTop: isMobile ? 2 : 1, fontVariantNumeric: "tabular-nums" }}>
+                {rupees(summary.spend)}
+              </div>
+              <div style={{ fontSize: isMobile ? 12 : 12.5, fontWeight: 500, opacity: isMobile ? 0.82 : 0.84, marginTop: 2 }}>
+                approved{isMobile ? "" : " in this period"} · {summary.count} record{summary.count === 1 ? "" : "s"}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, width: isMobile ? "100%" : undefined }}>
+            <button type="button" onClick={() => setManagingCategories(true)} className="acc-press"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px 20px", borderRadius: 999, background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.45)", color: "#fff", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flex: isMobile ? 1 : undefined }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M3 12V4h8l9 9-8 8-9-9Z" /><circle cx="7.5" cy="7.5" r="1.4" />
+              </svg>
+              <span style={{ whiteSpace: "nowrap" }}>Categories</span>
+            </button>
+            <button type="button" onClick={() => setCreating(true)} className="acc-press"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px 22px", borderRadius: 999, background: "#fff", color: "#1f5c58", fontSize: 13.5, fontWeight: 700, cursor: "pointer", border: "none", fontFamily: "inherit", flex: isMobile ? 1 : undefined }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>
+              <span style={{ whiteSpace: "nowrap" }}>Add expense</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -263,33 +279,54 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
       {/* ------------------------------------------------------------------ */}
       {/* Dashboard                                                           */}
       {/* ------------------------------------------------------------------ */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-          gap: 12,
-        }}
-      >
-        <Figure label="Total invoiced" value={rupees(summary.total)} note="every record in range" />
-        <Figure label="This month" value={rupees(monthSummary.spend)} tone="TEAL" note="approved" />
-        <Figure
-          label="Pending"
-          value={rupees(summary.pending)}
-          tone="LEAVE"
-          note={`${summary.pendingCount} awaiting a decision`}
-        />
-        <Figure
-          label="Approved"
-          value={rupees(summary.approved)}
-          tone="PRESENT"
-          note={`${summary.approvedCount} records`}
-        />
-        <Figure
-          label="Rejected"
-          value={rupees(summary.rejected)}
-          tone="ABSENT"
-          note={`${summary.rejectedCount} records`}
-        />
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(auto-fit, minmax(212px, 1fr))", gap: 12 }}>
+        {(() => {
+          const total = summary.total;
+          const pct = (n: number) => (total ? Math.round((n / total) * 100) : 0);
+          const cards = [
+            { label: "Total Invoiced", value: summary.total, note: "every record in range", pill: `${summary.count} recs`, tone: "neutral", pct: 100, color: "#141f1e", accent: "#3f8f8a" },
+            { label: "This Month", value: monthSummary.spend, note: "approved", pill: null, tone: "neutral", pct: pct(monthSummary.spend), color: "#141f1e", accent: "#4fa39c" },
+            { label: "Pending", value: summary.pending, note: `${summary.pendingCount} awaiting a decision`, pill: summary.pendingCount ? "Action" : "Clear", tone: summary.pendingCount ? "warn" : "neutral", pct: pct(summary.pending), color: "#a5762a", accent: "#c99a2e" },
+            { label: "Approved", value: summary.approved, note: `${summary.approvedCount} records`, pill: `${pct(summary.approved)}%`, tone: "up", pct: pct(summary.approved), color: "#2f7d78", accent: "#2f7d78" },
+            { label: "Rejected", value: summary.rejected, note: `${summary.rejectedCount} records`, pill: summary.rejectedCount ? "Review" : "None", tone: summary.rejectedCount ? "down" : "neutral", pct: pct(summary.rejected), color: "#a8483c", accent: "#c0574a" },
+          ] as const;
+          const pillTone = (tone: string) =>
+            tone === "up" ? { background: "#e8f5f3", color: "#2f7d78" }
+              : tone === "warn" ? { background: "#fdf5e6", color: "#8a6321" }
+                : tone === "down" ? { background: "#fdeeec", color: "#a8483c" }
+                  : { background: "#f2f7f6", color: "#6c7d7b" };
+          const icons: Record<string, string> = {
+            "Total Invoiced": "M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6",
+            "This Month": "M4 5h16v16H4zM8 3v4M16 3v4M4 11h16",
+            Pending: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3 2",
+            Approved: "M20 6 9 17l-5-5",
+            Rejected: "M6 6l12 12M18 6 6 18",
+          };
+          return cards.map((c) => (
+            <div key={c.label} style={{ position: "relative", overflow: "hidden", background: "#fff", border: "1px solid #e2ecea", borderRadius: 16, padding: "15px 18px" }}>
+              {/* The 3px accent stripe the design puts down every card. */}
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: c.accent }} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 9, background: "#f2f8f7", color: c.accent, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={icons[c.label]} /></svg>
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.2px", textTransform: "uppercase", color: "#6c7d7b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{c.label}</span>
+                </div>
+                {c.pill && (
+                  <span style={{ flexShrink: 0, padding: "3px 9px", borderRadius: 999, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", ...pillTone(c.tone) }}>{c.pill}</span>
+                )}
+              </div>
+              <div style={{ fontSize: isMobile ? 21 : 25, fontWeight: 800, letterSpacing: "-0.9px", marginTop: 9, color: c.color, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {rupees(c.value)}
+              </div>
+              <div style={{ height: 5, borderRadius: 999, background: "#eef4f3", marginTop: 11, overflow: "hidden" }}>
+                <div style={{ height: "100%", borderRadius: 999, width: `${Math.max(3, Math.min(100, c.pct))}%`, background: c.accent }} />
+              </div>
+              <div style={{ fontSize: 11.5, fontWeight: 500, color: "#6c7d7b", marginTop: 7 }}>{c.note}</div>
+            </div>
+          ));
+        })()}
       </div>
 
       {/* ------------------------------------------------------------------ */}
@@ -363,34 +400,35 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
         </div>
       </FinanceCard>
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {/*
+        A segmented control, as the design draws it: one `#dceae8` track with
+        the active pill lifted out of it in white. Not two outlined buttons —
+        the track is what says the two are alternatives.
+      */}
+      <div style={{ display: isMobile ? "flex" : "inline-flex", alignItems: "center", gap: 4, padding: 4, borderRadius: 999, background: "#dceae8", alignSelf: "flex-start" }}>
         {(
           [
-            { key: "LEDGER", label: "Expense history", icon: ListFilter },
-            { key: "REPORTS", label: "Reports", icon: BarChart3 },
+            { key: "LEDGER", label: "Expense history", d: "M4 7h16M7 12h10M10 17h4" },
+            { key: "REPORTS", label: "Reports", d: "M5 20V10M12 20V4M19 20v-7" },
           ] as const
-        ).map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 7,
-              borderRadius: 999,
-              border: `1px solid ${tab === key ? F.teal : F.line}`,
-              background: tab === key ? F.tealSoft : F.surface,
-              color: tab === key ? F.teal : F.muted,
-              padding: "7px 15px",
-              fontSize: 12.5,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            <Icon size={14} /> {label}
-          </button>
-        ))}
+        ).map(({ key, label, d }) => {
+          const active = tab === key;
+          return (
+            <button key={key} type="button" onClick={() => setTab(key)} aria-pressed={active} className="acc-press"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                padding: "9px 20px", borderRadius: 999, fontSize: 13.5, fontWeight: 700,
+                cursor: "pointer", border: "none", fontFamily: "inherit",
+                color: active ? "#2f7d78" : "#5b6d6b",
+                background: active ? "#fff" : "transparent",
+                boxShadow: active ? "0 1px 3px rgba(31,92,88,0.14)" : "none",
+                flex: isMobile ? 1 : undefined,
+              }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={d} /></svg>
+              <span style={{ whiteSpace: "nowrap" }}>{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {tab === "LEDGER" ? (
@@ -520,6 +558,30 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
                           style={{ ...smallButton, color: "#a33a29", borderColor: "#f0c4bd" }}
                         >
                           <X size={12} /> Reject
+                        </button>
+                      )}
+                      {/*
+                        **Approval and payment are separate acts**, so Pay only
+                        appears once the expense is approved. An approved
+                        expense is money owed; it becomes money moved when
+                        somebody says which accounts funded it.
+                      */}
+                      {expense.status === "APPROVED" && (
+                        <button
+                          type="button"
+                          onClick={() => setPaying(expense)}
+                          style={{
+                            ...smallButton,
+                            color: paidOf(expense) >= expense.amount ? F.faint : "#2f7d78",
+                            borderColor: paidOf(expense) >= expense.amount ? F.line : "#bfe0dc",
+                          }}
+                        >
+                          <Wallet size={12} />
+                          {paidOf(expense) >= expense.amount
+                            ? "Paid"
+                            : paidOf(expense) > 0
+                              ? `Pay balance`
+                              : "Pay from…"}
                         </button>
                       )}
                       <button
@@ -656,23 +718,38 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
           }}
         />
       )}
+
+      {/*
+        **The link the whole rebuild is for.** Choosing which accounts fund this
+        expense posts one ledger transaction per account — so a 50,000 expense
+        paid 30/10/10 leaves three rows and stays a 50,000 expense. If one of
+        those accounts is the Committee, the Committee's statement shows its
+        -10,000 named for this expense, without a line of Committee-specific
+        code anywhere.
+      */}
+      {paying && (
+        <PayFromAccounts
+          open
+          onClose={() => setPaying(null)}
+          onPaid={(text) => setBanner({ ok: true, text })}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
+          getIdToken={getIdToken}
+          source={{
+            module: "OFFICE_EXPENSE",
+            collection: "expenses",
+            id: paying.id,
+            label: paying.title,
+            amount: paying.amount,
+            alreadyPaid: paidOf(paying),
+            direction: "OUT",
+            type: "EXPENSE",
+          }}
+        />
+      )}
     </div>
   );
 }
-
-const ghostButton: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 7,
-  borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.5)",
-  background: "rgba(255,255,255,0.18)",
-  color: "#fff",
-  padding: "9px 16px",
-  fontSize: 13,
-  fontWeight: 700,
-  cursor: "pointer",
-};
 
 const smallButton: React.CSSProperties = {
   display: "inline-flex",
@@ -687,3 +764,14 @@ const smallButton: React.CSSProperties = {
   fontWeight: 700,
   cursor: "pointer",
 };
+
+/**
+ * What has already been paid against an expense.
+ *
+ * Records written before the ledger have no `paidAmount` at all, and an absent
+ * field means nothing has been paid - not that the field is broken. The nine
+ * existing expenses in the project are all in that state and keep working.
+ */
+function paidOf(expense: OfficeExpense & { paidAmount?: number }): number {
+  return typeof expense.paidAmount === "number" ? expense.paidAmount : 0;
+}

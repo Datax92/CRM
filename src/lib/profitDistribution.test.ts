@@ -8,12 +8,27 @@ import {
   type DistributionShare,
 } from './profitDistribution.ts';
 
+/*
+ * Splitting a deal, under the rule that the percentage multiplies one number
+ * and the money leaves another.
+ *
+ * Every figure below is one of the owner's own worked examples. The pairs are
+ * (Cut base, payment source):
+ *
+ *   Down Payment / Confirmation  50 lakh total, 10 lakh adjustment → (50L, 40L)
+ *   Installments                 10 lakh received, 7 lakh payable  → (10L, 3L)
+ *   Lump Sum                     40 lakh to builder, 4 lakh comm.  → (40L, 4L)
+ */
+
+const LAKH = 100_000;
+
+/** Employee, own sub admin, other sub admin — there is no company share. */
 const shares = (...percentages: number[]): DistributionShare[] => {
-  const kinds: DistributionShare['kind'][] = ['EMPLOYEE', 'OWN_SUBADMIN', 'OTHER_SUBADMIN', 'COMPANY_BASE'];
-  const roles: DistributionShare['recipientRole'][] = ['employee', 'subadmin', 'subadmin', 'company'];
+  const kinds: DistributionShare['kind'][] = ['EMPLOYEE', 'OWN_SUBADMIN', 'OTHER_SUBADMIN'];
+  const roles: DistributionShare['recipientRole'][] = ['employee', 'subadmin', 'subadmin'];
 
   return percentages.map((percentage, index) => ({
-    recipientUid: roles[index] === 'company' ? null : `uid-${index}`,
+    recipientUid: `uid-${index}`,
     recipientName: `Recipient ${index}`,
     recipientRole: roles[index],
     kind: kinds[index],
@@ -21,98 +36,150 @@ const shares = (...percentages: number[]): DistributionShare[] => {
   }));
 };
 
-test("the owner's worked example, to the rupee", () => {
-  // Net 100,000 — employee 2%, own sub admin 2%, other sub admin 1%, company 4%.
-  const result = calculateDistribution(100_000, shares(2, 2, 1, 4));
+/* -------------------------------------------------------------------------- */
+/* The four worked examples                                                    */
+/* -------------------------------------------------------------------------- */
 
-  assert.deepEqual(
-    result.lines.map((line) => line.amount),
-    [2_000, 2_000, 1_000, 4_000]
-  );
-  assert.equal(result.distributedPercentage, 9);
-  assert.equal(result.distributedAmount, 9_000);
-  assert.equal(result.remainingPercentage, 91);
-  assert.equal(result.remainingAmount, 91_000);
-  assert.equal(result.companyBaseAmount, 4_000);
-  assert.equal(result.companyTotalAmount, 95_000);
+test('Down Payment: 1% of the 50 lakh total is 50,000, out of the 40 lakh remaining', () => {
+  const result = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 40 * LAKH }, shares(1));
+
+  // The number the owner specified, and the number the old single-base rule
+  // got wrong: it multiplied the 40 lakh remaining and produced 40,000.
+  assert.equal(result.lines[0].amount, 50_000);
+  assert.equal(result.distributedAmount, 50_000);
+  // Paid out of Remaining, not out of the base.
+  assert.equal(result.companyRetained, 40 * LAKH - 50_000);
   assert.equal(result.valid, true);
 });
 
-test('the company total separates its base share from the remainder', () => {
-  const result = calculateDistribution(100_000, shares(2, 2, 1, 4));
-
-  // Both numbers are reported, because they mean different things: one was
-  // chosen, the other is what nobody was allocated.
-  assert.equal(result.companyBaseAmount, 4_000);
-  assert.equal(result.companyTotalAmount - result.companyBaseAmount, result.remainingAmount);
+test('Confirmation splits identically to Down Payment — same base, same source', () => {
+  const down = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 40 * LAKH }, shares(1));
+  const confirmation = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 40 * LAKH }, shares(1));
+  assert.deepEqual(confirmation.lines.map((l) => l.amount), down.lines.map((l) => l.amount));
+  assert.equal(confirmation.companyRetained, down.companyRetained);
 });
 
-test('over-allocation is refused rather than clamped', () => {
-  const result = calculateDistribution(100_000, shares(50, 40, 10, 10));
+test('Installments: 1% of the 10 lakh received is 10,000, out of the 3 lakh remaining', () => {
+  const result = calculateDistribution({ cutBase: 10 * LAKH, payoutSource: 3 * LAKH }, shares(1));
 
-  assert.equal(result.distributedPercentage, 110);
-  assert.equal(result.valid, false);
-  assert.match(result.errors[0], /110%/);
-  // Nothing is silently reduced to fit — the entered figures survive so the
-  // admin can see which one to change.
-  assert.deepEqual(result.lines.map((line) => line.percentage), [50, 40, 10, 10]);
-});
-
-test('exactly 100% is allowed and leaves nothing over', () => {
-  const result = calculateDistribution(100_000, shares(40, 30, 20, 10));
-
-  assert.equal(result.valid, true);
-  assert.equal(result.remainingPercentage, 0);
-  assert.equal(result.remainingAmount, 0);
-  assert.equal(result.companyTotalAmount, 10_000);
-});
-
-test('the remaining amount is never negative in a valid result', () => {
-  for (const split of [[0, 0, 0, 0], [1, 1, 1, 1], [25, 25, 25, 25]]) {
-    const result = calculateDistribution(250_000, shares(...split));
-    assert.equal(result.valid, true);
-    assert.ok(result.remainingAmount >= 0, JSON.stringify(split));
-  }
-});
-
-test('a deal with no profit cannot be distributed', () => {
-  const result = calculateDistribution(0, shares(2, 2, 0, 4));
-  assert.equal(result.valid, false);
-  assert.match(result.errors.join(' '), /no profit/i);
-});
-
-test('a person-shaped line with no account selected is rejected', () => {
-  const withoutUid = shares(2, 0, 0, 4);
-  withoutUid[0].recipientUid = null;
-
-  const result = calculateDistribution(100_000, withoutUid);
-  assert.equal(result.valid, false);
-  assert.match(result.errors.join(' '), /no account selected/i);
-});
-
-test('the company line needs no account', () => {
-  const result = calculateDistribution(100_000, shares(2, 2, 0, 4));
+  assert.equal(result.lines[0].amount, 10_000);
+  assert.equal(result.companyRetained, 3 * LAKH - 10_000);
   assert.equal(result.valid, true);
 });
 
-test('percentages parse the way a text input actually behaves', () => {
-  assert.equal(parsePercentage(''), 0, 'a cleared box is no share, not NaN');
+test('Lump Sum: 1% of the 40 lakh the client paid, out of the 4 lakh commission', () => {
+  const result = calculateDistribution({ cutBase: 40 * LAKH, payoutSource: 4 * LAKH }, shares(1));
+
+  // Emphatically NOT 1% of the commission, which would be 4,000.
+  assert.equal(result.lines[0].amount, 40_000);
+  // The owner's stated outcome: 4 lakh − 40,000 = 3.6 lakh retained.
+  assert.equal(result.companyRetained, 360_000);
+  assert.equal(result.valid, true);
+});
+
+/* -------------------------------------------------------------------------- */
+/* The base and the source are never confused                                  */
+/* -------------------------------------------------------------------------- */
+
+test('the amount depends on the base alone — the source does not change it', () => {
+  const wide = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 40 * LAKH }, shares(2));
+  const narrow = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 5 * LAKH }, shares(2));
+  assert.equal(wide.lines[0].amount, narrow.lines[0].amount);
+  assert.equal(wide.lines[0].amount, 100_000);
+  // Only what is left over differs.
+  assert.equal(wide.companyRetained, 40 * LAKH - 100_000);
+  assert.equal(narrow.companyRetained, 5 * LAKH - 100_000);
+});
+
+test('the company keeps the source minus the cuts, and takes no percentage of its own', () => {
+  const result = calculateDistribution({ cutBase: 10 * LAKH, payoutSource: 3 * LAKH }, shares(2, 2, 1));
+
+  assert.equal(result.distributedAmount, 20_000 + 20_000 + 10_000);
+  assert.equal(result.companyRetained, 3 * LAKH - 50_000);
+  // Nothing named the company: it is not a recipient, it is what is left.
+  assert.equal(result.lines.some((line) => line.recipientRole === 'company'), false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Over-allocation                                                             */
+/* -------------------------------------------------------------------------- */
+
+test('cuts exceeding the payment source are refused, at well under 100%', () => {
+  // 10% of a 40 lakh base is 4 lakh — the entire commission — so 11% overdraws
+  // it while every individual share still looks modest.
+  const result = calculateDistribution({ cutBase: 40 * LAKH, payoutSource: 4 * LAKH }, shares(6, 5));
+
+  assert.equal(result.valid, false);
+  assert.match(result.errors[0], /more than the Rs 400,000 available/);
+  // A percentage test would have let this through: 11% is far below 100.
+  assert.equal(result.distributedPercentage, 11);
+});
+
+test('cuts are refused, never quietly reduced to fit', () => {
+  const result = calculateDistribution({ cutBase: 40 * LAKH, payoutSource: 4 * LAKH }, shares(6, 5));
+  // The amounts are still exactly what the admin asked for.
+  assert.deepEqual(result.lines.map((l) => l.amount), [240_000, 200_000]);
+});
+
+test('a split that exactly empties the source is allowed', () => {
+  const result = calculateDistribution({ cutBase: 40 * LAKH, payoutSource: 4 * LAKH }, shares(10));
+  assert.equal(result.distributedAmount, 4 * LAKH);
+  assert.equal(result.companyRetained, 0);
+  assert.equal(result.valid, true);
+});
+
+test('the share of the pot actually used is reported, because it surprises', () => {
+  // 1% of the base is 1.25% of the source once an adjustment has shrunk it.
+  const result = calculateDistribution({ cutBase: 50 * LAKH, payoutSource: 40 * LAKH }, shares(1));
+  assert.equal(result.sourceUsedPercentage, 1.25);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Nothing to split                                                            */
+/* -------------------------------------------------------------------------- */
+
+test('a deal with no pot cannot be split', () => {
+  const result = calculateDistribution({ cutBase: 10 * LAKH, payoutSource: 0 }, shares(1));
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /nothing left on this deal/);
+});
+
+test('a loss-making legacy deal cannot be split either', () => {
+  // One real deal in the project: 500,000 received against 600,000 payable.
+  const result = calculateDistribution({ cutBase: 500_000, payoutSource: -100_000 }, shares(1));
+  assert.equal(result.valid, false);
+});
+
+test('a deal with no base cannot be split', () => {
+  const result = calculateDistribution({ cutBase: 0, payoutSource: 3 * LAKH }, shares(1));
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /nothing to calculate a cut from/);
+});
+
+test('a recipient with no account selected is refused', () => {
+  const withoutUid = shares(2).map((share) => ({ ...share, recipientUid: null }));
+  const result = calculateDistribution({ cutBase: 10 * LAKH, payoutSource: 3 * LAKH }, withoutUid);
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /no account selected/);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Arithmetic                                                                  */
+/* -------------------------------------------------------------------------- */
+
+test('percentages parse from whatever the box produced', () => {
+  assert.equal(parsePercentage(''), 0);
   assert.equal(parsePercentage(null), 0);
-  assert.equal(parsePercentage('2'), 2);
   assert.equal(parsePercentage('2.5%'), 2.5);
-  assert.equal(parsePercentage('-5'), 0, 'negatives cannot pay someone backwards');
-  assert.equal(parsePercentage('250'), 100, 'capped at the whole profit');
+  assert.equal(parsePercentage('-3'), 0);
+  assert.equal(parsePercentage('900'), 100);
   assert.equal(parsePercentage('abc'), 0);
 });
 
-test('amounts round to the rupee and stay consistent with their percentage', () => {
-  assert.equal(amountForPercentage(100_000, 2.5), 2_500);
-  assert.equal(amountForPercentage(33_333, 3), 999.99);
-  assert.equal(amountForPercentage(0, 50), 0);
-});
-
-test('a fractional split still adds up to the profit', () => {
-  const result = calculateDistribution(99_999, shares(2.5, 1.25, 0.25, 4));
-  const total = result.distributedAmount + result.remainingAmount;
-  assert.ok(Math.abs(total - result.netProfit) < 0.01);
+test('amounts round to the paisa and never drift', () => {
+  assert.equal(amountForPercentage(99_999, 2.5), 2_499.98);
+  const result = calculateDistribution({ cutBase: 99_999, payoutSource: 99_999 }, shares(2.5, 1.25, 0.25));
+  const summed = result.lines.reduce((total, line) => total + line.amount, 0);
+  assert.equal(result.distributedAmount, Math.round(summed * 100) / 100);
+  assert.equal(result.companyRetained, Math.round((99_999 - result.distributedAmount) * 100) / 100);
 });

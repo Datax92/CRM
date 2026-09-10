@@ -23,6 +23,7 @@ import {
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { FieldValue } from "firebase-admin/firestore";
 import {
+  duplicatePhoneMessage,
   fieldKeyFor,
   phoneKey,
   MAX_FIELDS_PER_FOLDER,
@@ -329,6 +330,55 @@ async function mirrorFolderIds(folderId: string): Promise<string[]> {
 }
 
 /**
+ * Refuses a phone number the folder already holds, **naming who holds it**.
+ *
+ * One number is one prospective client, and two rows for one number means two
+ * people ringing it. The scope is the folder plus any mirror a manager has
+ * been handed rows into: a row that left for a manager is still that folder's
+ * row, and typing it again here would make a second. Deliberately *not* wider
+ * than that — the owner's call. Two different source lists legitimately hold
+ * the same number, and refusing a fresh sheet because a number appears in last
+ * year's would make importing one impossible.
+ *
+ * The message names the person rather than only the number, because "already
+ * in this folder" leaves the reader hunting for a row they cannot search for
+ * by a number they have just been told not to use.
+ *
+ * `ignoreRecordId` is the row being edited: saving a record without touching
+ * its number must not report the record as its own duplicate.
+ */
+async function refuseDuplicatePhone(
+  folder: { ref: { id: string }; handedOffCount: number },
+  key: string,
+  written: string | null,
+  ignoreRecordId?: string
+): Promise<void> {
+  const folderId = folder.ref.id;
+  const scope = [
+    folderId,
+    ...(folder.handedOffCount > 0 ? await mirrorFolderIds(folderId) : []),
+  ];
+
+  for (const id of scope) {
+    const clash = await adminDb
+      .collection(RECORDS)
+      .where("folderId", "==", id)
+      .where("phoneKey", "==", key)
+      // Two, so a hit that is only this row itself does not hide a real one
+      // behind it.
+      .limit(2)
+      .get();
+
+    const other = clash.docs.find((doc) => doc.id !== ignoreRecordId);
+    if (!other) continue;
+
+    throw new UserFacingError(
+      duplicatePhoneMessage(written || key, other.data().name as string, id !== folderId)
+    );
+  }
+}
+
+/**
  * Throws unless this caller may work this folder.
  *
  * Takes the folder that has already been read rather than re-reading it: every
@@ -378,29 +428,7 @@ export async function addDataBankRecord(
     if (!record.name) throw new UserFacingError("Enter the name.");
     if (!record.phoneKey) throw new UserFacingError("Enter a usable phone number.");
 
-    // The folder, plus any mirror a manager has been handed rows into — a row
-    // that left for a manager is still one row for one prospective client, and
-    // typing it again here would make two. Same rule the import follows.
-    const scope = [
-      folderId,
-      ...(folder.handedOffCount > 0 ? await mirrorFolderIds(folderId) : []),
-    ];
-    for (const id of scope) {
-      const clash = await adminDb
-        .collection(RECORDS)
-        .where("folderId", "==", id)
-        .where("phoneKey", "==", record.phoneKey)
-        .limit(1)
-        .get();
-      if (!clash.empty) {
-        const name = clash.docs[0].data().name;
-        throw new UserFacingError(
-          id === folderId
-            ? `That number is already in this folder (${name}).`
-            : `That number has already been handed to a manager (${name}).`
-        );
-      }
-    }
+    await refuseDuplicatePhone(folder, record.phoneKey, record.phone);
 
     const ref = await adminDb.collection(RECORDS).add({
       folderId,
@@ -439,6 +467,14 @@ export async function updateDataBankRecord(
       const record = buildRecord(input.values, folder.fields, folder.roles);
       if (!record.name) throw new UserFacingError("Enter the name.");
       if (!record.phoneKey) throw new UserFacingError("Enter a usable phone number.");
+      // **Editing had no duplicate check at all.** Adding a number already in
+      // the folder was refused; retyping an existing row's number to the same
+      // value was not, so the one rule the folder has could be walked straight
+      // round. `ignoreRecordId` is this row itself — saving a record without
+      // touching its number must not report the record as its own duplicate.
+      if (record.phoneKey !== snap.data()!.phoneKey) {
+        await refuseDuplicatePhone(folder, record.phoneKey, record.phone, recordId);
+      }
       Object.assign(patch, record);
     }
     if (input.status && RECORD_STATUSES.includes(input.status)) patch.status = input.status;

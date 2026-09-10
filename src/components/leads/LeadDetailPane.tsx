@@ -50,10 +50,16 @@ import { formatMoney, formatAmount } from "@/lib/money";
 import {
   dealAmounts,
   validateDealAmounts,
-  readTotalPrice,
-  readDownPayment,
-  readAdjustment,
-  readRemaining,
+  dealFigureRows,
+  dealCutRows,
+  readDealType,
+  isPricedType,
+  DEAL_TYPES,
+  DEAL_TYPE_LABELS,
+  DEAL_TYPE_HINTS,
+  CUT_BASE_LABELS,
+  CUT_SOURCE_LABELS,
+  type DealType,
 } from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDate, formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
@@ -1269,11 +1275,24 @@ function DealEntryForm({
    * would fight their typing.
    */
   const seeded = lead.dealDefaults ?? null;
+  /**
+   * **The deal type decides the whole form.** Which boxes appear, what
+   * Remaining means, what the Cut will be a percentage of and where it will be
+   * paid from — all four differ, and none of them is a variation on the others.
+   * See the table in `lib/dealAmounts`.
+   */
+  const [dealType, setDealType] = useState<DealType>("DOWN_PAYMENT");
   const [totalPrice, setTotalPrice] = useState(seeded?.totalPrice ? String(seeded.totalPrice) : "");
   const [downPayment, setDownPayment] = useState(
     seeded?.downPayment ? String(seeded.downPayment) : ""
   );
+  const [confirmationAmount, setConfirmationAmount] = useState(
+    seeded?.downPayment ? String(seeded.downPayment) : ""
+  );
   const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
+  const [receivedAmount, setReceivedAmount] = useState("");
+  const [payableAmount, setPayableAmount] = useState("");
+  const [commission, setCommission] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<string>(PAYMENT_METHODS[0] ?? "Cash");
   const [dealCategory, setDealCategory] = useState<string>(DEFAULT_DEAL_CATEGORY);
   const [dealDate, setDealDate] = useState(todayInputValue());
@@ -1281,20 +1300,25 @@ function DealEntryForm({
 
   /**
    * The whole calculation, recomputed as they type, from the same module the
-   * Server Action uses. The operator sees the commission base before saving,
-   * which is the number everybody's percentage will come off.
+   * Server Action uses — so what the operator is shown is exactly what will be
+   * stored, and a deal this form accepts is never refused by the server.
    */
-  const amounts = dealAmounts({
+  const priced = isPricedType(dealType);
+  const typedFigures = {
+    dealType,
     totalPrice: Number(totalPrice),
     downPayment: Number(downPayment),
+    confirmationAmount: Number(confirmationAmount),
     adjustment: Number(adjustment),
-  });
-  const amountErrors = totalPrice === "" ? [] : validateDealAmounts({
-    totalPrice: Number(totalPrice),
-    downPayment: Number(downPayment),
-    adjustment: Number(adjustment),
-  });
-  const profit = totalPrice === "" ? null : amounts.remaining;
+    receivedAmount: Number(receivedAmount),
+    payableAmount: Number(payableAmount),
+    commission: Number(commission),
+  };
+  const amounts = dealAmounts(typedFigures);
+  // Nothing is complained about until the first figure is typed — a form that
+  // opens covered in errors reads as broken rather than as empty.
+  const started = priced ? totalPrice !== "" : receivedAmount !== "";
+  const amountErrors = started ? validateDealAmounts(typedFigures) : [];
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1304,9 +1328,16 @@ function DealEntryForm({
       const result = await closeDeal(await getIdToken(), lead.id, {
         customer: { name, phone, email, cnic, address, city },
         serviceDescription,
-        totalPrice: Number(totalPrice),
-        downPayment: Number(downPayment),
+        // Every field is sent; the server reads only the ones this type uses,
+        // by the same `dealAmounts` branch the preview above ran.
+        dealType,
+        totalPrice: Number(totalPrice) || 0,
+        downPayment: Number(downPayment) || 0,
+        confirmationAmount: Number(confirmationAmount) || 0,
         adjustment: Number(adjustment) || 0,
+        receivedAmount: Number(receivedAmount) || 0,
+        payableAmount: Number(payableAmount) || 0,
+        commission: Number(commission) || 0,
         paymentMethod,
         dealCategory,
         dealDate,
@@ -1392,69 +1423,210 @@ function DealEntryForm({
 
         <fieldset className="px-6 py-5">
           <legend className="mb-3.5 text-[11.5px] tracking-[1.1px] text-[#4f9c99]">FINANCIAL BREAKDOWN</legend>
+
+          {/* **The type first, because it decides everything under it.** Four
+              buttons rather than a select: they carry a line of explanation
+              each, and picking the wrong one is the single most expensive
+              mistake available on this form. */}
+          <div
+            role="radiogroup"
+            aria-label="Deal type"
+            className="mb-4 grid gap-2 sm:grid-cols-2"
+          >
+            {DEAL_TYPES.map((type) => {
+              const on = dealType === type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setDealType(type)}
+                  className={`rounded-lg border px-3.5 py-2.5 text-left transition-colors ${
+                    on
+                      ? "border-[#3f8f8a] bg-[#e2f0ee] text-[#2f7d78]"
+                      : "border-[#dceae8] bg-white text-[#5b6d6b] hover:border-[#bfe0dc]"
+                  }`}
+                >
+                  <span className="block text-[13px] font-semibold">{DEAL_TYPE_LABELS[type]}</span>
+                  <span className="mt-0.5 block text-[11px] opacity-85">{DEAL_TYPE_HINTS[type]}</span>
+                </button>
+              );
+            })}
+          </div>
+
           <div className="grid gap-x-4.5 gap-y-3.5 sm:grid-cols-2">
-            <label className={FIELD_LABEL_CLASS}>
-              <span>
-                Total Price (PKR) <span className="text-[#e05a4a]">*</span>
-              </span>
-              <input
-                required
-                type="number"
-                min="0"
-                value={totalPrice}
-                onChange={(e) => setTotalPrice(e.target.value)}
-                placeholder="0"
-                className={`${INPUT_CLASS} tabular-nums`}
-              />
-            </label>
-            <label className={FIELD_LABEL_CLASS}>
-              <span>
-                Down Payment (PKR) <span className="text-[#e05a4a]">*</span>
-              </span>
-              <input
-                required
-                type="number"
-                min="0"
-                value={downPayment}
-                onChange={(e) => setDownPayment(e.target.value)}
-                placeholder="0"
-                className={`${INPUT_CLASS} tabular-nums`}
-              />
-              <span className="text-[11px] text-[#9aacaa]">
-                What the client has paid. Commissions are paid out of this.
-              </span>
-            </label>
-            <label className={FIELD_LABEL_CLASS}>
-              <span>Adjustment (PKR)</span>
-              <input
-                type="number"
-                min="0"
-                value={adjustment}
-                onChange={(e) => setAdjustment(e.target.value)}
-                placeholder="0"
-                className={`${INPUT_CLASS} tabular-nums`}
-              />
-              <span className="text-[11px] text-[#9aacaa]">
-                Anything off the price — a discount, or a file traded in.
-              </span>
-            </label>
-            {/* Read-only on purpose: it is Total Price minus Adjustment, and a
-                typed Remaining that disagreed with the two figures above it
-                would be a fourth number nobody could reconcile. */}
-            <label className={FIELD_LABEL_CLASS}>
-              <span>Remaining (PKR)</span>
-              <input
-                type="text"
-                readOnly
-                aria-readonly="true"
-                value={totalPrice === "" ? "" : formatAmount(amounts.remaining)}
-                placeholder="0"
-                className={`${INPUT_CLASS} tabular-nums bg-[#eef5f4] text-[#5b6d6b]`}
-              />
-              <span className="text-[11px] text-[#9aacaa]">
-                Total Price &minus; Adjustment. Calculated.
-              </span>
-            </label>
+            {/* ---- Down Payment / Confirmation ---- */}
+            {priced && (
+              <>
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>
+                    Total Price (PKR) <span className="text-[#e05a4a]">*</span>
+                  </span>
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    value={totalPrice}
+                    onChange={(e) => setTotalPrice(e.target.value)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    The agreed sale price. The Cut is a percentage of this.
+                  </span>
+                </label>
+                {dealType === "DOWN_PAYMENT" ? (
+                  <label className={FIELD_LABEL_CLASS}>
+                    <span>
+                      Down Payment (PKR) <span className="text-[#e05a4a]">*</span>
+                    </span>
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      value={downPayment}
+                      onChange={(e) => setDownPayment(e.target.value)}
+                      placeholder="0"
+                      className={`${INPUT_CLASS} tabular-nums`}
+                    />
+                    <span className="text-[11px] text-[#9aacaa]">
+                      What the client has handed over so far.
+                    </span>
+                  </label>
+                ) : (
+                  /* Named Confirmation, not Down Payment. They are different
+                     things to this business and calling one by the other's name
+                     puts a wrong word on a permanent record. */
+                  <label className={FIELD_LABEL_CLASS}>
+                    <span>
+                      Confirmation (PKR) <span className="text-[#e05a4a]">*</span>
+                    </span>
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      value={confirmationAmount}
+                      onChange={(e) => setConfirmationAmount(e.target.value)}
+                      placeholder="0"
+                      className={`${INPUT_CLASS} tabular-nums`}
+                    />
+                    <span className="text-[11px] text-[#9aacaa]">
+                      What the client paid to confirm. More may follow later.
+                    </span>
+                  </label>
+                )}
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>Adjustment (PKR)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={adjustment}
+                    onChange={(e) => setAdjustment(e.target.value)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    Anything off the price — a discount, or a file traded in.
+                  </span>
+                </label>
+                {/* Read-only on purpose: it is Total Price minus Adjustment, and
+                    a typed Remaining that disagreed with the two figures above
+                    it would be a fourth number nobody could reconcile. */}
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>Remaining (PKR)</span>
+                  <input
+                    type="text"
+                    readOnly
+                    aria-readonly="true"
+                    value={totalPrice === "" ? "" : formatAmount(amounts.remaining ?? 0)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums bg-[#eef5f4] text-[#5b6d6b]`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    Total Price &minus; Adjustment. Calculated.
+                  </span>
+                </label>
+              </>
+            )}
+
+            {/* ---- Installments / Lump Sum ---- */}
+            {!priced && (
+              <>
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>
+                    Amount Received (PKR) <span className="text-[#e05a4a]">*</span>
+                  </span>
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    value={receivedAmount}
+                    onChange={(e) => setReceivedAmount(e.target.value)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    {dealType === "LUMP_SUM"
+                      ? "What the client paid the builder. Not our revenue — but the Cut is a percentage of it."
+                      : "Money received this cycle. The Cut is a percentage of this."}
+                  </span>
+                </label>
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>Payable Amount (PKR)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={payableAmount}
+                    onChange={(e) => setPayableAmount(e.target.value)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    What is payable out of the amount received.
+                  </span>
+                </label>
+                {dealType === "INSTALLMENTS" ? (
+                  <label className={FIELD_LABEL_CLASS}>
+                    <span>Remaining (PKR)</span>
+                    <input
+                      type="text"
+                      readOnly
+                      aria-readonly="true"
+                      value={receivedAmount === "" ? "" : formatAmount(amounts.remaining ?? 0)}
+                      placeholder="0"
+                      className={`${INPUT_CLASS} tabular-nums bg-[#eef5f4] text-[#5b6d6b]`}
+                    />
+                    <span className="text-[11px] text-[#9aacaa]">
+                      Amount Received &minus; Payable Amount. Calculated.
+                    </span>
+                  </label>
+                ) : (
+                  /* **A lump sum has no Remaining, and the Commission is typed.**
+                     It is not Received minus Payable: the client's money goes to
+                     the builder, and the builder separately pays us a commission
+                     that no figure on this form predicts. */
+                  <label className={FIELD_LABEL_CLASS}>
+                    <span>
+                      Commission (PKR) <span className="text-[#e05a4a]">*</span>
+                    </span>
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      value={commission}
+                      onChange={(e) => setCommission(e.target.value)}
+                      placeholder="0"
+                      className={`${INPUT_CLASS} tabular-nums`}
+                    />
+                    <span className="text-[11px] text-[#9aacaa]">
+                      What the builder pays us. This is the company&rsquo;s revenue, and the Cut comes out of it.
+                    </span>
+                  </label>
+                )}
+              </>
+            )}
+
             <label className={FIELD_LABEL_CLASS}>
               <span>Payment Method</span>
               <select
@@ -1504,23 +1676,48 @@ function DealEntryForm({
             </p>
           )}
 
-          {/* What the percentages will be applied to, said before the deal is
-              saved rather than discovered on the distribution screen. */}
+          {/*
+            **The two Cut figures, said here rather than discovered later.**
+
+            The base is what the admin's percentage will multiply; the source is
+            the pot it will come out of. On three of the four types they are not
+            the same number, and the person entering the deal is the one who can
+            still catch a figure typed into the wrong box.
+
+            The Cut itself is deliberately absent: it is finalised by the admin
+            in Profit Distribution, and offering a percentage here would create
+            a second answer to a question that must have one.
+          */}
           <div
-            className="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-4.5 py-3.5"
+            className="mt-4 rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-4.5 py-3.5"
             aria-live="polite"
           >
-            <span className="min-w-0">
-              <span className="block text-xs tracking-[1px] text-[#2f7d78]">COMMISSION BASE</span>
-              <span className="mt-0.5 block text-[11px] text-[#5f8b88]">
-                {Number(adjustment) > 0
-                  ? "Total Price less the adjustment — every share is a percentage of this."
-                  : "The total price — every share is a percentage of this."}
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-xs tracking-[1px] text-[#2f7d78]">
+                  CUT BASE — {CUT_BASE_LABELS[dealType].toUpperCase()}
+                </span>
+                <span className="mt-0.5 block text-[11px] text-[#5f8b88]">
+                  The admin&rsquo;s percentage is a percentage of this.
+                </span>
               </span>
-            </span>
-            <span className="text-[17px] font-medium tabular-nums text-[#2f7d78]">
-              {profit === null ? "—" : formatMoney(profit)}
-            </span>
+              <span className="text-[17px] font-medium tabular-nums text-[#2f7d78]">
+                {started ? formatMoney(amounts.cutBase) : "—"}
+              </span>
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-4 border-t border-[#cfe6e2] pt-2.5">
+              <span className="min-w-0">
+                <span className="block text-xs tracking-[1px] text-[#2f7d78]">
+                  PAID FROM — {CUT_SOURCE_LABELS[dealType].toUpperCase()}
+                </span>
+                <span className="mt-0.5 block text-[11px] text-[#5f8b88]">
+                  The company keeps what is left of this after the Cut.
+                </span>
+              </span>
+              <span className="text-[17px] font-medium tabular-nums text-[#2f7d78]">
+                {started ? formatMoney(amounts.payoutSource) : "—"}
+              </span>
+            </div>
           </div>
 
           <button
@@ -1553,9 +1750,9 @@ function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLe
         {[
           ["CUSTOMER", deal.customer?.name || "—"],
           ["CONTACT", deal.customer?.phone ? formatPhone(deal.customer.phone) : "—"],
+          ["TYPE", DEAL_TYPE_LABELS[readDealType(deal)]],
           ["METHOD", deal.paymentMethod || "—"],
           ["CATEGORY", deal.dealCategory || "—"],
-          ["CITY", deal.customer?.city || "—"],
         ].map(([label, value]) => (
           <div key={label} className="min-w-0 bg-white px-5 py-3">
             <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">{label}</p>
@@ -1571,33 +1768,55 @@ function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLe
         </div>
       )}
 
-      {/* The four figures the deal was recorded as, then what the commission
-          is a percentage of. `readDownPayment` returns null for a deal closed
-          before the form asked, which shows as "—" rather than a confident
-          Rs 0 — a client who paid nothing is a different claim. */}
-      <div className="grid grid-cols-2 gap-3 border-t border-[#f0f6f5] px-6 py-5 sm:grid-cols-4">
-        <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">TOTAL PRICE</p>
-          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(readTotalPrice(deal))}</p>
-        </div>
-        <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">DOWN PAYMENT</p>
-          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">
-            {readDownPayment(deal) === null ? "—" : formatMoney(readDownPayment(deal))}
-          </p>
-        </div>
-        <div className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">ADJUSTMENT</p>
-          <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">{formatMoney(readAdjustment(deal))}</p>
-        </div>
-        <div className="rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-3 py-2.5 text-center">
-          <p className="text-[11px] tracking-[0.6px] text-[#2f7d78]">REMAINING</p>
-          <p className="mt-0.5 text-sm font-medium tabular-nums text-[#2f7d78]">
-            {formatMoney(readRemaining(deal))}
-          </p>
-          <p className="mt-0.5 text-[10px] text-[#5f8b88]">commission base</p>
-        </div>
-      </div>
+      <DealFigures deal={deal} />
     </div>
+  );
+}
+
+/**
+ * A recorded deal's money, in the fields **its own type** uses.
+ *
+ * A lump sum shows a Commission and no Remaining; an installments deal shows
+ * Amount Received and Payable and no Total Price. Rendering one shape for all
+ * four would print boxes that were never on the form the deal was entered
+ * through — and, for a lump sum, a "Remaining" the business does not have.
+ *
+ * A deal with no type is an Installments deal, which is what every deal
+ * recorded before the selector is. `readDownPayment` returns null where the
+ * older form never asked, and that shows as "—" rather than a confident Rs 0:
+ * a client who paid nothing is a different claim.
+ */
+function DealFigures({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLead>["deal"]> }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 border-t border-[#f0f6f5] px-6 py-5 sm:grid-cols-4">
+        {dealFigureRows(deal).map((row) => (
+          <div key={row.label} className="rounded-lg bg-[#f7fbfa] px-3 py-2.5 text-center">
+            <p className="text-[11px] tracking-[0.6px] text-[#7e918f]">{row.label.toUpperCase()}</p>
+            <p className="mt-0.5 text-sm tabular-nums text-[#2b3a39]">
+              {row.value === null ? "—" : formatMoney(row.value)}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* **The two Cut figures, named.** They are what Profit Distribution will
+          work from, and on three of the four types they are different numbers.
+          The Cut itself is not here: the admin finalises it on that screen. */}
+      <div className="grid grid-cols-1 gap-3 border-t border-[#f0f6f5] px-6 pb-5 sm:grid-cols-2">
+        {dealCutRows(deal).map((row) => (
+          <div
+            key={row.label}
+            className="rounded-lg border border-[#bfe0dc] bg-[#eef8f7] px-3 py-2.5 text-center"
+          >
+            <p className="text-[11px] tracking-[0.6px] text-[#2f7d78]">{row.label.toUpperCase()}</p>
+            <p className="mt-0.5 text-sm font-medium tabular-nums text-[#2f7d78]">
+              {formatMoney(row.value)}
+            </p>
+            <p className="mt-0.5 text-[10px] text-[#5f8b88]">{row.note}</p>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }

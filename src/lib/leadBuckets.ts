@@ -37,9 +37,64 @@ export type LeadFilterKey =
  * Read off the counters the follow-up transaction already maintains on the
  * lead, so they cost nothing extra and cannot disagree with the entries.
  */
-export type ActivityFilterKey = 'REMARKED' | 'FOLLOWED_UP' | 'CONNECTED';
+export type ActivityFilterKey =
+  | 'REMARKED'
+  | 'FOLLOWED_UP'
+  | 'NEW_CONNECTS'
+  | 'FOLLOWUP_CONNECTS'
+  | 'CONNECTED';
 
-export const ACTIVITY_FILTERS: ActivityFilterKey[] = ['REMARKED', 'FOLLOWED_UP', 'CONNECTED'];
+/**
+ * In the order the work happens: a lead is remarked on, then followed up, and
+ * either of those calls may have been answered. The two connect cuts sit
+ * beside the entry they belong to rather than together at the end, so the row
+ * reads as two pairs.
+ */
+export const ACTIVITY_FILTERS: ActivityFilterKey[] = [
+  'REMARKED',
+  'NEW_CONNECTS',
+  'FOLLOWED_UP',
+  'FOLLOWUP_CONNECTS',
+  'CONNECTED',
+];
+
+/**
+ * What one person wrote on one lead inside a date range.
+ *
+ * **Entries, not leads** — the same unit Reports counts, and the reason this
+ * type exists at all. The dossier used to answer its activity cuts from the
+ * lead's all-time counters (`followUpCount`, `connectCount`) with only the
+ * period filter applied to the lead's last touch, so "Connected · Today"
+ * returned every lead touched today that had *ever* had an answered call.
+ * Measured against the live project on 2026-09-09: it read 7 where 3 connects
+ * actually happened that day.
+ */
+export interface EntryTally {
+  /** First-entry-on-a-lead entries written in the range. */
+  remarks: number;
+  /** Every later entry written in the range. */
+  followUps: number;
+  /** Of those remarks, the ones where the call was answered. */
+  newConnects: number;
+  /** Of those follow-ups, the ones where the call was answered. */
+  followUpConnects: number;
+}
+
+export const EMPTY_TALLY: EntryTally = {
+  remarks: 0,
+  followUps: 0,
+  newConnects: 0,
+  followUpConnects: 0,
+};
+
+/** Adds `add` into `into`, in place. The report and the dossier both fold. */
+export function addTally(into: EntryTally, add: EntryTally): EntryTally {
+  into.remarks += add.remarks;
+  into.followUps += add.followUps;
+  into.newConnects += add.newConnects;
+  into.followUpConnects += add.followUpConnects;
+  return into;
+}
 
 export function isActivityFilter(key: LeadFilterKey): key is ActivityFilterKey {
   return (ACTIVITY_FILTERS as string[]).includes(key);
@@ -110,6 +165,8 @@ export const LEAD_FILTER_LABELS: Record<LeadFilterKey, string> = {
   P1: 'P1',
   REMARKED: 'Remarks',
   FOLLOWED_UP: 'Follow-ups',
+  NEW_CONNECTS: 'New connects',
+  FOLLOWUP_CONNECTS: 'Follow-up connects',
   CONNECTED: 'Connected',
 };
 
@@ -124,9 +181,11 @@ export const LEAD_FILTER_LABELS: Record<LeadFilterKey, string> = {
  * cheapest thing that stops the comparison being made.
  */
 export const ACTIVITY_FILTER_HINTS: Record<ActivityFilterKey, string> = {
-  REMARKED: 'Leads with a Remark and nothing since — they move to Follow-ups on the next entry',
-  FOLLOWED_UP: 'Leads that have gone past the Remark to at least one follow-up',
-  CONNECTED: 'Leads where a call was answered — 1:10 or longer, on the Remark or any follow-up',
+  REMARKED: 'Leads whose Remark — the first entry on the lead — was written in this period',
+  FOLLOWED_UP: 'Leads that got a follow-up in this period (any entry after the Remark)',
+  NEW_CONNECTS: 'Leads whose Remark was an answered call — 1:10 or longer',
+  FOLLOWUP_CONNECTS: 'Leads where a follow-up call was answered — 1:10 or longer',
+  CONNECTED: 'Leads where any call was answered in this period, Remark or follow-up',
 };
 
 /** True for the four chips that are a pipeline stage rather than a bucket. */
@@ -184,6 +243,8 @@ export function bucketOf(
 }
 
 interface BucketableLead {
+  /** Present on real leads; the key the period entry tallies are looked up by. */
+  id?: string;
   status: string;
   createdAt?: { toDate?: () => Date } | Date | null;
   /** These three feed the stage rule — see `pipelineStage.ts`. */
@@ -220,7 +281,45 @@ interface BucketableLead {
  * counts only at `CONNECT_MIN_SECONDS` (1:10) or longer, so a logged call too
  * short to be a connect is deliberately not here.
  */
-export function matchesActivityFilter(lead: BucketableLead, key: ActivityFilterKey): boolean {
+export function matchesActivityFilter(
+  lead: BucketableLead,
+  key: ActivityFilterKey,
+  /**
+   * What this lead had written on it **inside the period being shown**.
+   *
+   * Three states, and the difference between the last two matters:
+   *
+   * | value | meaning | answer |
+   * |---|---|---|
+   * | a tally | the entries are known | from the period's entries |
+   * | `null` | the caller wants the period's entries and does not have them yet | **no** |
+   * | `undefined` | the caller has no entries at all (the leads workspace) | the all-time reading |
+   *
+   * `null` is not the same as an empty tally and is not the same as absent. A
+   * dossier still waiting on its entries must not fall back to the all-time
+   * counters — that is the very reading being fixed, and it would flash the
+   * wrong answer on screen before settling on the right one.
+   */
+  tally?: EntryTally | null
+): boolean {
+  if (tally === null) return false;
+
+  if (tally) {
+    if (key === 'REMARKED') return tally.remarks > 0;
+    if (key === 'FOLLOWED_UP') return tally.followUps > 0;
+    if (key === 'NEW_CONNECTS') return tally.newConnects > 0;
+    if (key === 'FOLLOWUP_CONNECTS') return tally.followUpConnects > 0;
+    return tally.newConnects + tally.followUpConnects > 0;
+  }
+
+  // The two connect cuts have no all-time reading: `connectCount` says a call
+  // was answered at some point, never whether it was the opening one.
+  if (key === 'NEW_CONNECTS' || key === 'FOLLOWUP_CONNECTS') return false;
+
+  // The all-time reading, from the counters denormalised on the lead. It is
+  // what a caller with no entries in hand can answer, and it is a different
+  // question — "where does this lead stand" rather than "what was written in
+  // these dates".
   const entries = lead.followUpCount ?? 0;
   if (key === 'REMARKED') return entries === 1;
   if (key === 'FOLLOWED_UP') return entries >= 2;
@@ -238,7 +337,9 @@ export function matchesLeadFilter(
   lead: BucketableLead,
   key: LeadFilterKey,
   todayRange?: DateRange,
-  role: WorkspaceRole = 'admin'
+  role: WorkspaceRole = 'admin',
+  /** Period entries for this lead, when the caller has them — see above. */
+  tally?: EntryTally | null
 ): boolean {
   if (key === 'ALL') return true;
   if (key === 'TODAY') return withinRange(lead.createdAt, todayRange ?? resolveRange('TODAY'));
@@ -247,7 +348,7 @@ export function matchesLeadFilter(
   if (isStageFilter(key)) return pipelineStage(lead).value === key;
   // So is activity — a lead somebody has connected with is also active, or
   // closed, or P2. Answered here for the same reason.
-  if (isActivityFilter(key)) return matchesActivityFilter(lead, key);
+  if (isActivityFilter(key)) return matchesActivityFilter(lead, key, tally);
   return bucketOf(lead.status, role) === key;
 }
 
@@ -255,13 +356,21 @@ export function matchesLeadFilter(
 export function countByFilter(
   leads: BucketableLead[],
   todayRange?: DateRange,
-  role: WorkspaceRole = 'admin'
+  role: WorkspaceRole = 'admin',
+  /**
+   * Period entries by lead id, when the caller has them. Keyed rather than
+   * carried on the lead because the leads come from a live snapshot and the
+   * entries from a Server Action: joining them here keeps the two apart until
+   * the moment they are needed, and a lead with no entry in the range simply
+   * has no key.
+   */
+  tallies?: Map<string, EntryTally> | null
 ): Record<LeadFilterKey, number> {
   const range = todayRange ?? resolveRange('TODAY');
   const counts: Record<LeadFilterKey, number> = {
     ALL: 0, TODAY: 0, NEW: 0, PENDING: 0, ACTIVE: 0, CLOSED: 0,
     COLD: 0, P3: 0, P2: 0, P1: 0,
-    REMARKED: 0, FOLLOWED_UP: 0, CONNECTED: 0,
+    REMARKED: 0, FOLLOWED_UP: 0, NEW_CONNECTS: 0, FOLLOWUP_CONNECTS: 0, CONNECTED: 0,
   };
 
   for (const lead of leads) {
@@ -272,12 +381,108 @@ export function countByFilter(
     const stage = pipelineStage(lead).value;
     if (stage) counts[stage] += 1;
 
+    const tally = tallyFor(lead.id, tallies);
     for (const key of ACTIVITY_FILTERS) {
-      if (matchesActivityFilter(lead, key)) counts[key] += 1;
+      if (matchesActivityFilter(lead, key, tally)) counts[key] += 1;
     }
   }
 
   return counts;
+}
+
+/**
+ * Folds a range's entries into per-person and per-lead tallies.
+ *
+ * **One classification, used by both screens.** Reports counts entries over a
+ * range and the dossier now cuts leads by the same entries over the same
+ * range; two readings of "is this a Remark" is how the two ended up
+ * disagreeing about one person's day. The rules, once:
+ *
+ * - The entry's stored `kind` decides Remark or Follow-Up. An entry written
+ *   before that field existed counts as a follow-up, which is what all but the
+ *   first of them were.
+ * - `connect` is computed server-side from the typed call duration and is
+ *   never read from a client payload, so a call under `CONNECT_MIN_SECONDS`
+ *   is contact and not a connect.
+ * - **The connect columns are a subset, not a second count.** A remark that
+ *   connected is one remark *and* one new connect. They are not meant to add
+ *   up: a day of unanswered calls is real work and must not read as a zero.
+ * - The entry is credited to whoever works the lead (`creditUid`), never to
+ *   whoever typed it — an admin logging a call on somebody's lead credits that
+ *   employee, the same rule the KPI counters follow.
+ *
+ * `uids` is the set being reported on; anything credited elsewhere is dropped
+ * here rather than by the query, because the collection-group read cannot be
+ * scoped to a person.
+ */
+export function tallyEntries(
+  entries: CountableEntry[],
+  uids: Set<string>
+): { byUid: Map<string, EntryTally>; byLead: Map<string, EntryTally> } {
+  const byUid = new Map<string, EntryTally>();
+  const byLead = new Map<string, EntryTally>();
+
+  const bump = (map: Map<string, EntryTally>, key: string, one: EntryTally) => {
+    let tally = map.get(key);
+    if (!tally) {
+      tally = { ...EMPTY_TALLY };
+      map.set(key, tally);
+    }
+    addTally(tally, one);
+  };
+
+  for (const entry of entries) {
+    if (!uids.has(entry.uid)) continue;
+    const one = entryTally(entry);
+    bump(byUid, entry.uid, one);
+    if (entry.leadId) bump(byLead, entry.leadId, one);
+  }
+
+  return { byUid, byLead };
+}
+
+/**
+ * One entry as a tally of one.
+ *
+ * The whole classification, in one place: Reports adds it into a person's row
+ * and the dossier folds it per lead, so neither can hold its own opinion about
+ * what a Remark is or which connect column an answered call belongs in.
+ */
+export function entryTally(entry: CountableEntry): EntryTally {
+  const remark = entry.kind === 'REMARK';
+  const connected = entry.connect === true;
+  return {
+    remarks: remark ? 1 : 0,
+    followUps: remark ? 0 : 1,
+    newConnects: remark && connected ? 1 : 0,
+    followUpConnects: !remark && connected ? 1 : 0,
+  };
+}
+
+/** One entry, reduced to the four things a tally needs. */
+export interface CountableEntry {
+  leadId: string;
+  /** `creditUid` where present, `authorUid` for entries written before it. */
+  uid: string;
+  kind?: string | null;
+  connect?: boolean | null;
+}
+
+/**
+ * One lead's period entries, preserving the three-state distinction above.
+ *
+ * `undefined` in gives `undefined` out — the caller is not working in periods
+ * at all. `null` in gives `null` — they are, and the answer has not arrived. A
+ * map with no entry for this lead gives an **empty tally**, which is a real
+ * answer: nothing was written on it in these dates.
+ */
+export function tallyFor(
+  leadId: string | undefined,
+  tallies: Map<string, EntryTally> | null | undefined
+): EntryTally | null | undefined {
+  if (tallies === undefined) return undefined;
+  if (tallies === null) return null;
+  return tallies.get(leadId ?? '') ?? EMPTY_TALLY;
 }
 
 /** Maps a retired route to the chip it should land on. */

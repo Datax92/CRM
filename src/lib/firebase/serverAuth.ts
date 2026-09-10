@@ -1,5 +1,11 @@
 import { adminAuth, adminDb } from "./server";
-import { isUserRole, type UserRole } from "@/lib/constants/hierarchy";
+import {
+  isHrManager,
+  isUserRole,
+  normalizeManagerKind,
+  type ManagerKind,
+  type UserRole,
+} from "@/lib/constants/hierarchy";
 
 export interface DecodedAuth {
   uid: string;
@@ -12,6 +18,18 @@ export interface DecodedAuth {
    * actions do not each re-fetch the profile to answer "whose team is this".
    */
   subAdminUid?: string | null;
+  /**
+   * Sales or HR, for a sub admin. `null` for everybody else — an admin's reach
+   * is not a manager kind, so `isHr` below is the thing to test, never this.
+   */
+  managerKind?: ManagerKind | null;
+  /**
+   * Whether this caller's reach is the whole company: the admin, or an HR
+   * manager. Attendance, leave, salary and — since the owner asked for it —
+   * lead distribution all turn on it. Resolved here, once, so no action has to
+   * re-read the profile document to answer the same question.
+   */
+  isHr: boolean;
 }
 
 /**
@@ -81,12 +99,23 @@ export async function verifyAuth(token: string): Promise<DecodedAuth> {
     throw new AuthError("This account has no role assigned. Ask an administrator to set one.");
   }
 
+  // The profile is the record the admin writes and the claim is its mirror, so
+  // the document wins here: a manager whose kind was changed a moment ago still
+  // carries the old claim until their token is refreshed, and reading the claim
+  // first would leave an ex-HR manager with HR reach for that window.
+  const managerKind =
+    role === "subadmin"
+      ? normalizeManagerKind(profile.managerKind ?? decoded.managerKind)
+      : null;
+
   return {
     uid: decoded.uid,
     role,
     email: decoded.email ?? profile.email,
     name: profile.name,
     subAdminUid: role === "subadmin" ? decoded.uid : (profile.subAdminUid ?? null),
+    managerKind,
+    isHr: isHrManager(role, managerKind),
   };
 }
 

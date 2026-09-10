@@ -46,6 +46,11 @@ let env;
 const asAdmin = () => env.authenticatedContext(ADMIN, { role: 'admin' }).firestore();
 const asEmployee = (uid) => env.authenticatedContext(uid, { role: 'employee' }).firestore();
 const asSubAdmin = (uid) => env.authenticatedContext(uid, { role: 'subadmin' }).firestore();
+// An HR manager. The kind rides in the **claim**, which is the whole reason the
+// rules can test it without a document read — and the reason changing somebody
+// to HR revokes their token: the claim is what carries the new reach.
+const asHrManager = (uid) =>
+  env.authenticatedContext(uid, { role: 'subadmin', managerKind: 'HR' }).firestore();
 const asAnon = () => env.unauthenticatedContext().firestore();
 
 before(async () => {
@@ -329,6 +334,25 @@ describe('sub admin — scoped to their own team, and nothing beside it', () => 
       getDocs(query(collection(db, 'leads'), where('subAdminUid', '==', SUB_S)))
     );
     assert.deepEqual(snap.docs.map((d) => d.id), ['lead-a']);
+  });
+
+  test('an HR manager reads the whole pipeline, unscoped, and the whole roster', async () => {
+    // The reach the owner asked for: HR hands leads to any active employee
+    // whatever team they are on, which they cannot do without seeing both. A
+    // Sales manager on the same uid is refused the same two queries above.
+    const db = asHrManager(SUB_T);
+
+    const leads = await assertSucceeds(getDocs(collection(db, 'leads')));
+    assert.deepEqual(leads.docs.map((d) => d.id).sort(), ['lead-a', 'lead-b']);
+
+    const roster = await assertSucceeds(
+      getDocs(query(collection(db, 'users'), where('role', '==', 'employee')))
+    );
+    assert.equal(roster.docs.length >= 2, true);
+
+    // Somebody else's team's lead, opened directly — the case a Sales manager
+    // is refused in the very next test.
+    await assertSucceeds(getDoc(doc(db, 'leads', 'lead-a')));
   });
 
   test('a sub admin cannot read another team’s lead', async () => {

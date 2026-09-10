@@ -101,6 +101,10 @@ import {
 import { markNotificationRead as _markNotificationRead, markAllNotificationsRead as _markAllNotificationsRead } from '@/app/actions/notifications';
 import { buildTeamReport as _buildTeamReport, type TeamReport } from '@/app/actions/reports';
 import {
+  buildActivityBreakdown as _buildActivityBreakdown,
+  type ActivityBreakdown,
+} from '@/app/actions/activity';
+import {
   createClientFolder as _createClientFolder,
   updateClientFolder as _updateClientFolder,
   deleteClientFolder as _deleteClientFolder,
@@ -109,6 +113,32 @@ import {
 } from '@/app/actions/clients';
 import { getMonitoringConfig as _getMonitoringConfig, setNoFollowUpHours as _setNoFollowUpHours, type MonitoringConfig } from '@/app/actions/config';
 import { DEFAULT_NO_FOLLOWUP_HOURS } from '@/lib/constants/monitoring';
+import {
+  createAccount as _createAccount,
+  updateAccount as _updateAccount,
+  recalculateBalances as _recalculateBalances,
+  payFromAccounts as _payFromAccounts,
+  createTransfer as _createTransfer,
+  addManualTransaction as _addManualTransaction,
+  reverseTransaction as _reverseTransaction,
+  updateTransaction as _updateTransaction,
+  deleteTransaction as _deleteTransaction,
+  deleteAccount as _deleteAccount,
+  countAccountContents as _countAccountContents,
+  type AccountInput,
+  type PayInput,
+} from '@/app/actions/ledger';
+import {
+  savePersonalExpense as _savePersonalExpense,
+  decidePersonalExpense as _decidePersonalExpense,
+  saveStateLifePolicy as _saveStateLifePolicy,
+  deleteStateLifePolicy as _deleteStateLifePolicy,
+  saveMarketingIncome as _saveMarketingIncome,
+  deleteMarketingIncome as _deleteMarketingIncome,
+  type PersonalExpenseInput,
+  type StateLifeInputRow,
+  type MarketingIncomeInput,
+} from '@/app/actions/accountModules';
 
 /** Who the demo store should attribute mutations to. */
 const actor = () => getDemoSession() ?? { uid: 'demo-admin', email: 'admin@crm.com' };
@@ -258,9 +288,15 @@ export async function closeDeal(
   input: {
     customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
     serviceDescription: string;
-    totalPrice: number;
-    downPayment: number;
+    /** Which of the four. Absent means Installments — see `lib/dealAmounts`. */
+    dealType?: string;
+    totalPrice?: number;
+    downPayment?: number;
+    confirmationAmount?: number;
     adjustment?: number;
+    receivedAmount?: number;
+    payableAmount?: number;
+    commission?: number;
     paymentMethod?: string;
     dealCategory?: string;
     dealDate?: string;
@@ -620,6 +656,23 @@ export async function buildTeamReport(
 
 export type { TeamReport, ReportRow, ReportOption } from '@/app/actions/reports';
 
+/**
+ * The four activity figures for a date range, per lead — what the employee
+ * dossier cuts on. The scope is re-decided on the server from the caller's own
+ * token, so a hand-edited uid list buys nothing.
+ */
+export async function buildActivityBreakdown(
+  token: string,
+  uids: string[],
+  from: string,
+  to: string
+): Promise<ActionResult<ActivityBreakdown>> {
+  if (IS_DEMO) return demo.buildActivityBreakdown(uids, from, to);
+  return _buildActivityBreakdown(token, uids, from, to);
+}
+
+export type { ActivityBreakdown } from '@/app/actions/activity';
+
 /* -------------------------------------------------------------------------- */
 /* Client folders — a view over existing leads, never a copy of them           */
 /* -------------------------------------------------------------------------- */
@@ -945,3 +998,109 @@ export type {
 } from '@/app/actions/payroll';
 export type { OfficeExpenseInput } from '@/app/actions/officeExpenses';
 
+/* -------------------------------------------------------------------------- */
+/* Accounts — the ledger                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * These deliberately have **no demo-store branch**. The ledger is the one part
+ * of the product where a fabricated balance would be worse than an empty
+ * screen: demo mode exists so somebody can click around, and a demo that
+ * invents money teaches the wrong number. Against a real project they work
+ * exactly as every other action does.
+ */
+export async function createAccount(token: string, input: AccountInput) {
+  return _createAccount(token, input);
+}
+
+export async function updateAccount(
+  token: string,
+  accountId: string,
+  input: Partial<AccountInput> & { status?: 'ACTIVE' | 'ARCHIVED' }
+) {
+  return _updateAccount(token, accountId, input);
+}
+
+export async function recalculateBalances(token: string) {
+  return _recalculateBalances(token);
+}
+
+/** The one path money takes. See `actions/ledger`. */
+export async function payFromAccounts(token: string, input: PayInput) {
+  return _payFromAccounts(token, input);
+}
+
+export async function createTransfer(
+  token: string,
+  input: { fromAccountId: string; toAccountId: string; amount: number; dayKey?: string; note?: string | null }
+) {
+  return _createTransfer(token, input);
+}
+
+export async function addManualTransaction(
+  token: string,
+  input: {
+    accountId: string;
+    direction: 'IN' | 'OUT';
+    amount: number;
+    type?: PayInput['type'];
+    dayKey?: string;
+    label: string;
+    note?: string | null;
+  }
+) {
+  return _addManualTransaction(token, input);
+}
+
+export async function reverseTransaction(token: string, transactionId: string, note?: string) {
+  return _reverseTransaction(token, transactionId, note);
+}
+
+export async function savePersonalExpense(token: string, input: PersonalExpenseInput, expenseId?: string) {
+  return _savePersonalExpense(token, input, expenseId);
+}
+
+export async function decidePersonalExpense(
+  token: string,
+  expenseId: string,
+  decision: 'APPROVED' | 'REJECTED' | 'CANCELLED',
+  note?: string
+) {
+  return _decidePersonalExpense(token, expenseId, decision, note);
+}
+
+export async function saveStateLifePolicy(token: string, input: StateLifeInputRow, policyId?: string) {
+  return _saveStateLifePolicy(token, input, policyId);
+}
+
+export async function deleteStateLifePolicy(token: string, policyId: string) {
+  return _deleteStateLifePolicy(token, policyId);
+}
+
+export async function saveMarketingIncome(token: string, input: MarketingIncomeInput, recordId?: string) {
+  return _saveMarketingIncome(token, input, recordId);
+}
+
+export async function deleteMarketingIncome(token: string, recordId: string) {
+  return _deleteMarketingIncome(token, recordId);
+}
+
+export async function updateTransaction(
+  token: string,
+  transactionId: string,
+  input: { amount?: number; label?: string; dayKey?: string; note?: string | null }
+) {
+  return _updateTransaction(token, transactionId, input);
+}
+
+export async function deleteTransaction(token: string, transactionId: string) {
+  return _deleteTransaction(token, transactionId);
+}
+
+export async function deleteAccount(token: string, accountId: string) {
+  return _deleteAccount(token, accountId);
+}
+
+export async function countAccountContents(token: string, accountId: string) {
+  return _countAccountContents(token, accountId);
+}

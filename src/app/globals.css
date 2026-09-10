@@ -684,3 +684,94 @@
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Accounts                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The section's micro-interactions. Transform and opacity only, so nothing
+ * here can cause a layout pass, and every one is disabled under
+ * `prefers-reduced-motion` — the CRM's existing rule.
+ */
+@layer utilities {
+  .acc-press {
+    transition: transform 120ms ease, background-color 160ms ease, border-color 160ms ease;
+  }
+  .acc-press:active {
+    transform: scale(0.975);
+  }
+
+  .acc-lift {
+    transition: transform 180ms ease, box-shadow 180ms ease;
+  }
+  .acc-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px rgba(31, 92, 88, 0.1);
+  }
+
+  /* A skeleton the height of what it replaces, so the page cannot jump. */
+  .acc-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .acc-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+    animation: acc-shimmer 1.4s infinite;
+  }
+  @keyframes acc-shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  .acc-in {
+    animation: acc-in 300ms ease both;
+  }
+  @keyframes acc-in {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 6px, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acc-press,
+  .acc-lift,
+  .acc-in,
+  .acc-shimmer::after {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/**
+ * Committee statement — the hover states from the design files.
+ *
+ * `style-hover` in a `.dc.html` has no inline equivalent, so the three the
+ * design specifies are declared here rather than dropped: the row tint, and the
+ * two action buttons on it.
+ */
+@layer utilities {
+  .cmt-row:hover {
+    background: #fbfdfd;
+  }
+  .cmt-act:hover {
+    background: #f2f8f7;
+    color: #2f7d78;
+  }
+  .cmt-del:hover {
+    background: #fdeeec;
+    color: #b4524a;
+  }
+}

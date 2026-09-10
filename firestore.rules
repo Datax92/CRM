@@ -87,10 +87,16 @@ service cloud.firestore {
     // their own record. Priority and status are never client-writable — that
     // would let an employee promote themselves in the rotation.
     match /users/{userId} {
-      // A sub admin reads their own team's profiles — the roster their whole
+      // A Sales manager reads their own team's profiles — the roster their whole
       // dashboard is built from. `useEmployees` carries the matching
       // `where('subAdminUid','==',uid)` so the list query is provable.
-      allow read: if isAdmin() || isSelf(userId) || ownsTeam();
+      //
+      // **HR reads the whole roster.** They already run attendance, leave and
+      // salary for everybody, and they now hand leads to any active employee
+      // whatever team that employee is on — an assignment list they cannot read
+      // is an assignment list with nobody in it. The clause tests the claim
+      // alone, so it holds for a list query as well as a get.
+      allow read: if isAdmin() || isSelf(userId) || ownsTeam() || isHr();
       allow write: if false;
 
       // Monthly KPI counters (connects, registrations, meetings, revenue).
@@ -179,16 +185,22 @@ service cloud.firestore {
     }
 
     match /leads/{leadId} {
+      // `isHr()` is unconditional on the document, so an HR manager's unscoped
+      // list query is provable — which is the point: HR runs distribution for
+      // the whole company (§13) and cannot hand out a lead they cannot see.
+      // A Sales manager stays on `ownsTeam()` and must carry the matching
+      // `where('subAdminUid','==',uid)`.
       allow read: if isAdmin()
         || (isEmployee() && resource.data.assignedUserId == request.auth.uid)
-        || ownsTeam();
+        || ownsTeam()
+        || isHr();
       allow write: if false;
 
       // BR-13 / BR-14: a submitted follow-up is permanent. Update and delete
       // are denied for every role, admin included. This is defence in depth —
       // there is also no update or delete code path anywhere in the app.
       match /followUps/{followUpId} {
-        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId);
+        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId) || isHr();
         allow create: if false;
         allow update: if false;
         allow delete: if false;
@@ -196,7 +208,7 @@ service cloud.firestore {
 
       // Audit trail (FR-29). Append-only, and only the server appends.
       match /events/{eventId} {
-        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId);
+        allow read: if isAdmin() || ownsLead(leadId) || managesLead(leadId) || isHr();
         allow write: if false;
       }
     }
@@ -220,7 +232,13 @@ service cloud.firestore {
     // where('userId','==',uid). `resource` is never null there — the
     // documents exist by definition.
     match /closedDeals/{dealId} {
+      // The `get` is widened for HR because opening any lead's Deal tab reads
+      // `closedDeals/{leadId}` directly, and HR now opens every lead. The
+      // `list` below is deliberately **not** widened: the deal ledgers are a
+      // different question from lead distribution, and nothing HR uses lists
+      // this collection unscoped.
       allow get: if isAdmin()
+        || isHr()
         || (isEmployee() && (resource == null || resource.data.userId == request.auth.uid))
         || (isSubAdmin() && (resource == null || resource.data.subAdminUid == request.auth.uid));
       allow list: if isAdmin()
@@ -281,6 +299,45 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ---------------------------------------------------------------- */
+    /* The ledger                                                       */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * Accounts and their transactions — **admin and HR**, by the owner's
+     * instruction that the two run the money side side by side.
+     *
+     * `isHr()` is true for an HR manager only; the admin is covered by
+     * `isAdmin()`. Both clauses test the caller alone rather than the document,
+     * so a list query is provable without carrying a scope — which is what
+     * lets the dashboard read every account in one query.
+     *
+     * Writes are `false` for everybody, as everywhere else in this file: the
+     * ledger is written only by Server Actions holding the service account,
+     * which re-check the role and, crucially, re-read the obligation inside a
+     * transaction before posting. A client that could write here could pay an
+     * expense twice.
+     */
+    match /accounts/{accountId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /stateLifePolicies/{policyId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /marketingIncome/{recordId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
     // Accounts module (Committee, Investment, Capital Investments, Personal
     // Expense, Receivable, Income Sheet) — admin-only, both directions, same
     // as Office Expenses above. Not part of the original PRD module list but
@@ -300,8 +357,18 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /**
+     * Personal expenses are the one financial collection an ordinary employee
+     * reads, and they read **only their own**: `useMyPersonalExpenses` carries
+     * `where('employeeUid','==',uid)`, which is what makes that list query
+     * provable. A Sales manager reads their team's by the same `subAdminUid`
+     * clause every other scoped rule in this file uses.
+     */
     match /personalExpenses/{recordId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin()
+        || isHr()
+        || resource.data.employeeUid == request.auth.uid
+        || ownsTeam();
       allow write: if false;
     }
 

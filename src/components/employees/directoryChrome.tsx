@@ -22,18 +22,35 @@ import type { CSSProperties, ReactNode } from "react";
 import type { Lead } from "@/hooks/useLeads";
 import type { DealRecord } from "@/hooks/useFinancials";
 import type { EmployeeMetrics } from "@/lib/metrics";
+import type { ActivityItem } from "@/app/actions/activity";
 import { DEFAULT_KPI_TARGETS } from "@/lib/kpi";
 import {
   matchesLeadFilter,
   ACTIVITY_FILTER_HINTS,
   LEAD_FILTER_LABELS,
   isActivityFilter,
+  tallyFor,
+  type EntryTally,
   type LeadFilterKey,
 } from "@/lib/leadBuckets";
-import { resolveRange, withinRange, type RangeKey } from "@/lib/dates";
+import { karachiDayKey, withinRange, formatBusinessDate, type RangeKey } from "@/lib/dates";
+/**
+ * The period logic itself lives in `lib/dossierPeriod` — pure date arithmetic,
+ * and testable there in a way it never was inside this `.tsx` file. Re-exported
+ * so the two dossiers keep importing their filters from one place.
+ */
+export {
+  defaultDossierFilters,
+  dossierDay,
+  dossierRangeKeys,
+  resolveDossierRange,
+  type DossierFilters,
+  type DossierPeriod,
+} from "@/lib/dossierPeriod";
+import { resolveDossierRange, type DossierFilters, type DossierPeriod } from "@/lib/dossierPeriod";
 
 export { LEAD_FILTER_LABELS, ACTIVITY_FILTER_HINTS, isActivityFilter };
-export type { LeadFilterKey, RangeKey };
+export type { LeadFilterKey, RangeKey, EntryTally };
 
 export const E = {
   /* ground */
@@ -238,10 +255,11 @@ export function Bar({
  * or "hot" means — a second definition here would drift from the one the leads
  * workspace enforces, and the two screens would disagree about the same lead.
  */
-export const DOSSIER_PERIODS: Array<{ key: RangeKey; label: string }> = [
+export const DOSSIER_PERIODS: Array<{ key: DossierPeriod; label: string }> = [
   { key: "TODAY", label: "Today" },
   { key: "WEEK", label: "This week" },
   { key: "MONTH", label: "This month" },
+  { key: "DAY", label: "Pick a date…" },
   { key: "ALL", label: "All time" },
 ];
 
@@ -263,16 +281,62 @@ export const DOSSIER_LEAD_CUTS: LeadFilterKey[] = [
   "P2",
   "P1",
   "REMARKED",
+  "NEW_CONNECTS",
   "FOLLOWED_UP",
+  "FOLLOWUP_CONNECTS",
   "CONNECTED",
 ];
 
-export interface DossierFilters {
-  period: RangeKey;
-  cut: LeadFilterKey;
+
+/**
+ * The line beside the chips: how many leads are showing, out of how many, and
+ * **on what rule** — a bare "3 of 40" against a date control reads as a total.
+ *
+ * An activity cut is a different sentence from a period bucket. "Worked in
+ * this period" is true of the plain cuts, which filter on the lead's last
+ * touch; an activity cut has already been decided by an entry falling inside
+ * the dates, so it says *remarked*, *followed up* or *connected* instead. The
+ * two used to share one wording and the chips then looked like they were
+ * measuring the same thing.
+ */
+export function describeDossierCount(
+  shown: number,
+  total: number,
+  filters: DossierFilters,
+  variant: "web" | "mobile" = "web",
+  /** True while the period's entries are still on their way. */
+  pending = false
+): string {
+  // An activity cut cannot be answered until the entries arrive, and "0 leads
+  // — connected today" is a claim about somebody's day rather than a statement
+  // about this screen. Say which it is.
+  if (pending && isActivityFilter(filters.cut)) return "Counting…";
+  const noun = variant === "web" ? ` lead${total === 1 ? "" : "s"}` : "";
+  const head = variant === "web" ? `${shown} of ${total}${noun}` : `${shown} / ${total}`;
+  if (filters.period === "ALL" && !isActivityFilter(filters.cut)) return head;
+
+  const today = karachiDayKey();
+  const when =
+    filters.period === "DAY"
+      ? filters.day === today || !filters.day
+        ? " today"
+        : ` on ${formatBusinessDate(new Date(Date.parse(`${filters.day}T12:00:00+05:00`)))}`
+      : filters.period === "ALL"
+        ? " ever"
+        : " in this period";
+
+  const what = isActivityFilter(filters.cut)
+    ? filters.cut === "REMARKED"
+      ? "remarked"
+      : filters.cut === "FOLLOWED_UP"
+        ? "followed up"
+        : "connected"
+    : "worked";
+
+  return `${head} — ${what}${when}`;
 }
 
-export const DEFAULT_DOSSIER_FILTERS: DossierFilters = { period: "ALL", cut: "ALL" };
+
 
 /**
  * The most recent moment anything happened on a lead.
@@ -309,23 +373,50 @@ export function lastTouchAt(lead: Lead) {
  * The cuts below still count **leads**, not entries, so the dossier and Reports
  * answer neighbouring questions rather than the same one — see the chip hints.
  */
-export function applyLeadFilters(leads: Lead[], filters: DossierFilters): Lead[] {
-  const range = resolveRange(filters.period);
-  return leads.filter(
-    (lead) => withinRange(lastTouchAt(lead), range) && matchesLeadFilter(lead, filters.cut, undefined, "admin")
-  );
+export function applyLeadFilters(
+  leads: Lead[],
+  filters: DossierFilters,
+  /**
+   * What was written on each lead **inside this period**, from
+   * `buildActivityBreakdown`. When it is present the activity cuts are
+   * answered from it, so "Remarks · Today" means *a Remark written today*
+   * rather than "a lead with one entry ever, touched today" — which is what
+   * it meant before, and why the dossier disagreed with Reports.
+   *
+   * `null` while the entries are still loading or if the load failed. The
+   * activity cuts then match nothing, and the filter bar says which of the two
+   * it is rather than showing a confident zero.
+   */
+  tallies?: Map<string, EntryTally> | null
+): Lead[] {
+  const range = resolveDossierRange(filters);
+  const activity = isActivityFilter(filters.cut);
+  return leads.filter((lead) => {
+    const tally = tallyFor(lead.id, tallies);
+    const hasActivityInRange = Boolean(
+      tally && (tally.remarks > 0 || tally.followUps > 0 || tally.newConnects > 0 || tally.followUpConnects > 0)
+    );
+    if (activity) {
+      return matchesLeadFilter(lead, filters.cut, undefined, "admin", tally);
+    }
+    if (!hasActivityInRange && !withinRange(lastTouchAt(lead), range)) return false;
+    return matchesLeadFilter(lead, filters.cut, undefined, "admin", tally);
+  });
 }
 
 /** Deals in the period, by settlement date — the day the money was recorded. */
-export function applyDealPeriod(deals: DealRecord[], period: RangeKey): DealRecord[] {
-  const range = resolveRange(period);
+export function applyDealPeriod(deals: DealRecord[], filters: DossierFilters): DealRecord[] {
+  const range = resolveDossierRange(filters);
   return deals.filter((deal) => withinRange(deal.dealDate ?? deal.enteredAt, range));
 }
 
-/** Activity in the period. Entries with no timestamp are kept — see `buildActivity`. */
-export function applyActivityPeriod(entries: ActivityEntry[], period: RangeKey): ActivityEntry[] {
-  const range = resolveRange(period);
-  return entries.filter((entry) => (entry.at ? withinRange(entry.at, range) : true));
+/** Activity in the period. Entries with no timestamp are kept only for ALL time. */
+export function applyActivityPeriod(entries: ActivityEntry[], filters: DossierFilters): ActivityEntry[] {
+  const range = resolveDossierRange(filters);
+  return entries.filter((entry) => {
+    if (!entry.at) return filters.period === "ALL";
+    return withinRange(entry.at, range);
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -752,3 +843,14 @@ export function buildActivity(
   // top on a falsy comparison.
   return entries.sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
 }
+
+export function entryActivityToEntries(items?: ActivityItem[]): ActivityEntry[] {
+  if (!items || items.length === 0) return [];
+  return items.map((item) => ({
+    action: item.action,
+    detail: item.detail,
+    at: item.at ? new Date(item.at) : null,
+    icon: item.icon,
+  }));
+}
+

@@ -38,6 +38,14 @@ import {
   parsePercentage,
   type DistributionShare,
 } from "@/lib/profitDistribution";
+import {
+  readCommission,
+  readCutBase,
+  readDealType,
+  readPayoutSource,
+  readReceivedAmount,
+  readRemaining,
+} from "@/lib/dealAmounts";
 import { FieldValue } from "firebase-admin/firestore";
 
 const DISTRIBUTIONS = "dealDistributions";
@@ -53,8 +61,14 @@ export interface ShareInput {
 
 export interface FinalizeResult {
   distributionId: string;
-  netProfit: number;
+  /** The two figures the split was computed from — see `lib/dealAmounts`. */
+  cutBase: number;
+  payoutSource: number;
+  /** `payoutSource − distributedAmount`. What the business keeps. */
+  companyRetained: number;
   distributedAmount: number;
+  /** Kept so callers written against the single-pot shape still compile. */
+  netProfit: number;
   companyTotalAmount: number;
 }
 
@@ -73,7 +87,18 @@ export async function finalizeProfitDistribution(
     }
 
     const deal = dealSnap.data()!;
-    const netProfit = Number(deal.profit ?? 0);
+
+    /**
+     * **The two Cut figures, read apart.** `cutBase` is what each percentage
+     * multiplies and `payoutSource` is the pot the money leaves — different
+     * numbers on every type but an Installments deal with nothing payable.
+     * Read through `lib/dealAmounts`, which derives both for a deal recorded
+     * before the fields existed: a legacy deal is an Installments deal, so its
+     * base is its Amount Received.
+     */
+    const dealType = readDealType(deal);
+    const cutBase = readCutBase(deal);
+    const payoutSource = readPayoutSource(deal);
 
     // Names are resolved here, from the profile documents, and stored beside
     // the uids. A payout record that reads "assigned to <uid>" after somebody
@@ -108,7 +133,7 @@ export async function finalizeProfitDistribution(
       percentage: parsePercentage(share.percentage),
     }));
 
-    const result = calculateDistribution(netProfit, prepared);
+    const result = calculateDistribution({ cutBase, payoutSource }, prepared);
     if (!result.valid) {
       throw new UserFacingError(result.errors[0]);
     }
@@ -141,16 +166,22 @@ export async function finalizeProfitDistribution(
       totalPrice: deal.totalPrice ?? deal.amountReceived ?? 0,
       downPayment: deal.downPayment ?? null,
       adjustment: deal.adjustment ?? deal.payableAmount ?? 0,
-      remaining: deal.remaining ?? deal.profit ?? 0,
+      remaining: readRemaining(deal),
+      receivedAmount: readReceivedAmount(deal),
+      commission: readCommission(deal),
       amountReceived: deal.amountReceived ?? 0,
       payableAmount: deal.payableAmount ?? 0,
+      // The two figures the split was actually computed from, frozen beside
+      // the lines they produced. A reader must never have to re-derive them:
+      // the rules can change again, and this record is what happened.
+      dealType,
+      cutBase: result.cutBase,
+      payoutSource: result.payoutSource,
+      companyRetained: result.companyRetained,
       netProfit: result.netProfit,
       lines: result.lines,
       distributedPercentage: result.distributedPercentage,
       distributedAmount: result.distributedAmount,
-      remainingPercentage: result.remainingPercentage,
-      remainingAmount: result.remainingAmount,
-      companyBaseAmount: result.companyBaseAmount,
       companyTotalAmount: result.companyTotalAmount,
       finalizedByUid: admin.uid,
       finalizedAt: now,
@@ -217,8 +248,11 @@ export async function finalizeProfitDistribution(
 
     return {
       distributionId: distributionRef.id,
-      netProfit: result.netProfit,
+      cutBase: result.cutBase,
+      payoutSource: result.payoutSource,
+      companyRetained: result.companyRetained,
       distributedAmount: result.distributedAmount,
+      netProfit: result.netProfit,
       companyTotalAmount: result.companyTotalAmount,
     };
   });

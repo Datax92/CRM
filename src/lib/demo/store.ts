@@ -7,12 +7,12 @@ import type { EmployeeData } from '@/hooks/useEmployees';
 import type { ReceivableRecord } from '@/hooks/useReceivables';
 import type { AccountRecord } from '@/hooks/useAccounts';
 import type { DataBankFolder, DataBankRecord } from '@/hooks/useDataBank';
-import { fieldKeyFor, phoneKey, type DataBankStatus } from '@/lib/dataBank';
+import { duplicatePhoneMessage, fieldKeyFor, phoneKey, type DataBankStatus } from '@/lib/dataBank';
 import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
 import { deriveStatus, type AttendanceStatus } from '@/lib/attendance';
-import { dealAmounts } from '@/lib/dealAmounts';
+import { dealAmounts, readCutBase, readDealType, readPayoutSource, validateDealAmounts } from '@/lib/dealAmounts';
 import {
   buildPayrollLine,
   canTransition,
@@ -47,6 +47,7 @@ import {
   type LeaveType,
 } from '@/lib/attendancePolicy';
 import { isTerminal, type LeadStatus } from '@/lib/leadStatus';
+import { addTally, entryTally, EMPTY_TALLY, type EntryTally } from '@/lib/leadBuckets';
 import type { DistributionLine } from '@/lib/profitDistribution';
 import { calculateDistribution, type DistributionShare } from '@/lib/profitDistribution';
 import { validateKyc, leadPatchFromKyc, type KycValues } from '@/lib/kyc';
@@ -364,7 +365,12 @@ export interface DemoDistribution {
   totalPrice?: number;
   downPayment?: number;
   adjustment?: number;
-  remaining?: number;
+  remaining?: number | null;
+  dealType?: string;
+  /** The two Cut figures, frozen with the split. Never interchangeable. */
+  cutBase: number;
+  payoutSource: number;
+  companyRetained: number;
   /** Mirrors, kept for the readers that predate the four-field form. */
   amountReceived: number;
   payableAmount: number;
@@ -372,9 +378,10 @@ export interface DemoDistribution {
   lines: DistributionLine[];
   distributedPercentage: number;
   distributedAmount: number;
-  remainingPercentage: number;
-  remainingAmount: number;
-  companyBaseAmount: number;
+  /** Only on splits finalised before 2026-09-09. Read, never written now. */
+  remainingPercentage?: number;
+  remainingAmount?: number;
+  companyBaseAmount?: number;
   companyTotalAmount: number;
   finalizedByUid: string;
   finalizedAt?: FirestoreTimestamp;
@@ -1105,7 +1112,8 @@ export const demo = {
     dealId: string,
     shares: Array<{ recipientUid: string | null; recipientRole: 'employee' | 'subadmin' | 'company'; kind: DistributionShare['kind']; percentage: number }>,
     actorUid: string
-  ): Result<{ distributionId: string; netProfit: number; distributedAmount: number; companyTotalAmount: number }> {
+  ): Result<{ distributionId: string; cutBase: number; payoutSource: number; companyRetained: number;
+    distributedAmount: number; netProfit: number; companyTotalAmount: number }> {
     const deal = state.deals.find((d) => d.id === dealId);
     if (!deal) return fail('That deal no longer exists.');
 
@@ -1120,7 +1128,13 @@ export const demo = {
       percentage: share.percentage,
     }));
 
-    const result = calculateDistribution(deal.profit, prepared);
+    // The same two figures the real action reads, through the same accessors:
+    // the percentage multiplies the Cut base, the money leaves the payment
+    // source, and for a legacy deal both are derived rather than stored.
+    const result = calculateDistribution(
+      { cutBase: readCutBase(deal), payoutSource: readPayoutSource(deal) },
+      prepared
+    );
     if (!result.valid) return fail(result.errors[0]);
 
     state.distributions = state.distributions.map((d) =>
@@ -1141,13 +1155,14 @@ export const demo = {
         customerName: deal.customer?.name ?? null,
         amountReceived: deal.amountReceived,
         payableAmount: deal.payableAmount,
+        dealType: readDealType(deal),
+        cutBase: result.cutBase,
+        payoutSource: result.payoutSource,
+        companyRetained: result.companyRetained,
         netProfit: result.netProfit,
         lines: result.lines,
         distributedPercentage: result.distributedPercentage,
         distributedAmount: result.distributedAmount,
-        remainingPercentage: result.remainingPercentage,
-        remainingAmount: result.remainingAmount,
-        companyBaseAmount: result.companyBaseAmount,
         companyTotalAmount: result.companyTotalAmount,
         finalizedByUid: actorUid,
         finalizedAt: now(),
@@ -1190,6 +1205,9 @@ export const demo = {
 
     return ok({
       distributionId: id,
+      cutBase: result.cutBase,
+      payoutSource: result.payoutSource,
+      companyRetained: result.companyRetained,
       netProfit: result.netProfit,
       distributedAmount: result.distributedAmount,
       companyTotalAmount: result.companyTotalAmount,
@@ -1422,6 +1440,86 @@ export const demo = {
   },
 
   /**
+   * Mirrors `buildActivityBreakdown`: the four activity figures over a date
+   * range, per lead. Same `entryTally` the live action and the report use, so
+   * the dossier's cuts behave identically in demo mode.
+   */
+  buildActivityBreakdown(uids: string[], from: string, to: string) {
+    const wanted = new Set(uids);
+    const totals = { ...EMPTY_TALLY };
+    const byLead: Record<string, EntryTally> = {};
+    const items: Array<{
+      id: string;
+      leadId: string;
+      action: string;
+      detail: string;
+      at: string;
+      icon: string;
+      kind?: string;
+      connect?: boolean;
+    }> = [];
+
+    for (const [leadId, entries] of Object.entries(state.followUps)) {
+      const lead = state.leads.find((row) => row.id === leadId);
+      if (!lead || !lead.assignedUserId || !wanted.has(lead.assignedUserId)) continue;
+
+      for (const entry of entries) {
+        const day = entry.dayKey ?? '';
+        if (!day || day < from || day > to) continue;
+        const one = entryTally({ leadId, uid: lead.assignedUserId, kind: entry.kind, connect: entry.connect });
+        addTally(totals, one);
+        addTally((byLead[leadId] ??= { ...EMPTY_TALLY }), one);
+
+        const isRemark = entry.kind === "REMARK";
+        const isCall = Boolean(entry.callMade);
+        const isConnect = Boolean(entry.connect);
+        const duration = entry.durationSeconds ? Number(entry.durationSeconds) : 0;
+        const msg = (entry.message ?? "").trim();
+
+        let action = isRemark ? "Logged remark" : "Logged follow-up";
+        if (isCall) {
+          action = isConnect ? "Connected call" : "Outgoing call";
+        }
+
+        let detail = msg;
+        if (isCall && duration > 0) {
+          const min = Math.floor(duration / 60);
+          const sec = duration % 60;
+          const durStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+          detail = `${durStr} call${isConnect ? " (Connect)" : ""}${msg ? ` · ${msg}` : ""}`;
+        }
+
+        const occ = entry.occurredAt;
+        const occDate =
+          occ instanceof Date
+            ? occ
+            : occ && typeof occ === "object" && "toDate" in occ && typeof (occ as { toDate: () => Date }).toDate === "function"
+              ? (occ as { toDate: () => Date }).toDate()
+              : typeof occ === "string"
+                ? new Date(occ)
+                : new Date();
+
+        items.push({
+          id: entry.id,
+          leadId,
+          action,
+          detail,
+          at: occDate.toISOString(),
+          icon: isCall
+            ? "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"
+            : isRemark
+              ? "M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"
+              : "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+          kind: entry.kind,
+          connect: isConnect,
+        });
+      }
+    }
+
+    return ok({ from, to, totals, byLead, items, warning: null });
+  },
+
+  /**
    * Mirrors `buildTeamReport` over the in-memory store — same subjects, same
    * columns, same no-double-counting rule, so demo mode and the live project
    * cannot disagree about what a report means.
@@ -1471,15 +1569,9 @@ export const demo = {
         for (const entry of entries) {
           const day = entry.dayKey ?? '';
           if (!day || day < from || day > to) continue;
-          // Every entry, then the subset that connected — the same two
-          // questions the real action answers, in the same order.
-          if (entry.kind === 'REMARK') metrics.remarks += 1;
-          else metrics.followUps += 1;
-
-          if (entry.connect) {
-            if (entry.kind === 'REMARK') metrics.newConnects += 1;
-            else metrics.followUpConnects += 1;
-          }
+          // The shared classification, so demo mode cannot hold its own
+          // opinion about what a Remark is either.
+          addTally(metrics, entryTally({ leadId, uid: person.uid, kind: entry.kind, connect: entry.connect }));
           if (entry.meetingHeld) metrics.meetings += 1;
           if (entry.siteVisit) metrics.siteVisits += 1;
         }
@@ -1688,7 +1780,9 @@ export const demo = {
     leadId: string,
     input: {
       customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
-      serviceDescription: string; totalPrice: number; downPayment: number; adjustment?: number;
+      serviceDescription: string; dealType?: string;
+      totalPrice?: number; downPayment?: number; confirmationAmount?: number; adjustment?: number;
+      receivedAmount?: number; payableAmount?: number; commission?: number;
       paymentMethod?: string; dealCategory?: string; dealDate?: string; notes?: string;
     },
     actorUid: string
@@ -1699,9 +1793,10 @@ export const demo = {
     if (!input.customer.name.trim()) return fail("Enter the customer's name.");
     if (!input.customer.phone.trim()) return fail('Enter a valid contact number for the customer.');
     if (!input.serviceDescription.trim()) return fail('Describe what was sold, so the record makes sense later.');
-    if (!Number.isFinite(input.totalPrice) || !Number.isFinite(input.downPayment)) {
-      return fail('Enter a valid amount.');
-    }
+    // Per-type, from the same validator the Server Action runs — a demo deal
+    // the form accepts must be one the real path would accept too.
+    const inputErrors = validateDealAmounts(input);
+    if (inputErrors.length > 0) return fail(inputErrors[0]);
 
     // The same module the real action uses, so demo mode cannot drift from it.
     const amounts = dealAmounts(input);
@@ -1723,9 +1818,15 @@ export const demo = {
         paymentMethod: input.paymentMethod || 'Cash',
         dealCategory,
         notes: input.notes?.trim() || null,
+        // Same per-type fields the Server Action writes, so demo mode and the
+        // live project cannot disagree about what a deal is.
+        dealType: amounts.dealType,
         totalPrice: amounts.totalPrice, downPayment: amounts.downPayment,
-        adjustment: amounts.adjustment, remaining: amounts.remaining,
-        amountReceived: amounts.amountReceived, payableAmount: amounts.payableAmount, profit,
+        confirmationAmount: amounts.confirmationAmount, adjustment: amounts.adjustment,
+        remaining: amounts.remaining, receivedAmount: amounts.receivedAmount,
+        commission: amounts.commission,
+        cutBase: amounts.cutBase, payoutSource: amounts.payoutSource,
+        amountReceived: amounts.amountReceived, payableAmount: amounts.legacyPayableAmount, profit,
         campaignId: lead.campaignId ?? null, campaignName: lead.campaignName ?? null,
         subAdminUid: state.employees.find((e) => e.uid === lead.assignedUserId)?.subAdminUid ?? null,
         distributionStatus: 'PENDING',
@@ -2288,7 +2389,7 @@ export const demo = {
           const minutes = row.workedMinutes ?? 0;
           const status: AttendanceStatus =
             row.overrideStatus ??
-            (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt)));
+            (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt || row.adjustedCheckIn)));
           const clock = (value: FirestoreTimestamp | undefined) => {
             const date = value?.toDate?.();
             return date
@@ -2308,11 +2409,11 @@ export const demo = {
             lateByMinutes: row.lateByMinutes ?? 0,
             minutes,
             network: row.network ?? 'UNKNOWN',
-            checkIn: clock(row.firstActionAt),
-            checkOut: clock(row.lastActionAt),
+            checkIn: row.adjustedCheckIn ?? clock(row.firstActionAt),
+            checkOut: row.adjustedCheckOut ?? clock(row.lastActionAt),
             leaveType: row.leaveType ?? null,
             note: row.overrideNote ?? null,
-            adjusted: Boolean(row.adjustments?.length),
+            adjusted: Boolean(row.adjustments?.length || row.overrideStatus || row.adjustedCheckIn || row.adjustedCheckOut),
           };
         });
 
@@ -2984,22 +3085,121 @@ export const demo = {
   adjustAttendance(
     uid: string,
     dayKey: string,
-    change: { status?: AttendanceStatus; late?: boolean; note?: string }
+    change: {
+      status?: AttendanceStatus;
+      checkIn?: string | null;
+      checkOut?: string | null;
+      late?: boolean;
+      note?: string;
+    }
   ): Result {
+    const session = getDemoSession();
+    if (session?.role !== 'admin' && session?.role !== 'subadmin') {
+      return fail('Only an administrator or sub admin can edit attendance.');
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+      return fail('That is not a valid date.');
+    }
+
+    const employee = state.employees.find((e) => e.uid === uid);
+    if (!employee && uid !== session?.uid) return fail('That employee no longer exists.');
+
+    const isHr = session?.role === 'admin' || session?.managerKind === 'HR';
+    if (!isHr && session?.role === 'subadmin' && employee?.subAdminUid !== session.uid && uid !== session.uid) {
+      return fail('That employee is not on your team.');
+    }
+
     const id = `${uid}_${dayKey}`;
     const existing = state.attendance.find((row) => row.id === id);
-    const patch = {
+
+    const clockTime = (tsVal: FirestoreTimestamp | undefined) => {
+      const d = tsVal?.toDate?.();
+      return d
+        ? new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Karachi',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(d)
+        : null;
+    };
+
+    const effectiveIn =
+      change.checkIn !== undefined
+        ? change.checkIn
+        : (existing?.adjustedCheckIn ?? clockTime(existing?.firstActionAt));
+    const effectiveOut =
+      change.checkOut !== undefined
+        ? change.checkOut
+        : (existing?.adjustedCheckOut ?? clockTime(existing?.lastActionAt));
+
+    let workedMinutes = existing?.workedMinutes ?? 0;
+    if (effectiveIn && effectiveOut) {
+      const inMin = parseClock(effectiveIn);
+      const outMin = parseClock(effectiveOut);
+      if (inMin !== null && outMin !== null && outMin >= inMin) {
+        workedMinutes = outMin - inMin;
+      }
+    }
+
+    let late = change.late;
+    if (late === undefined) {
+      if (change.status === 'LATE') {
+        late = true;
+      } else if (change.status === 'PRESENT' || change.status === 'ABSENT') {
+        late = false;
+      } else if (change.checkIn) {
+        const start = parseClock(state.attendancePolicy.startTime) ?? 0;
+        const grace = Math.max(0, Math.floor(state.attendancePolicy.graceMinutes || 0));
+        const checkInMin = parseClock(change.checkIn);
+        if (checkInMin !== null) {
+          late = checkInMin > start + grace;
+        }
+      } else {
+        late = existing?.late ?? false;
+      }
+    }
+
+    const adjustmentEntry = {
+      at: now(),
+      byUid: session?.uid ?? 'demo-admin',
+      byName: session?.name ?? 'Administrator',
+      from: {
+        status: (existing?.overrideStatus as AttendanceStatus) ?? null,
+        late: Boolean(existing?.late),
+        checkIn: existing?.adjustedCheckIn ?? null,
+        checkOut: existing?.adjustedCheckOut ?? null,
+      },
+      to: {
+        status: change.status ?? null,
+        late: late ?? Boolean(existing?.late),
+        checkIn: change.checkIn ?? null,
+        checkOut: change.checkOut ?? null,
+      },
+      note: change.note?.trim() || null,
+    };
+
+    const patch: Partial<AttendanceRecord> = {
       id,
       uid,
       dayKey,
       monthKey: dayKey.slice(0, 7),
       ...(change.status ? { overrideStatus: change.status } : {}),
+      ...(late !== undefined ? { late } : {}),
+      ...(change.checkIn !== undefined ? { adjustedCheckIn: change.checkIn } : {}),
+      ...(change.checkOut !== undefined ? { adjustedCheckOut: change.checkOut } : {}),
+      workedMinutes,
+      checkedOut: Boolean(effectiveOut),
       overrideNote: change.note?.trim() || null,
+      adjustedAt: now(),
+      adjustedByUid: session?.uid ?? 'demo-admin',
+      adjustments: [...(existing?.adjustments ?? []), adjustmentEntry],
     };
 
     state.attendance = existing
       ? state.attendance.map((row) => (row.id === id ? { ...row, ...patch } : row))
-      : [...state.attendance, patch];
+      : [...state.attendance, patch as AttendanceRecord];
 
     emit();
     return ok(undefined);
@@ -3223,12 +3423,18 @@ export const demo = {
           paymentMethod: input.deal.paymentMethod,
           dealCategory: normalizeDealCategory(input.deal.dealCategory),
           notes: input.deal.notes || null,
+          dealType: dealMoney.dealType,
           totalPrice: dealMoney.totalPrice,
           downPayment: dealMoney.downPayment,
+          confirmationAmount: dealMoney.confirmationAmount,
           adjustment: dealMoney.adjustment,
           remaining: dealMoney.remaining,
+          receivedAmount: dealMoney.receivedAmount,
+          commission: dealMoney.commission,
+          cutBase: dealMoney.cutBase,
+          payoutSource: dealMoney.payoutSource,
           amountReceived: dealMoney.amountReceived,
-          payableAmount: dealMoney.payableAmount,
+          payableAmount: dealMoney.legacyPayableAmount,
           profit,
           campaignId,
           campaignName,
@@ -3412,7 +3618,7 @@ export const demo = {
     if (!key) return fail('Enter a usable phone number.');
 
     const clash = state.dataBankRecords.find((r) => r.folderId === folderId && r.phoneKey === key);
-    if (clash) return fail(`That number is already in this folder (${clash.name}).`);
+    if (clash) return fail(duplicatePhoneMessage(phone, clash.name));
 
     const id = nextId('dbr');
     state.dataBankRecords = [
@@ -3435,9 +3641,18 @@ export const demo = {
       for (const [k, v] of Object.entries(input.values)) if (valid.has(k)) clean[k] = String(v ?? '').trim();
       const name = (clean[folder.roles.name] ?? '').trim();
       const phone = (clean[folder.roles.phone] ?? '').trim();
+      const key = phoneKey(phone);
       if (!name) return fail('Enter the name.');
-      if (!phoneKey(phone)) return fail('Enter a usable phone number.');
-      Object.assign(record, { values: clean, name, phone, phoneKey: phoneKey(phone) });
+      if (!key) return fail('Enter a usable phone number.');
+      // The same check the real action makes — editing a number onto one the
+      // folder already holds was allowed on both paths.
+      if (key !== record.phoneKey) {
+        const clash = state.dataBankRecords.find(
+          (r) => r.folderId === record.folderId && r.phoneKey === key && r.id !== record.id
+        );
+        if (clash) return fail(duplicatePhoneMessage(phone, clash.name));
+      }
+      Object.assign(record, { values: clean, name, phone, phoneKey: key });
     }
     if (input.status) record.status = input.status;
     if (input.notes !== undefined) record.notes = (input.notes ?? '').trim() || null;

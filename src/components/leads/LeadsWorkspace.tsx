@@ -122,7 +122,7 @@ export function LeadsWorkspace({
   basePath: string;
   scope?: LeadScope;
 }) {
-  const { role, user, loading: authLoading, getIdToken } = useAuth();
+  const { role, managerKind, user, loading: authLoading, getIdToken } = useAuth();
   useProtectedRoute([workspaceRole]);
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -134,17 +134,26 @@ export function LeadsWorkspace({
   // Phones get the design's own leads screen, not this two-pane one squeezed.
   const isMobile = useIsMobile();
 
+  // An **HR manager runs the pipeline for the whole company** (§13): they read
+  // every lead and may hand any of them to any active employee, whatever team
+  // that employee is on. A Sales manager stays on their own team. The Security
+  // Rules carry the same distinction, so this widens what is *asked for*, never
+  // what is permitted — an unscoped query from a Sales manager is refused.
+  const companyWide = workspaceRole === "subadmin" && managerKind === "HR";
+
   // Admins read the whole pipeline; employees are scoped to their own uid, which
   // Security Rules enforce independently of anything this component does.
   const { leads, loading: leadsLoading, error: leadsError } = useLeads(
     roleReady ? workspaceRole : null,
-    user?.uid
+    user?.uid,
+    companyWide
   );
   // The roster and campaign list are admin-only reads — requesting them as an
   // employee would just earn a permission-denied banner.
   const { employees, error: employeesError } = useEmployees(isManager && roleReady, {
     role: workspaceRole,
     uid: user?.uid,
+    companyWide,
   });
 
   const [query, setQuery] = useState("");

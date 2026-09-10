@@ -78,15 +78,29 @@ interface EmployeeState {
  */
 export function useEmployees(
   enabled = true,
-  scope?: { role?: 'admin' | 'subadmin' | 'employee' | null; uid?: string }
+  scope?: {
+    role?: 'admin' | 'subadmin' | 'employee' | null;
+    uid?: string;
+    /**
+     * Read the whole roster rather than one team. True for an **HR manager**,
+     * who may hand a lead to any active employee whatever team they are on —
+     * an assignment list scoped to their own team could not offer the people
+     * the owner asked them to be able to reach. The `users` rule carries the
+     * matching `isHr()` clause; without it this query is refused, not trimmed.
+     */
+    companyWide?: boolean;
+  }
 ) {
   const [state, setState] = useState<EmployeeState | null>(null);
   const demoState = useDemoState();
 
-  const teamOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
-  // A sub admin with no uid yet would otherwise fall through to the admin
-  // query and be denied, which reads on screen as an empty team.
-  const ready = enabled && (scope?.role !== 'subadmin' || Boolean(teamOf));
+  const teamOf =
+    scope?.role === 'subadmin' && !scope.companyWide ? (scope.uid ?? null) : null;
+  // A sub admin with no uid yet would otherwise fall through to the roster-wide
+  // query and be denied, which reads on screen as an empty team. An HR manager
+  // is asking for that query on purpose, so they are exempt from the wait.
+  const ready =
+    enabled && (scope?.role !== 'subadmin' || scope.companyWide === true || Boolean(teamOf));
 
   useEffect(() => {
     if (IS_DEMO || !ready) return;
@@ -194,6 +208,16 @@ export function useSubAdmins(enabled = true) {
             autoPriority: raw.autoPriority !== false,
             accessRole: 'subadmin',
             subAdminUid: null,
+            // Sales or HR. **Read out of the snapshot, not defaulted** — this
+            // mapper omitted the field entirely, so every manager arrived as
+            // `SALES` whatever was stored: their edit form opened on Sales, and
+            // saving anything at all about an HR manager wrote Sales back over
+            // them. Same bug class as `phone`/`monthlySalary`/the payroll
+            // fields — check the mapper, not just the type (CLAUDE.md).
+            managerKind: raw.managerKind === 'HR' ? 'HR' : 'SALES',
+            monthlySalary: typeof raw.monthlySalary === 'number' ? raw.monthlySalary : 0,
+            salaryAccess: raw.salaryAccess === true,
+            kpiScore: typeof raw.kpiScore === 'number' ? raw.kpiScore : undefined,
             createdAt: raw.createdAt,
           } as EmployeeData;
         });

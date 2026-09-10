@@ -310,6 +310,14 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/app/admin/search/page.tsx` | `AdminSearchPage` | Universal multi-criteria search engine across all leads and records |
 | `src/app/admin/settings/page.tsx` | `AdminSettingsPage` | Integrations panel (Meta Lead Ads webhook token, WhatsApp config) |
 | `src/app/admin/SelectPill.tsx` | `SelectPill`, `SelectOption` | Branded floating-label dropdown select pill |
+| `src/app/admin/attendance/page.tsx` | `AdminAttendancePage` | Attendance dashboard overview, live roster presence counters, and quick actions |
+| `src/app/admin/attendance/calendar/page.tsx` | `AdminAttendanceCalendarPage` | Full team monthly attendance calendar with direct click-to-edit for any employee and date |
+| `src/app/admin/attendance/records/page.tsx` | `AdminAttendanceRecordsPage` | Historical late arrivals, absences, and administrative override audit logs |
+| `src/app/admin/attendance/reports/page.tsx` | `AdminAttendanceReportsPage` | Monthly attendance rates, worked hours rollups, and deduction period finalization |
+| `src/app/admin/attendance/leave/page.tsx` | `AdminAttendanceLeavePage` | Leave requests approval pipeline, medical/casual balances, and quota adjustments |
+| `src/app/admin/attendance/settings/page.tsx` | `AdminAttendanceSettingsPage` | Work hours schedule, grace thresholds, office GPS coordinates, and Wi-Fi restriction settings |
+| `src/app/admin/attendance/me/page.tsx` | `AdminAttendanceMePage` | Admin's personal check-in/out records, monthly calendar, and leave balance |
+| `src/app/subadmin/attendance/calendar/page.tsx` | `SubAdminAttendanceCalendarPage` | Sub-admin team attendance calendar with direct click-to-edit capabilities enabled |
 
 #### Employee Pages
 | File | Component / Functions | Purpose |
@@ -320,6 +328,7 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/app/employee/workspace/active/page.tsx` | `EmployeeActivePage` | In-progress contacted leads with quick WhatsApp and follow-up entry |
 | `src/app/employee/workspace/closed/page.tsx` | `EmployeeClosedPage` | Employee converted clients archive and deal history |
 | `src/app/employee/performance/stats/page.tsx` | `EmployeeStatsPage` | Personal KPI metrics, conversion ratios, and closed deal records |
+| `src/app/employee/attendance/page.tsx` | `EmployeeAttendancePage` | Personal monthly attendance matrix, punch history, and leave summary |
 
 #### API Routes
 | File | Function | Purpose |
@@ -341,6 +350,8 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `notifications.ts` | `markNotificationRead`, `markAllNotificationsRead` | Admin and employee alert acknowledgment |
 | `whatsapp.ts` | `sendWhatsAppMessage` | Placeholder for future WhatsApp Business API integration |
 | `config.ts` | `getIntegrationsConfig`, `updateIntegrationsConfig` | System integration configuration persistence |
+| `attendance.ts` | `readPolicy`, `punchAttendance`, `recordAttendancePing`, `setAttendanceOverride`, `getAttendanceConfig`, `getPunchRequirements`, `setAttendanceConfig`, `adjustAttendance`, `sweepAbsentees`, `getTeamAttendance`, `getAttendanceSummary`, `finalizeAttendanceDeductions`, `reopenAttendancePeriod`, `getAttendancePeriod` | Attendance policy evaluation, geolocation/wifi validation, check-in/out punches, administrative adjustments with worked minute recalculation, and deduction finalization |
+| `leave.ts` | `requestLeave`, `decideLeave`, `cancelLeave`, `getLeaveSummary`, `adjustLeaveBalance` | Employee leave request submission, manager/admin decision workflows, and quota balance maintenance |
 
 #### Components
 | File | Component / Functions | Purpose |
@@ -353,6 +364,19 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/components/DemoBanner.tsx` | `DemoBanner` | Persistent banner indicating demo sandbox environment |
 | `src/components/admin/AdminShared.tsx` | `ResponsiveTableWrapper`, `TableRow`, `TableCell`, `Banner`, `Kpi`, `LeadSection`, `LabelledInput`, `FullPageSpinner` | Shared modular table and layout primitives |
 | `src/components/admin/AssignModal.tsx` | `AssignModal` | Manual assignment and reassignment popup dialog |
+| `src/components/attendance/AttendanceDashboard.tsx` | `AttendanceDashboard` | High-level attendance dashboard displaying presence counters, late sweeps, and active shifts |
+| `src/components/attendance/AttendanceShell.tsx` | `AttendanceShell` | Modular layout container providing consistent bleed margins and attendance navigation bar |
+| `src/components/attendance/AttendanceNav.tsx` | `AttendanceNav` | Multi-tab horizontal navigation menu across attendance subsections |
+| `src/components/attendance/TeamCalendarView.tsx` | `TeamCalendarView`, `resolveDay`, `toAttendanceDay` | Monthly attendance grid supporting team/individual modes with direct cell click-to-edit |
+| `src/components/attendance/DayDetailPanel.tsx` | `DayDetailPanel` | Slide-over inspector and modal dialog for editing attendance status, check-in, and check-out |
+| `src/components/attendance/AttendanceReportsView.tsx` | `AttendanceReportsView` | Tabular monthly deduction report generator and period finalization interface |
+| `src/components/attendance/AttendanceSettingsView.tsx` | `AttendanceSettingsView` | Office geofence coordinates manager, Wi-Fi network allow-list, and shift timings form |
+| `src/components/attendance/LeaveManagementView.tsx` | `LeaveManagementView` | Employee leave requests management queue, approvals, and balance adjustments |
+| `src/components/attendance/LeaveRequestModal.tsx` | `LeaveRequestModal` | Submission modal for employee casual or medical leave requests |
+| `src/components/attendance/MyAttendanceView.tsx` | `MyAttendanceView` | Self-service attendance summary and personal calendar for logged-in user |
+| `src/components/attendance/LateAbsenceView.tsx` | `LateAbsenceView` | Dedicated ledger of tardiness, unexcused absences, and administrative overrides |
+| `src/components/attendance/NetworkNameField.tsx` | `NetworkNameField` | Local device Wi-Fi SSID configuration and sync interface |
+| `src/components/attendance/attendanceChrome.tsx` | `AttendanceChrome`, `formatClock` | Reusable attendance status badges, punch buttons, and network verdict indicators |
 
 #### UI Components
 | File | Component / Functions | Purpose |
@@ -393,6 +417,9 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/lib/firebase/server.ts` | `initAdminFirebase` | Firebase Admin SDK singleton for server-side execution |
 | `src/lib/firebase/serverAuth.ts`| `requireAdmin`, `requireAuth` | Server Action token and role authorization verifier |
 | `src/lib/constants/monitoring.ts` | `NO_FOLLOWUP_THRESHOLD_MS` | Configurable SLA threshold for no-follow-up alerts (24 hours) |
+| `src/lib/attendance.ts` | `distanceMeters`, `classifyLocation`, `classifyWifi`, `resolveNetwork`, `workedMinutes`, `deriveStatus`, `attendanceRate`, `normalizeIp`, `formatWorkedHours` | Geolocation haversine math, network classification, and attendance status derivation |
+| `src/lib/attendanceCalendar.ts` | `monthLabel`, `shiftMonth`, `daysInMonth`, `leadingBlanks`, `monthRange`, `dayNumber`, `monthDayKeys` | Calendar grid arithmetic, month offsets, and day formatting |
+| `src/lib/attendancePolicy.ts` | `parseClock`, `formatClockValue`, `formatClockLabel`, `karachiMinutesOfDay`, `classifyCheckIn`, `pastAbsentCutoff`, `lateDeduction`, `monthDeductions`, `leaveBalances`, `normalizePolicy` | Working hours policy parsing, tardiness determination, Karachi timezone conversion, and deduction formulas |
 
 ---
 
