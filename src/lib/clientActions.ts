@@ -1,5 +1,6 @@
 "use client";
 
+import type { StateLifeSlab, StateLifeRates } from '@/lib/stateLife';
 import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
@@ -135,6 +136,10 @@ import {
   managePersonalExpenseCategory as _managePersonalExpenseCategory,
   countPersonalExpensePayments as _countPersonalExpensePayments,
   saveStateLifePolicy as _saveStateLifePolicy,
+  receiveStateLifeSlab as _receiveStateLifeSlab,
+  getStateLifeRates as _getStateLifeRates,
+  setStateLifeRates as _setStateLifeRates,
+  unreceiveStateLifeSlab as _unreceiveStateLifeSlab,
   deleteStateLifePolicy as _deleteStateLifePolicy,
   saveMarketingIncome as _saveMarketingIncome,
   deleteMarketingIncome as _deleteMarketingIncome,
@@ -1086,6 +1091,28 @@ export async function managePersonalExpenseCategory(
 
 export async function saveStateLifePolicy(token: string, input: StateLifeInputRow, policyId?: string) {
   return _saveStateLifePolicy(token, input, policyId);
+}
+
+export async function receiveStateLifeSlab(
+  token: string,
+  policyId: string,
+  slab: StateLifeSlab,
+  accountId: string,
+  input?: { amount?: number; dayKey?: string; note?: string | null }
+) {
+  return _receiveStateLifeSlab(token, policyId, slab, accountId, input);
+}
+
+export async function unreceiveStateLifeSlab(token: string, policyId: string, slab: StateLifeSlab) {
+  return _unreceiveStateLifeSlab(token, policyId, slab);
+}
+
+export async function getStateLifeRates(token: string) {
+  return _getStateLifeRates(token);
+}
+
+export async function setStateLifeRates(token: string, rates: Partial<StateLifeRates>) {
+  return _setStateLifeRates(token, rates);
 }
 
 export async function deleteStateLifePolicy(token: string, policyId: string) {

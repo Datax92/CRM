@@ -245,9 +245,11 @@ export function HeroTile({ onClick, label, d }: { onClick: () => void; label: st
  * Here it opens the two date fields, which are otherwise off the phone
  * entirely — the desktop's filter grid does not fit at 390px.
  */
-export function PeriodPill({ from, to, open, onToggle, onFrom, onTo, maxTo }: {
+export function PeriodPill({ from, to, open, onToggle, onFrom, onTo, maxTo, label }: {
   from: string; to: string; open: boolean; onToggle: () => void;
   onFrom: (v: string) => void; onTo: (v: string) => void; maxTo: string;
+  /** Shown instead of the dates when the period is unbounded. */
+  label?: string;
 }) {
   return (
     <>
@@ -257,7 +259,7 @@ export function PeriodPill({ from, to, open, onToggle, onFrom, onTo, maxTo }: {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
             <rect x="4" y="5" width="16" height="16" rx="2.5" /><path d="M8 3v4M16 3v4M4 11h16" />
           </svg>
-          <span style={{ whiteSpace: "nowrap" }}>{from} → {to}</span>
+          <span style={{ whiteSpace: "nowrap" }}>{label ?? `${from} → ${to}`}</span>
         </span>
         <span style={{ opacity: 0.82, whiteSpace: "nowrap" }}>{open ? "Done" : "Change"}</span>
       </button>
@@ -266,12 +268,12 @@ export function PeriodPill({ from, to, open, onToggle, onFrom, onTo, maxTo }: {
         <div style={{ position: "relative", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
           <label style={{ display: "grid", gap: 6 }}>
             <span style={{ ...designLabel, color: "rgba(255,255,255,0.82)" }}>From</span>
-            <input type="date" value={from} max={to} onChange={(event) => onFrom(event.target.value)}
+            <input type="date" value={from} max={to || undefined} onChange={(event) => onFrom(event.target.value)}
               style={{ ...designField, fontSize: 16, background: "rgba(255,255,255,0.92)", borderColor: "rgba(255,255,255,0.5)" }} />
           </label>
           <label style={{ display: "grid", gap: 6 }}>
             <span style={{ ...designLabel, color: "rgba(255,255,255,0.82)" }}>To</span>
-            <input type="date" value={to} min={from} max={maxTo} onChange={(event) => onTo(event.target.value)}
+            <input type="date" value={to} min={from || undefined} max={maxTo} onChange={(event) => onTo(event.target.value)}
               style={{ ...designField, fontSize: 16, background: "rgba(255,255,255,0.92)", borderColor: "rgba(255,255,255,0.5)" }} />
           </label>
         </div>
@@ -377,31 +379,35 @@ export interface SelectFilter {
 
 export function FilterPanel({
   from, to, maxTo, onFrom, onTo, search, onSearch, selects, onDownload, canDownload,
+  periodLabel,
 }: {
+  /** Either may be `""`, which means **no bound on that side**. */
   from: string; to: string; maxTo: string;
   onFrom: (v: string) => void; onTo: (v: string) => void;
   search: string; onSearch: (v: string) => void;
   selects: SelectFilter[];
   onDownload: () => void; canDownload: boolean;
+  /** Overrides the `from → to` pill — "All policies", when nothing is bounded. */
+  periodLabel?: string;
 }) {
   return (
     <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 18, padding: "16px 20px 18px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>Period and Filters</span>
         <span style={{ padding: "4px 12px", borderRadius: 999, background: X.tint, border: `1px solid ${X.line}`, fontSize: 11.5, fontWeight: 700, color: X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-          {from} → {to}
+          {periodLabel ?? `${from} → ${to}`}
         </span>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: `150px 150px minmax(200px,1fr) ${selects.map((s) => s.width).join(" ")} auto`, gap: 12, alignItems: "end" }}>
         <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, ...designLabel }}>
           <span>From</span>
-          <input type="date" value={from} max={to} onChange={(event) => onFrom(event.target.value)} style={{ ...designField, fontSize: 13.5 }} />
+          <input type="date" value={from} max={to || undefined} onChange={(event) => onFrom(event.target.value)} style={{ ...designField, fontSize: 13.5 }} />
         </label>
 
         <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, ...designLabel }}>
           <span>To</span>
-          <input type="date" value={to} min={from} max={maxTo} onChange={(event) => onTo(event.target.value)} style={{ ...designField, fontSize: 13.5 }} />
+          <input type="date" value={to} min={from || undefined} max={maxTo} onChange={(event) => onTo(event.target.value)} style={{ ...designField, fontSize: 13.5 }} />
         </label>
 
         <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, ...designLabel }}>
@@ -770,7 +776,9 @@ export interface HistoryEntry {
  */
 export function ExpenseDetail({
   title, amountLabel, status, payment, fields, legs, history, notFunded,
-  formatMoney: fmt, actions, footnote,
+  formatMoney: fmt, actions, footnote, extra,
+  legsHeading = "Where the money came from",
+  legsIn = false,
 }: {
   title: string;
   amountLabel: string;
@@ -784,6 +792,18 @@ export function ExpenseDetail({
   formatMoney: (n: number) => string;
   actions?: ReactNode;
   footnote?: ReactNode;
+  /** Rendered between the figures and Details — the slab table, for StateLife. */
+  extra?: ReactNode;
+  legsHeading?: string;
+  /**
+   * `true` when the movements brought money **in** rather than took it out.
+   *
+   * An income account's receipts are `+` and teal; an expense's payments are
+   * `−` and red. Same panel, and the sign is never decoration — a StateLife
+   * slab shown as `−82,772` would read as money leaving the account it just
+   * arrived in.
+   */
+  legsIn?: boolean;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -810,6 +830,8 @@ export function ExpenseDetail({
         </div>
       )}
 
+      {extra}
+
       <Panel heading="Details">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, padding: "14px 16px" }}>
           {fields.map((field) => (
@@ -821,7 +843,7 @@ export function ExpenseDetail({
         </div>
       </Panel>
 
-      <Panel heading="Where the money came from" hint={legs.length ? `${legs.length} movement${legs.length === 1 ? "" : "s"}` : undefined}>
+      <Panel heading={legsHeading} hint={legs.length ? `${legs.length} movement${legs.length === 1 ? "" : "s"}` : undefined}>
         {legs.length === 0 ? (
           <p style={{ padding: "20px 16px", fontSize: 12.5, fontWeight: 500, color: X.faint }}>{notFunded}</p>
         ) : (
@@ -833,8 +855,8 @@ export function ExpenseDetail({
                   {leg.dayKey}{leg.by ? ` · ${leg.by}` : ""}{leg.note ? ` · ${leg.note}` : ""}
                 </div>
               </div>
-              <span style={{ fontSize: 13.5, fontWeight: 800, color: "#a8483c", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                −{fmt(leg.amount)}
+              <span style={{ fontSize: 13.5, fontWeight: 800, color: legsIn ? X.deep : "#a8483c", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                {legsIn ? "+" : "−"}{fmt(leg.amount)}
               </span>
             </div>
           ))

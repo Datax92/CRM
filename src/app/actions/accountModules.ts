@@ -22,7 +22,15 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { karachiDayKey } from "@/lib/dates";
 import { money } from "@/lib/ledger";
 import { formatMoney } from "@/lib/money";
-import { stateLifeCommission } from "@/lib/stateLife";
+import {
+  stateLifeCommission,
+  stateLifeSlabs,
+  slabMeta,
+  normalizeRates,
+  STATELIFE_SLABS,
+  type StateLifeRates,
+  type StateLifeSlab,
+} from "@/lib/stateLife";
 import { PERSONAL_EXPENSE_CATEGORIES } from "@/lib/personalExpenses";
 import { FieldValue } from "firebase-admin/firestore";
 
@@ -30,6 +38,8 @@ const PERSONAL = "personalExpenses";
 /** The ledger owns this collection; named here only to restore a balance. */
 const ACCOUNTS_FOR_RESTORE = "accounts";
 const PERSONAL_CATEGORY_DOC = "personalExpenseCategories";
+const TRANSACTIONS_FOR_SLABS = "transactions";
+const STATELIFE_RATES_DOC = "stateLifeRates";
 const STATELIFE = "stateLifePolicies";
 const MARKETING = "marketingIncome";
 
@@ -376,6 +386,8 @@ export interface StateLifeInputRow {
   srName?: string | null;
   discount?: number;
   incomeNote?: string | null;
+  /** Per-policy override. Absent means the business default at creation. */
+  rates?: Partial<StateLifeRates> | null;
 }
 
 /**
@@ -386,6 +398,49 @@ export interface StateLifeInputRow {
  * transcribed from the workbook, and stores the derived columns alongside the
  * typed ones so the table and its totals need no recomputation to draw.
  */
+/**
+ * The commission rates new policies start from.
+ *
+ * **These are defaults, not the truth about any policy.** Each policy stores
+ * the rates it was written under; changing these changes what the *next* one
+ * starts at and nothing that already exists. That separation is the whole
+ * safety of making them editable — otherwise correcting a rate in September
+ * would silently restate every commission earned since January, including ones
+ * already banked.
+ */
+export async function getStateLifeRates(
+  token: string
+): Promise<ActionResult<{ rates: StateLifeRates; isDefault: boolean }>> {
+  return runAction("getStateLifeRates", async () => {
+    await requireFinance(token);
+    const snap = await adminDb.collection("config").doc(STATELIFE_RATES_DOC).get();
+    return {
+      rates: normalizeRates(snap.data()?.rates),
+      isDefault: !snap.exists,
+    };
+  });
+}
+
+export async function setStateLifeRates(
+  token: string,
+  rates: Partial<StateLifeRates>
+): Promise<ActionResult<{ rates: StateLifeRates }>> {
+  return runAction("setStateLifeRates", async () => {
+    const auth = await requireFinance(token);
+    const next = normalizeRates(rates);
+
+    if (next.first + next.second + next.quarter + next.december <= 0) {
+      throw new UserFacingError("Every rate is zero — a policy written at these would earn nothing.");
+    }
+
+    await adminDb.collection("config").doc(STATELIFE_RATES_DOC).set(
+      { rates: next, updatedAt: FieldValue.serverTimestamp(), updatedByUid: auth.uid },
+      { merge: true }
+    );
+    return { rates: next };
+  });
+}
+
 export async function saveStateLifePolicy(
   token: string,
   input: StateLifeInputRow,
@@ -399,11 +454,27 @@ export async function saveStateLifePolicy(
     const pass = money(input.pass);
     if (pass <= 0) throw new UserFacingError("Enter the passed amount — every commission is a percentage of it.");
 
-    const commission = stateLifeCommission({
-      fyp: money(input.fyp),
-      pass,
-      discount: money(input.discount),
-    });
+    /*
+      **The rates the policy is written under, frozen onto it.** Typed on the
+      form when somebody overrides them, otherwise the business default at the
+      moment it is created — read once, here, rather than looked up on every
+      later render, so a policy's figures never move under it.
+    */
+    const existing = policyId
+      ? (await adminDb.collection(STATELIFE).doc(policyId).get()).data()
+      : undefined;
+    const rates = input.rates
+      ? normalizeRates(input.rates)
+      : existing?.rates
+        ? normalizeRates(existing.rates)
+        : normalizeRates(
+            (await adminDb.collection("config").doc(STATELIFE_RATES_DOC).get()).data()?.rates
+          );
+
+    const commission = stateLifeCommission(
+      { fyp: money(input.fyp), pass, discount: money(input.discount) },
+      rates
+    );
 
     const payload = {
       proposalNo: (input.proposalNo ?? "").trim() || null,
@@ -418,6 +489,7 @@ export async function saveStateLifePolicy(
       description: (input.description ?? "").trim() || null,
       srName: (input.srName ?? "").trim() || null,
       incomeNote: (input.incomeNote ?? "").trim() || null,
+      rates,
       ...commission,
       updatedAt: FieldValue.serverTimestamp(),
       updatedByUid: auth.uid,
@@ -425,7 +497,26 @@ export async function saveStateLifePolicy(
 
     if (policyId) {
       const ref = adminDb.collection(STATELIFE).doc(policyId);
-      if (!(await ref.get()).exists) throw new UserFacingError("That policy no longer exists.");
+      if (!existing) throw new UserFacingError("That policy no longer exists.");
+
+      /*
+        **A slab cannot be edited below what has already been banked.** Dropping
+        a rate, or raising the discount, after a slab has been received would
+        leave the account holding money the policy says it never earned. The
+        received figure is what actually arrived and is never rewritten; it is
+        the rate that has to give.
+      */
+      const receipts = (existing.slabReceipts ?? {}) as Record<string, { amount?: number }>;
+      const names = slabMeta(rates);
+      for (const entry of stateLifeSlabs({ fyp: money(input.fyp), pass, discount: money(input.discount) }, rates)) {
+        const received = money(receipts[entry.slab]?.amount);
+        if (received > 0 && entry.amount < received) {
+          throw new UserFacingError(
+            `${formatMoney(received)} has already been received on the ${names[entry.slab].short} slab, and these figures make it ${formatMoney(entry.amount)}. Undo that receipt first.`
+          );
+        }
+      }
+
       await ref.update(payload);
       return { policyId };
     }
@@ -436,10 +527,233 @@ export async function saveStateLifePolicy(
   });
 }
 
+/**
+ * Records that a commission slab has come in, and **puts the money into an
+ * account**.
+ *
+ * This is the whole answer to *"this is an income account — bills can be paid
+ * from this income as well"*. StateLife earns money in three slabs months
+ * apart; until this action existed, that money was a number on a sheet and
+ * nothing could be paid out of it. Now receiving a slab posts an ordinary
+ * **IN** transaction to whichever account it landed in, and from that moment an
+ * office expense, a personal expense or anything else can be funded from it
+ * through the same split control every other module uses — with no line of
+ * StateLife-specific code in any of them. Exactly the trick Committee plays.
+ *
+ * **The guard is a re-read inside the transaction**, not a check in the
+ * browser: two people marking the same slab received at once, or one person
+ * double-clicking, and only the first commits. `payFromAccounts` prevents
+ * double payment the same way, and for the same reason — whatever the screen
+ * believed when it submitted, this is the current state.
+ *
+ * A slab worth nothing or less cannot be received. Row 15 of the workbook is
+ * −2,592, where the discount exceeded the commission: StateLife does not owe
+ * that policy money, so there is nothing to bank.
+ */
+export async function receiveStateLifeSlab(
+  token: string,
+  policyId: string,
+  slab: StateLifeSlab,
+  accountId: string,
+  input?: { amount?: number; dayKey?: string; note?: string | null }
+): Promise<ActionResult<{ amount: number; transactionId: string }>> {
+  return runAction("receiveStateLifeSlab", async () => {
+    const auth = await requireFinance(token);
+
+    if (!(STATELIFE_SLABS as readonly string[]).includes(slab)) {
+      throw new UserFacingError("That is not a commission slab.");
+    }
+
+    const policyRef = adminDb.collection(STATELIFE).doc(policyId);
+    const accountRef = adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId);
+    const txnRef = adminDb.collection(TRANSACTIONS_FOR_SLABS).doc();
+    const dayKey = dayOrToday(input?.dayKey);
+
+    const amount = await adminDb.runTransaction(async (t) => {
+      const [policySnap, accountSnap] = await Promise.all([t.get(policyRef), t.get(accountRef)]);
+      if (!policySnap.exists) throw new UserFacingError("That policy no longer exists.");
+      if (!accountSnap.exists) throw new UserFacingError("That account no longer exists.");
+      if (accountSnap.data()?.status === "ARCHIVED") {
+        throw new UserFacingError(`${accountSnap.data()?.name ?? "That account"} is archived.`);
+      }
+
+      const policy = policySnap.data()!;
+      // **The policy's own rates**, not today's defaults: a slab is worth what
+      // the policy was written at, and renaming it "40%" when the book moved to
+      // 35% would put a wrong figure in the account's statement for ever.
+      const names = slabMeta(policy.rates);
+      const receipts = (policy.slabReceipts ?? {}) as Record<string, unknown>;
+      if (receipts[slab]) {
+        throw new UserFacingError(
+          `The ${names[slab].short} slab is already recorded as received.`
+        );
+      }
+
+      const due = stateLifeSlabs(
+        { fyp: money(policy.fyp), pass: money(policy.pass), discount: money(policy.discount) },
+        policy.rates
+      ).find((entry) => entry.slab === slab)!.amount;
+
+      if (due <= 0) {
+        throw new UserFacingError(
+          `There is nothing to receive on the ${names[slab].short} slab — the discount used it up.`
+        );
+      }
+
+      // Typing a figure is allowed because the sheet's own notes record part
+      // payments ("5K PENDING", "22K PENDING"). More than the slab is not.
+      const received = input?.amount === undefined ? due : money(input.amount);
+      if (received <= 0) throw new UserFacingError("Enter an amount greater than zero.");
+      if (received > due) {
+        throw new UserFacingError(
+          `The ${names[slab].short} slab is ${formatMoney(due)}. You cannot receive more than that.`
+        );
+      }
+
+      t.create(txnRef, {
+        accountId,
+        direction: "IN",
+        amount: received,
+        type: "INCOME",
+        dayKey,
+        sourceModule: "STATELIFE",
+        sourceId: policyId,
+        sourceLabel: `StateLife ${names[slab].short} — ${policy.name ?? "policy"}`,
+        groupId: null,
+        status: "POSTED",
+        note: input?.note?.trim() || null,
+        // The slab is in the key, or a policy's second slab would collide with
+        // its first: the standard `module:source:account` shape assumes one
+        // movement per record per account and a policy has three.
+        idempotencyKey: `STATELIFE:${policyId}:${slab}:${accountId}`,
+        createdByUid: auth.uid,
+        createdByName: auth.name ?? auth.email ?? null,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      t.update(policyRef, {
+        [`slabReceipts.${slab}`]: {
+          amount: received,
+          dayKey,
+          accountId,
+          accountName: (accountSnap.data()?.name as string) ?? null,
+          transactionId: txnRef.id,
+        },
+        history: FieldValue.arrayUnion({
+          at: new Date().toISOString(),
+          action: "SLAB_RECEIVED",
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          amount: received,
+          detail: `${names[slab].short} into ${accountSnap.data()?.name ?? "an account"}`,
+        }),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      return received;
+    });
+
+    // Read-free, and outside the transaction: a stale cache is a display
+    // problem `balancesFor` recomputes anyway, and it must never fail the write.
+    await accountRef.update({
+      cachedBalance: FieldValue.increment(Math.round(amount * 100) / 100),
+    });
+
+    return { amount, transactionId: txnRef.id };
+  });
+}
+
+/**
+ * Undoes a received slab — the money goes back out of the account with it.
+ *
+ * The right answer when a slab was marked received in error or against the
+ * wrong account. There is no "reverse it first" gate: the movement and the
+ * record of it are one fact, so removing one removes the other.
+ */
+export async function unreceiveStateLifeSlab(
+  token: string,
+  policyId: string,
+  slab: StateLifeSlab
+): Promise<ActionResult<{ removed: number }>> {
+  return runAction("unreceiveStateLifeSlab", async () => {
+    await requireFinance(token);
+
+    const ref = adminDb.collection(STATELIFE).doc(policyId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new UserFacingError("That policy no longer exists.");
+
+    const receipt = ((snap.data()?.slabReceipts ?? {}) as Record<string, { amount?: number; accountId?: string; transactionId?: string }>)[slab];
+    if (!receipt) throw new UserFacingError("That slab has not been received.");
+
+    const amount = money(receipt.amount);
+
+    // The transaction is found by its idempotency key rather than by the id
+    // stored on the policy, so a row written before the id was recorded — or
+    // one re-created by a retry — is still found and still removed.
+    const legs = await adminDb
+      .collection(TRANSACTIONS_FOR_SLABS)
+      .where("idempotencyKey", "==", `STATELIFE:${policyId}:${slab}:${receipt.accountId}`)
+      .get();
+    await Promise.all(legs.docs.map((doc) => doc.ref.delete()));
+
+    await ref.update({
+      [`slabReceipts.${slab}`]: FieldValue.delete(),
+      history: FieldValue.arrayUnion({
+        at: new Date().toISOString(),
+        action: "SLAB_UNRECEIVED",
+        amount,
+        detail: `${slabMeta(snap.data()?.rates)[slab].short} removed`,
+      }),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    if (receipt.accountId && amount > 0) {
+      await adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(receipt.accountId).update({
+        cachedBalance: FieldValue.increment(-Math.round(amount * 100) / 100),
+      });
+    }
+
+    return { removed: amount };
+  });
+}
+
+/**
+ * Deletes a policy, and the slab receipts go with it.
+ *
+ * Same rule the personal expense delete follows: leaving transactions pointing
+ * at a record that no longer exists would show money arriving in an account for
+ * nothing. The movements are removed and the balances put back.
+ */
 export async function deleteStateLifePolicy(token: string, policyId: string): Promise<ActionResult> {
   return runAction("deleteStateLifePolicy", async () => {
     await requireAdmin(token);
-    await adminDb.collection(STATELIFE).doc(policyId).delete();
+
+    const legs = await adminDb
+      .collection(TRANSACTIONS_FOR_SLABS)
+      .where("sourceModule", "==", "STATELIFE")
+      .where("sourceId", "==", policyId)
+      .get();
+
+    const restore = new Map<string, number>();
+    const batch = adminDb.batch();
+    for (const leg of legs.docs) {
+      const row = leg.data();
+      const accountId = row.accountId as string;
+      // An IN leg brought money in, so undoing it takes the money back out.
+      const delta = row.direction === "IN" ? -money(row.amount) : money(row.amount);
+      restore.set(accountId, (restore.get(accountId) ?? 0) + delta);
+      batch.delete(leg.ref);
+    }
+    batch.delete(adminDb.collection(STATELIFE).doc(policyId));
+    await batch.commit();
+
+    await Promise.all(
+      [...restore].map(([accountId, delta]) =>
+        adminDb.collection(ACCOUNTS_FOR_RESTORE).doc(accountId).update({
+          cachedBalance: FieldValue.increment(Math.round(delta * 100) / 100),
+        })
+      )
+    );
   });
 }
 

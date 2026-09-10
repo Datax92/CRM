@@ -75,6 +75,17 @@ export const ACCOUNT_KINDS = [
   'WALLET',
   'INVESTMENT',
   'COMMITTEE',
+  /**
+   * A pot that **earns** rather than one that holds — a StateLife commission
+   * book, a rental round, anything whose money arrives in instalments and is
+   * then spent from.
+   *
+   * It is an ordinary account and gets no special handling anywhere: that is
+   * the point. Because it is one, an office expense or a committee bill can be
+   * paid out of it through the same split control as any other account, with
+   * no module knowing StateLife exists.
+   */
+  'INCOME',
   'OTHER',
 ] as const;
 
@@ -86,6 +97,7 @@ export const ACCOUNT_KIND_LABELS: Record<AccountKind, string> = {
   WALLET: 'Wallet',
   INVESTMENT: 'Investment',
   COMMITTEE: 'Committee',
+  INCOME: 'Income',
   OTHER: 'Other',
 };
 
