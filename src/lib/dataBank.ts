@@ -67,6 +67,25 @@ export const MAX_FIELDS_PER_FOLDER = 40;
 export const MAX_IMPORT_ROWS = 200_000;
 
 /** Firestore's hard cap on a single batched write. */
+/**
+ * The most documents one folder delete removes in a single run.
+ *
+ * **The free plan meters deletes at 20,000 a day and the whole app stops when
+ * that runs out** — every write fails, not just the one that spent it. A folder
+ * of 5,500 rows spends a quarter of the budget in one press, and two of them
+ * take the business offline until midnight Pacific.
+ *
+ * 2,000 is a tenth of the day: big enough that almost every real folder goes in
+ * one press, small enough that pressing it on the largest list in the project
+ * cannot stop anybody recording a lead. The rest is picked up by the next run,
+ * and the folder is hidden meanwhile so the reader sees it as gone.
+ *
+ * **One read and one delete per record is a floor, not a setting** — one record
+ * is one document. The only way past it is fewer, larger documents; see the
+ * bucketing note in CLAUDE.md.
+ */
+export const DELETE_BUDGET = 2_000;
+
 export const WRITE_BATCH_SIZE = 500;
 
 /**

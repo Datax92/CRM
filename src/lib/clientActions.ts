@@ -33,6 +33,7 @@ import {
   createDataBankFolder as _createDataBankFolder,
   updateDataBankFolder as _updateDataBankFolder,
   deleteDataBankFolder as _deleteDataBankFolder,
+  countFolderRecords as _countFolderRecords,
   saveColumnMap as _saveColumnMap,
   addDataBankRecord as _addDataBankRecord,
   updateDataBankRecord as _updateDataBankRecord,
@@ -566,9 +567,18 @@ export async function updateDataBankFolder(
 export async function deleteDataBankFolder(
   token: string,
   folderId: string
-): Promise<ActionResult<{ deleted: number }>> {
-  if (IS_DEMO) return demo.deleteDataBankFolder(folderId);
+): Promise<ActionResult<{ deleted: number; remaining: number; done: boolean }>> {
+  if (IS_DEMO) {
+    const res = await demo.deleteDataBankFolder(folderId);
+    // Demo mode deletes from module memory, where there is no quota to spend —
+    // so it is always finished, and says so in the same shape.
+    return res.ok ? { ...res, data: { ...res.data, remaining: 0, done: true } } : res;
+  }
   return _deleteDataBankFolder(token, folderId);
+}
+
+export async function countFolderRecords(token: string, folderId: string) {
+  return _countFolderRecords(token, folderId);
 }
 
 export async function saveColumnMap(

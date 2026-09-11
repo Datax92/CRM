@@ -317,7 +317,8 @@ export function MobileDashboard() {
         {/* Attendance gauges */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {[
-            // `attendanceRate` already returns a 0–100 figure to one decimal.
+            // `attendanceRate` returns a 0–100 figure to one decimal, or `null`
+            // when there were no working days to attend.
             { label: "MTD", pct: attendance.rate.percent },
             { label: "YTD", pct: attendance.yearRate.percent },
           ].map((gauge) => (
@@ -348,7 +349,7 @@ export function MobileDashboard() {
                     stroke={M.teal}
                     strokeWidth="9"
                     strokeLinecap="round"
-                    strokeDasharray={dash(gauge.pct, 39)}
+                    strokeDasharray={dash(gauge.pct ?? 0, 39)}
                     transform="rotate(-90 48 48)"
                     style={{ transition: "stroke-dasharray 520ms cubic-bezier(0.22,0.61,0.36,1)" }}
                   />
@@ -373,10 +374,12 @@ export function MobileDashboard() {
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {gauge.pct.toFixed(1)}%
+                    {/* No working days is no rate, not a rate of zero — a
+                        month entirely on approved leave missed nothing. */}
+                    {gauge.pct === null ? "—" : `${gauge.pct.toFixed(1)}%`}
                   </span>
                   <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.5px", color: M.faint }}>
-                    ATTEND
+                    {gauge.pct === null ? "NO DAYS" : "ATTEND"}
                   </span>
                 </div>
               </div>

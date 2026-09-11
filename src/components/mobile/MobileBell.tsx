@@ -44,14 +44,20 @@ export function MobileBell({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  /*
+    The list is capped at 20 to keep the read cost down — see
+    `NOTIFICATION_PAGE` — so every reading of it says "20+" rather than a
+    number it cannot know is exact.
+  */
   const count = notifications.length;
+  const shown = count >= 20 ? "20+" : String(count);
 
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label={count > 0 ? `Notifications, ${count} unread` : "Notifications"}
+        aria-label={count > 0 ? `Notifications, ${shown} unread` : "Notifications"}
         className="mob-press"
         style={{
           position: "relative",
@@ -93,7 +99,7 @@ export function MobileBell({
       {open && (
         <Sheet
           title="Alerts"
-          subtitle={count > 0 ? `${count} unread` : "Nothing needs you right now."}
+          subtitle={count > 0 ? `${shown} unread` : "Nothing needs you right now."}
           onClose={() => setOpen(false)}
         >
           {count === 0 ? (

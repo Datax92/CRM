@@ -14,6 +14,8 @@ import {
   normalizeIp,
   normalizeNetworkName,
   workedMinutes,
+  FULL_DAY_MINUTES,
+  HALF_DAY_MINUTES,
 } from './attendance.ts';
 
 const headers = (map: Record<string, string>) => ({
@@ -119,10 +121,18 @@ describe('attendance rate', () => {
     assert.equal(percent, 100);
   });
 
-  test('a month with no working days is 0%, not a division by zero', () => {
+  test('a month with no working days has no rate — and is never NaN', () => {
+    /*
+      **This supersedes an earlier reading of the same case.** It used to assert
+      `0`, chosen to avoid a division by zero — the guard was right and the value
+      was not: a fortnight of weekly offs, or a month of approved leave, reads as
+      "attended nothing" when in fact nothing was expected. `null` says there is
+      no rate, and the gauge draws "—" rather than a number somebody could act
+      on. The original concern still holds: it must never be NaN or Infinity.
+    */
     const { percent } = attendanceRate(['OFF', 'OFF']);
-    assert.equal(Number.isFinite(percent), true);
-    assert.equal(percent, 0);
+    assert.equal(percent, null);
+    assert.equal(Number.isNaN(percent as unknown as number), false);
   });
 
   test('approved leave leaves the denominator rather than counting as a miss', () => {
@@ -406,4 +416,50 @@ describe('distance, as somebody reads it', () => {
   test('no distance says so rather than reading zero', () => {
     assert.equal(formatDistance(null), 'an unknown distance');
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The status a day earns                                                      */
+/* -------------------------------------------------------------------------- */
+
+test('a full day is Present', () => {
+  assert.equal(deriveStatus(FULL_DAY_MINUTES, true), 'PRESENT');
+  assert.equal(deriveStatus(FULL_DAY_MINUTES + 120, true), 'PRESENT');
+});
+
+test('a day with no activity at all is Absent', () => {
+  assert.equal(deriveStatus(0, false), 'ABSENT');
+  assert.equal(deriveStatus(480, false), 'ABSENT');
+});
+
+test('a day opened and never closed is a half day, never absent', () => {
+  // The system cannot observe a check-out that did not happen; grading it
+  // absent punishes somebody for the one thing it cannot see.
+  assert.equal(deriveStatus(0, true), 'HALF_DAY');
+});
+
+test('everything short of a full day is a half day', () => {
+  for (const minutes of [1, 30, HALF_DAY_MINUTES - 1, HALF_DAY_MINUTES, FULL_DAY_MINUTES - 1]) {
+    assert.equal(deriveStatus(minutes, true), 'HALF_DAY', `${minutes} minutes`);
+  }
+});
+
+test('a half day counts as half in the rate, and leave leaves the denominator', () => {
+  // PRESENT and LATE are both a full day worked — being late is a punctuality
+  // fact, not an attendance one.
+  assert.equal(attendanceRate(['PRESENT', 'LATE']).percent, 100);
+  assert.equal(attendanceRate(['PRESENT', 'ABSENT']).percent, 50);
+  assert.equal(attendanceRate(['PRESENT', 'HALF_DAY']).percent, 75);
+  assert.equal(attendanceRate(['PRESENT', 'LEAVE']).percent, 100);
+  assert.equal(attendanceRate(['PRESENT', 'OFF']).percent, 100);
+});
+
+test('a month of nothing but leave has no rate, rather than a rate of zero', () => {
+  // Somebody approved to be away attended every day expected of them, which
+  // was none. `0` reads as the opposite — a month they missed entirely.
+  assert.equal(attendanceRate(['LEAVE', 'LEAVE']).percent, null);
+  assert.equal(attendanceRate(['OFF', 'LEAVE']).percent, null);
+  assert.equal(attendanceRate([]).percent, null);
+  // And one real working day is enough to have a rate again.
+  assert.equal(attendanceRate(['LEAVE', 'ABSENT']).percent, 0);
 });

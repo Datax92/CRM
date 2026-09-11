@@ -170,14 +170,16 @@ export function NotificationsPanel({ getIdToken, uid, role }: { getIdToken: () =
     <div className="relative" ref={ref}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        aria-label={`Alerts${notifications.length ? `, ${notifications.length} unread` : ""}`}
+        aria-label={`Alerts${notifications.length ? `, ${notifications.length >= 20 ? "20 or more" : notifications.length} unread` : ""}`}
         aria-expanded={isOpen}
         className="relative rounded-full p-2 text-slate-900 transition-colors hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-white"
       >
         <Bell size={20} />
         {notifications.length > 0 && (
           <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">
-            {notifications.length > 99 ? "99+" : notifications.length}
+            {/* The list is capped at 20 to keep the read cost down, so the badge
+                says "20+" rather than a number it cannot know is exact. */}
+            {notifications.length >= 20 ? "20+" : notifications.length}
           </span>
         )}
       </button>

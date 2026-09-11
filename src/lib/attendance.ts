@@ -338,7 +338,19 @@ export function formatClock(date: Date | null | undefined): string {
 export function deriveStatus(minutes: number, hadActivity: boolean): AttendanceStatus {
   if (!hadActivity) return 'ABSENT';
   if (minutes >= FULL_DAY_MINUTES) return 'PRESENT';
-  if (minutes >= HALF_DAY_MINUTES) return 'HALF_DAY';
+
+  /*
+    **Everything short of a full day is a half day, including a day that was
+    opened and never closed.** `HALF_DAY_MINUTES` is deliberately *not* a floor
+    here: somebody who checked in and forgot to check out has `0` minutes
+    recorded, and grading that absent would punish them for the one thing the
+    system cannot observe. It is a threshold the reports use to describe a day,
+    not a cliff that decides one.
+
+    This used to read `if (minutes >= HALF_DAY_MINUTES) return 'HALF_DAY';
+    return 'HALF_DAY';` — two branches with the same answer, which looked like
+    a rule and was not one.
+  */
   return 'HALF_DAY';
 }
 
@@ -374,7 +386,7 @@ export const LOCATION_LABELS: Record<LocationVerdict, string> = {
 /** Present days ÷ working days, as a percentage. */
 export function attendanceRate(
   statuses: AttendanceStatus[]
-): { present: number; workingDays: number; percent: number } {
+): { present: number; workingDays: number; percent: number | null } {
   // Approved leave is not a working day the employee failed to attend, so it
   // leaves the denominator entirely rather than counting as an absence.
   const workingDays = statuses.filter(
@@ -392,6 +404,17 @@ export function attendanceRate(
   return {
     present,
     workingDays,
-    percent: workingDays > 0 ? Math.round((present / workingDays) * 1000) / 10 : 0,
+    /*
+      **No working days means there is no rate, not a rate of zero.**
+
+      Somebody on approved leave for a whole month, or a joiner whose first day
+      has not come, attended every day that was expected of them — which was
+      none. Reporting `0` reads as the opposite: a month they missed entirely.
+      The same rule `accountMovement` follows for a trend with no comparable
+      month, and for the same reason — a percentage over an empty denominator is
+      undefined, and inventing one puts a number on a screen that somebody could
+      act on.
+    */
+    percent: workingDays > 0 ? Math.round((present / workingDays) * 1000) / 10 : null,
   };
 }

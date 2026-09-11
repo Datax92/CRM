@@ -1,7 +1,18 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useCallback, useState, useEffect, useMemo } from 'react';
 import { collection, doc, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
-import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
+import { describeLiveError, type FirestoreTimestamp } from './useLeads';
+import { useLive } from './useLive';
+
+/**
+ * How many unread alerts the bell's panel holds.
+ *
+ * Twenty rather than a hundred: the panel shows the most recent few and the
+ * badge says "20+" beyond that. Measured on 2026-09-11 there were 291 unread,
+ * so the old cap pulled a hundred documents on **every screen** and displayed
+ * a handful of them.
+ */
+const NOTIFICATION_PAGE = 20;
 import { withinRange, type DateRange } from '@/lib/dates';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 
@@ -164,9 +175,6 @@ export function useFinancials(
    */
   scope?: { role?: string | null; uid?: string }
 ) {
-  const [deals, setDeals] = useState<DealRecord[] | null>(null);
-  const [expenses, setExpenses] = useState<ExpenseRecord[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const demoState = useDemoState();
 
   const teamOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
@@ -174,62 +182,42 @@ export function useFinancials(
   // so wait for it rather than firing one that cannot succeed.
   const ready = enabled && (scope?.role !== 'subadmin' || Boolean(teamOf));
 
-  useEffect(() => {
-    if (IS_DEMO || !ready) return;
-
-    const unsubDeals = onSnapshot(
+  /*
+    Both shared. `closedDeals` is read by the dashboard, the deals screen, the
+    directory and Reports; `expenses` by the dashboard and the income sheet.
+    One listener each, held briefly between screens — see `lib/liveCollection`.
+  */
+  const buildDeals = useCallback(
+    () =>
       teamOf
-        ? query(
-            collection(db, 'closedDeals'),
-            where('subAdminUid', '==', teamOf),
-            orderBy('enteredAt', 'desc'),
-            limit(1000)
-          )
+        ? query(collection(db, 'closedDeals'), where('subAdminUid', '==', teamOf), orderBy('enteredAt', 'desc'), limit(1000))
         : query(collection(db, 'closedDeals'), orderBy('enteredAt', 'desc'), limit(1000)),
-      (snap) => {
-        setDeals(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as DealRecord[]);
-      },
-      (err) => {
-        console.error('[useFinancials:deals]', err);
-        setDeals([]);
-        setError(describeFirestoreError(err));
-      }
-    );
+    [teamOf]
+  );
+  const dealsLive = useLive(`closedDeals:${teamOf ?? 'all'}`, buildDeals, !IS_DEMO && ready, describeLiveError);
 
-    // Expenses are the company's, not a team's — there is no scoped form of
-    // this query, so a sub admin simply does not read them.
-    if (teamOf) {
-      return () => unsubDeals();
-    }
+  // Expenses are the company's, not a team's — there is no scoped form of this
+  // query, so a sub admin simply does not read them.
+  const buildExpenses = useCallback(
+    () => query(collection(db, 'expenses'), orderBy('date', 'desc'), limit(1000)),
+    []
+  );
+  const expensesLive = useLive('expenses:byDate', buildExpenses, !IS_DEMO && ready && !teamOf, describeLiveError);
 
-    const unsubExpenses = onSnapshot(
-      query(collection(db, 'expenses'), orderBy('date', 'desc'), limit(1000)),
-      (snap) => {
-        setExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]);
-      },
-      (err) => {
-        console.error('[useFinancials:expenses]', err);
-        setExpenses([]);
-        setError(describeFirestoreError(err));
-      }
-    );
-
-    return () => {
-      unsubDeals();
-      unsubExpenses();
-    };
-  }, [ready, teamOf]);
+  const deals = dealsLive.rows as unknown as DealRecord[];
+  const expenses = expensesLive.rows as unknown as ExpenseRecord[];
+  const error = dealsLive.error ?? expensesLive.error;
 
   const allDeals = useMemo(() => {
     if (!enabled) return [];
-    if (!IS_DEMO) return deals ?? [];
+    if (!IS_DEMO) return deals;
     // Demo mode is scoped the same way, or it would demonstrate the leak the
     // live rules forbid.
     return teamOf ? demoState.deals.filter((deal) => deal.subAdminUid === teamOf) : demoState.deals;
   }, [enabled, deals, demoState.deals, teamOf]);
 
   const allExpenses = useMemo(
-    () => (!enabled || teamOf ? [] : IS_DEMO ? demoState.expenses : (expenses ?? [])),
+    () => (!enabled || teamOf ? [] : IS_DEMO ? demoState.expenses : expenses),
     [enabled, teamOf, expenses, demoState.expenses]
   );
 
@@ -267,7 +255,9 @@ export function useFinancials(
     expenses: expensesInRange,
     allDeals,
     totals,
-    loading: IS_DEMO ? false : enabled && (deals === null || expenses === null),
+    // A sub admin never reads expenses, so waiting on that listener would
+    // leave their screen loading for ever.
+    loading: IS_DEMO ? false : ready && (dealsLive.loading || (!teamOf && expensesLive.loading)),
     error: IS_DEMO ? null : enabled ? error : null,
   };
 }
@@ -390,19 +380,28 @@ export function useMyDeals(uid: string | undefined, range: DateRange) {
  * their position at the end.
  */
 export function useNotifications(uid: string | undefined, role: string | undefined, enabled = true) {
-  const [notifications, setNotifications] = useState<AppNotification[] | null>(null);
   const demoState = useDemoState();
 
-  // The subscription depends on who is reading, so it is keyed on that rather
-  // than on `enabled` alone — the old dependency list never re-subscribed when
-  // the uid or role arrived after auth resolved.
   const isAdmin = role === 'admin';
   const scopeKey = !enabled || !role || (!isAdmin && !uid) ? 'idle' : isAdmin ? 'admin' : `employee:${uid}`;
 
-  useEffect(() => {
-    if (IS_DEMO || scopeKey === 'idle') return;
+  /*
+    **Shared, and capped far lower than it was.**
 
-    const unsubscribe = onSnapshot(
+    Measured on 2026-09-11: 291 unread admin alerts, so the old `limit(100)`
+    pulled a hundred documents back **on every screen that draws the bell** —
+    which is all of them. That was the second-largest read on the whole app
+    after `leads`, and none of it was looked at: the bell shows a count and the
+    panel shows the most recent few.
+
+    Twenty is more than the panel can display without scrolling, and the count
+    beside the bell says "20+" past that rather than pretending to be exact.
+    An exact badge would cost a `count()` aggregation per screen — cheaper than
+    a hundred documents but not free, and nobody acts differently on 291 than
+    on "20+".
+  */
+  const build = useCallback(
+    () =>
       query(
         collection(db, 'notifications'),
         // Admins read the alerts addressed to the role; an employee reads the
@@ -411,21 +410,14 @@ export function useNotifications(uid: string | undefined, role: string | undefin
         scopeKey === 'admin' ? where('targetRole', '==', 'admin') : where('targetUid', '==', uid),
         where('readAt', '==', null),
         orderBy('createdAt', 'desc'),
-        limit(100)
+        limit(NOTIFICATION_PAGE)
       ),
-      (snap) => {
-        setNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as AppNotification[]);
-      },
-      (err) => {
-        console.error('[useNotifications]', err);
-        setNotifications([]);
-      }
-    );
-
-    return () => unsubscribe();
-    // `uid` and `role` are both encoded in `scopeKey`.
+    // `uid` is encoded in `scopeKey`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey]);
+    [scopeKey]
+  );
+
+  const live = useLive(`notifications:${scopeKey}`, build, !IS_DEMO && scopeKey !== 'idle', describeLiveError);
 
   if (IS_DEMO) {
     // Scoped exactly as the live query is — admin by role, employee by uid.
@@ -444,8 +436,8 @@ export function useNotifications(uid: string | undefined, role: string | undefin
   }
 
   return {
-    notifications: enabled ? (notifications ?? []) : [],
-    loading: enabled && notifications === null,
+    notifications: enabled ? (live.rows as unknown as AppNotification[]) : [],
+    loading: enabled && live.loading,
   };
 }
 

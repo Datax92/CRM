@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useMemo, useState, useEffect } from 'react';
 import { collection, doc, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
-import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
+import { useLive } from './useLive';
+import { describeLiveError } from './useLeads';
+import { type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import { normalizeJobTitle } from '@/lib/constants/roles';
 
@@ -60,11 +62,6 @@ export interface EmployeeData {
   createdAt?: FirestoreTimestamp;
 }
 
-interface EmployeeState {
-  employees: EmployeeData[];
-  error: string | null;
-}
-
 /**
  * The roster.
  *
@@ -91,7 +88,6 @@ export function useEmployees(
     companyWide?: boolean;
   }
 ) {
-  const [state, setState] = useState<EmployeeState | null>(null);
   const demoState = useDemoState();
 
   const teamOf =
@@ -102,61 +98,22 @@ export function useEmployees(
   const ready =
     enabled && (scope?.role !== 'subadmin' || scope.companyWide === true || Boolean(teamOf));
 
-  useEffect(() => {
-    if (IS_DEMO || !ready) return;
+  /*
+    **Shared.** `users` is read by the leads workspace, the directory, the
+    dashboard, the Data Bank and every assign control — one question, opened
+    five times. `useLive` gives them one listener and holds it briefly between
+    screens; see `lib/liveCollection` for the measurement that prompted it.
+  */
+  const build = useCallback(
+    () =>
+      teamOf
+        ? query(collection(db, 'users'), where('subAdminUid', '==', teamOf))
+        : query(collection(db, 'users'), where('role', '==', 'employee')),
+    [teamOf]
+  );
 
-    const q = teamOf
-      ? query(collection(db, 'users'), where('subAdminUid', '==', teamOf))
-      : query(collection(db, 'users'), where('role', '==', 'employee'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const employees = snapshot.docs.map((doc) => {
-          const raw = doc.data();
-          return {
-            uid: doc.id,
-            name: raw.name || raw.email || 'Unnamed',
-            email: raw.email || '—',
-            priority: typeof raw.priority === 'number' ? raw.priority : 99,
-            jobTitle: normalizeJobTitle(raw.jobTitle),
-            status: raw.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
-            phone: typeof raw.phone === 'string' ? raw.phone : null,
-            joinedAt: raw.joinedAt ?? null,
-            notes: typeof raw.notes === 'string' ? raw.notes : null,
-            // Absent means in the lane. Only an explicit `false` takes someone
-            // out of automatic distribution, so records predating the field
-            // keep receiving leads.
-            autoAssign: raw.autoAssign !== false,
-            targets: raw.targets as KpiTargets | undefined,
-            autoPriority: raw.autoPriority !== false,
-            accessRole: raw.role === 'subadmin' ? 'subadmin' : 'employee',
-            subAdminUid: typeof raw.subAdminUid === 'string' ? raw.subAdminUid : null,
-            managerKind: raw.managerKind === 'HR' ? 'HR' : 'SALES',
-            monthlySalary: typeof raw.monthlySalary === 'number' ? raw.monthlySalary : 0,
-            kpiScore: typeof raw.kpiScore === 'number' ? raw.kpiScore : undefined,
-            priorityRecalculatedAt: raw.priorityRecalculatedAt,
-            createdAt: raw.createdAt,
-          } as EmployeeData;
-        });
-
-        // Active first, then by rotation priority, then by name.
-        employees.sort((a, b) => {
-          if (a.status !== b.status) return a.status === 'ACTIVE' ? -1 : 1;
-          if (a.priority !== b.priority) return a.priority - b.priority;
-          return a.name.localeCompare(b.name);
-        });
-
-        setState({ employees, error: null });
-      },
-      (err) => {
-        console.error('[useEmployees]', err);
-        setState({ employees: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [ready, teamOf]);
+  const live = useLive(`users:${teamOf ?? 'employees'}`, build, !IS_DEMO && ready, describeLiveError);
+  const employees = useMemo(() => live.rows.map(readEmployee), [live.rows]);
 
   if (IS_DEMO) {
     // The live query is `role == "employee"`, so the demo roster must exclude
@@ -169,10 +126,46 @@ export function useEmployees(
   }
 
   return {
-    employees: ready ? (state?.employees ?? []) : [],
-    loading: ready && state === null,
-    error: ready ? (state?.error ?? null) : null,
+    employees: ready ? employees : [],
+    loading: ready && live.loading,
+    error: ready ? live.error : null,
   };
+}
+
+/**
+ * One stored `users` document, made legible.
+ *
+ * Hoisted out of the listener so `useEmployees` and `useSubAdmins` read a
+ * person the same way. **This is the mapper this project has shipped six bugs
+ * in** — a field typed on the interface and never taken out of the snapshot —
+ * and two copies of it was how five of them happened. One copy cannot disagree
+ * with itself.
+ */
+function readEmployee(raw: Record<string, unknown>): EmployeeData {
+  return {
+    name: raw.name || raw.email || 'Unnamed',
+    email: raw.email || '—',
+    priority: typeof raw.priority === 'number' ? raw.priority : 99,
+    jobTitle: normalizeJobTitle(raw.jobTitle),
+    status: raw.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+    phone: typeof raw.phone === 'string' ? raw.phone : null,
+    joinedAt: raw.joinedAt ?? null,
+    notes: typeof raw.notes === 'string' ? raw.notes : null,
+    // Absent means in the lane. Only an explicit `false` takes someone
+    // out of automatic distribution, so records predating the field
+    // keep receiving leads.
+    autoAssign: raw.autoAssign !== false,
+    targets: raw.targets as KpiTargets | undefined,
+    autoPriority: raw.autoPriority !== false,
+    accessRole: raw.role === 'subadmin' ? 'subadmin' : 'employee',
+    subAdminUid: typeof raw.subAdminUid === 'string' ? raw.subAdminUid : null,
+    managerKind: raw.managerKind === 'HR' ? 'HR' : 'SALES',
+    monthlySalary: typeof raw.monthlySalary === 'number' ? raw.monthlySalary : 0,
+    kpiScore: typeof raw.kpiScore === 'number' ? raw.kpiScore : undefined,
+    priorityRecalculatedAt: raw.priorityRecalculatedAt,
+    createdAt: raw.createdAt,
+    uid: String(raw.id ?? ''),
+  } as EmployeeData;
 }
 
 /**
@@ -182,57 +175,34 @@ export function useEmployees(
  * a sub admin listing their peers is exactly the visibility §22 forbids.
  */
 export function useSubAdmins(enabled = true) {
-  const [state, setState] = useState<EmployeeState | null>(null);
   const demoState = useDemoState();
 
-  useEffect(() => {
-    if (IS_DEMO || !enabled) return;
+  /*
+    Shared with every other reader of this query — the leads assign control, the
+    Data Bank hand-off, the directory and the marketing income form all ask for
+    it, and each used to open its own listener.
+  */
+  const build = useCallback(
+    () => query(collection(db, 'users'), where('role', '==', 'subadmin')),
+    []
+  );
+  const live = useLive('users:subadmins', build, !IS_DEMO && enabled, describeLiveError);
 
-    const unsubscribe = onSnapshot(
-      query(collection(db, 'users'), where('role', '==', 'subadmin')),
-      (snapshot) => {
-        const employees = snapshot.docs.map((doc) => {
-          const raw = doc.data();
-          return {
-            uid: doc.id,
-            name: raw.name || raw.email || 'Unnamed',
-            email: raw.email || '—',
-            priority: typeof raw.priority === 'number' ? raw.priority : 99,
-            jobTitle: normalizeJobTitle(raw.jobTitle),
-            status: raw.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
-            phone: typeof raw.phone === 'string' ? raw.phone : null,
-            joinedAt: raw.joinedAt ?? null,
-            notes: typeof raw.notes === 'string' ? raw.notes : null,
-            autoAssign: raw.autoAssign !== false,
-            targets: raw.targets as KpiTargets | undefined,
-            autoPriority: raw.autoPriority !== false,
-            accessRole: 'subadmin',
-            subAdminUid: null,
-            // Sales or HR. **Read out of the snapshot, not defaulted** — this
-            // mapper omitted the field entirely, so every manager arrived as
-            // `SALES` whatever was stored: their edit form opened on Sales, and
-            // saving anything at all about an HR manager wrote Sales back over
-            // them. Same bug class as `phone`/`monthlySalary`/the payroll
-            // fields — check the mapper, not just the type (CLAUDE.md).
-            managerKind: raw.managerKind === 'HR' ? 'HR' : 'SALES',
-            monthlySalary: typeof raw.monthlySalary === 'number' ? raw.monthlySalary : 0,
-            salaryAccess: raw.salaryAccess === true,
-            kpiScore: typeof raw.kpiScore === 'number' ? raw.kpiScore : undefined,
-            createdAt: raw.createdAt,
-          } as EmployeeData;
-        });
-
-        employees.sort((a, b) => a.name.localeCompare(b.name));
-        setState({ employees, error: null });
-      },
-      (err) => {
-        console.error('[useSubAdmins]', err);
-        setState({ employees: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [enabled]);
+  const subAdmins = useMemo(() => {
+    /*
+      **`accessRole` and `subAdminUid` are forced, not read.** This query is
+      `role == 'subadmin'` by construction, and a manager reports to the admin —
+      so taking either off the document would let one bad record put a manager
+      in somebody's team.
+    */
+    const rows = live.rows.map((raw) => ({
+      ...readEmployee(raw),
+      accessRole: 'subadmin' as const,
+      subAdminUid: null,
+    }));
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
+  }, [live.rows]);
 
   if (IS_DEMO) {
     return {
@@ -243,9 +213,9 @@ export function useSubAdmins(enabled = true) {
   }
 
   return {
-    subAdmins: enabled ? (state?.employees ?? []) : [],
-    loading: enabled && state === null,
-    error: enabled ? (state?.error ?? null) : null,
+    subAdmins: enabled ? subAdmins : [],
+    loading: enabled && live.loading,
+    error: enabled ? live.error : null,
   };
 }
 

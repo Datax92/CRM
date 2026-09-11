@@ -12,11 +12,14 @@
  * document, so neither query has to carry a scope. See `firestore.rules`.
  */
 
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { collection, query, orderBy, limit, where, type Query, type DocumentData } from 'firebase/firestore';
-import { subscribeLive, liveState, SERVER_STATE } from '@/lib/liveCollection';
+import { useCallback, useMemo } from 'react';
+import { collection, query, orderBy, limit, where } from 'firebase/firestore';
+import { useLive } from './useLive';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
+
+/** Stable across renders, so it never resubscribes anything. */
+const describe = (error: unknown) => describeFirestoreError(error as { code?: string; message?: string });
 import {
   balancesFor,
   summarize,
@@ -46,35 +49,6 @@ export interface TransactionDoc extends Omit<LedgerTransaction, 'id'> {
 /** Guards against an unbounded read once the ledger has years in it. */
 const TRANSACTION_PAGE = 2000;
 
-/**
- * One shared subscription per collection, joined rather than opened.
- *
- * Every screen in this section wants the same two lists, and each used to open
- * its own listener — so tabbing between Office Expenses, StateLife and Committee
- * paid for the whole transaction collection once per visit. `useLive` joins the
- * subscription that already exists, and `lib/liveCollection` keeps it alive for
- * a minute after the last screen closes, which makes moving around the section
- * free. See that module for why.
- */
-function useLive(key: string, build: () => Query<DocumentData>, enabled: boolean) {
-  /*
-    **`build` must be stable** — every call site wraps it in `useCallback`.
-    An unstable one would resubscribe on every render and undo the whole point
-    of sharing, so it is a dependency here rather than something smuggled past
-    the linter in a ref.
-  */
-  const subscribe = useCallback(
-    (notify: () => void) => {
-      if (!enabled) return () => {};
-      return subscribeLive(key, build, (error) => describeFirestoreError(error as { code?: string; message?: string }), notify);
-    },
-    [key, enabled, build]
-  );
-
-  const read = useCallback(() => (enabled ? liveState(key) : SERVER_STATE), [key, enabled]);
-  return useSyncExternalStore(subscribe, read, () => SERVER_STATE);
-}
-
 export function useLedger(enabled = true) {
   const buildAccounts = useCallback(() => query(collection(db, 'accounts'), orderBy('name')), []);
   const buildTxns = useCallback(
@@ -82,8 +56,8 @@ export function useLedger(enabled = true) {
     []
   );
 
-  const accountsLive = useLive('accounts', buildAccounts, enabled);
-  const txnsLive = useLive('transactions', buildTxns, enabled);
+  const accountsLive = useLive('accounts', buildAccounts, enabled, describe);
+  const txnsLive = useLive('transactions', buildTxns, enabled, describe);
 
   const list = useMemo(() => accountsLive.rows as unknown as AccountDoc[], [accountsLive.rows]);
   const rows = useMemo(() => txnsLive.rows as unknown as TransactionDoc[], [txnsLive.rows]);
@@ -119,7 +93,7 @@ export function useMyPersonalExpenses(uid: string | undefined, enabled = true) {
     () => query(collection(db, 'personalExpenses'), where('employeeUid', '==', uid)),
     [uid]
   );
-  const live = useLive(`personalExpenses:${uid ?? ''}`, build, enabled && Boolean(uid));
+  const live = useLive(`personalExpenses:${uid ?? ''}`, build, enabled && Boolean(uid), describe);
   return { records: live.rows as Record<string, unknown>[], loading: enabled && Boolean(uid) && live.loading };
 }
 
@@ -129,7 +103,7 @@ export function usePersonalExpenses(enabled = true) {
     () => query(collection(db, 'personalExpenses'), orderBy('dayKey', 'desc'), limit(1000)),
     []
   );
-  const live = useLive('personalExpenses:all', build, enabled);
+  const live = useLive('personalExpenses:all', build, enabled, describe);
   return { records: live.rows as Record<string, unknown>[], loading: enabled && live.loading };
 }
 
@@ -139,6 +113,6 @@ export function useFinanceCollection(name: string, enabled = true) {
     () => query(collection(db, name), orderBy('dayKey', 'desc'), limit(2000)),
     [name]
   );
-  const live = useLive(`finance:${name}`, build, enabled);
+  const live = useLive(`finance:${name}`, build, enabled, describe);
   return { records: live.rows as Record<string, unknown>[], loading: enabled && live.loading };
 }

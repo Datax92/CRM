@@ -398,6 +398,31 @@ export async function punchAttendance(
           lastIp: ip || null,
           lastNetworkName: reportedName || null,
           punchedBy: "SELF",
+          /*
+            **Turning up supersedes the system's guess that you did not.**
+
+            The absence sweep runs at the cutoff and writes
+            `overrideStatus: "ABSENT"` on everybody who has not checked in. A
+            punch afterwards merges onto that document — and used to leave the
+            override sitting there, so somebody who arrived at 13:02 and worked
+            the afternoon read **Absent for ever**. Measured against the live
+            project on 2026-09-11: two such days, one where the employee had
+            checked in *and* out.
+
+            Only the sweep's own conclusion is cleared. `markedAbsentBy` is
+            exactly the distinction the sweep records it for — an override HR
+            typed is a person's decision about the day and must survive a punch,
+            or an employee could undo their manager by tapping a button.
+          */
+          ...(existing?.markedAbsentBy === "SYSTEM"
+            ? {
+                overrideStatus: FieldValue.delete(),
+                markedAbsentBy: FieldValue.delete(),
+                markedAbsentAt: FieldValue.delete(),
+                absenceCutoff: FieldValue.delete(),
+                absenceSupersededAt: FieldValue.serverTimestamp(),
+              }
+            : null),
           updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
@@ -1045,7 +1070,16 @@ export async function sweepAbsentees(dayKey?: string): Promise<AbsenceSweepResul
     adminDb.collection("attendance").where("dayKey", "==", day).get(),
   ]);
 
-  const recorded = new Set(existing.docs.map((doc) => doc.data().uid as string));
+  /*
+    **Keyed on the document id, not on the `uid` field.** The id is
+    `{uid}_{dayKey}` and is always right; the field is not — one live record
+    (`…_2026-08-26`) carries neither `uid` nor `dayKey`. Reading the field
+    would leave that day looking unrecorded, and the `set` below would then
+    replace whatever the document did hold.
+  */
+  const recorded = new Set(
+    existing.docs.map((doc) => doc.id.slice(0, doc.id.lastIndexOf("_")))
+  );
 
   let marked = 0;
   let skipped = 0;
@@ -1058,6 +1092,9 @@ export async function sweepAbsentees(dayKey?: string): Promise<AbsenceSweepResul
       continue;
     }
 
+    // Merged, not replaced. The skip above means this should only ever hit a
+    // document that does not exist — but a `set` that would destroy a day's
+    // punches if that were ever wrong is not worth the two characters saved.
     batch.set(adminDb.collection("attendance").doc(attendanceDocId(doc.id, day)), {
       uid: doc.id,
       email: employee.email ?? null,
@@ -1070,7 +1107,7 @@ export async function sweepAbsentees(dayKey?: string): Promise<AbsenceSweepResul
       markedAbsentAt: FieldValue.serverTimestamp(),
       absenceCutoff: policy.absentCutoff,
       updatedAt: FieldValue.serverTimestamp(),
-    });
+    }, { merge: true });
 
     batch.set(adminDb.collection("notifications").doc(), {
       type: "ATTENDANCE_ABSENT",

@@ -117,7 +117,15 @@ export function MobileDataBankFolders() {
       if (res.ok) {
         setBanner({
           tone: "success",
-          text: `${folder.name} deleted, along with ${res.data.deleted.toLocaleString()} records.`,
+          /*
+            A big folder is removed over more than one run so a single press
+            cannot spend the day's delete quota and stop the whole app. The
+            folder is hidden either way, so this says what actually happened
+            rather than claiming it is finished when it is not.
+          */
+          text: res.data.done
+            ? `${folder.name} deleted, along with ${res.data.deleted.toLocaleString()} records.`
+            : `${folder.name} is gone from your list. ${res.data.deleted.toLocaleString()} records removed and ${res.data.remaining.toLocaleString()} still to go — press delete again to finish, or leave it until tomorrow so today's quota is not spent.`,
         });
         setConfirming(null);
       } else {

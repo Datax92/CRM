@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { collection, doc, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
+import { useLive } from './useLive';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import { QUOTA_MESSAGE, isQuotaExhausted } from '@/lib/quotaError';
 import type { LeadStatus } from '@/lib/leadStatus';
@@ -179,12 +180,6 @@ export interface AuditEventRecord {
 /** Guards against unbounded reads on the admin dashboard. */
 const LEAD_PAGE_SIZE = 500;
 
-interface LeadState {
-  key: string;
-  leads: Lead[];
-  error: string | null;
-}
-
 /**
  * Every lead the signed-in person is entitled to see.
  *
@@ -211,7 +206,6 @@ export function useLeads(
    */
   companyWide = false
 ) {
-  const [state, setState] = useState<LeadState | null>(null);
   const demoState = useDemoState();
 
   // The admin and an HR manager ask the same question of Firestore, so they
@@ -220,40 +214,25 @@ export function useLeads(
   const wholePipeline = role === 'admin' || (role === 'subadmin' && companyWide);
   const key = !role || (!wholePipeline && !uid) ? 'idle' : wholePipeline ? 'all' : `${role}:${uid}`;
 
-  useEffect(() => {
-    if (IS_DEMO || key === 'idle') return;
-
+  /*
+    **Shared, because `leads` is the most expensive thing this app reads and it
+    is read everywhere.** 296 documents, opened by the dashboard, the leads
+    workspace, the directory and the deals screen — four separate listeners for
+    one question. `useLive` gives them one, and holds it briefly after the last
+    screen closes so moving between them costs nothing. See `lib/liveCollection`.
+  */
+  const build = useCallback(() => {
     const leadsRef = collection(db, 'leads');
     const scopeField = role === 'subadmin' ? 'subAdminUid' : 'assignedUserId';
-    const q =
-      key === 'all'
-        ? query(leadsRef, orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE))
-        : query(
-            leadsRef,
-            where(scopeField, '==', uid),
-            orderBy('createdAt', 'desc'),
-            limit(LEAD_PAGE_SIZE)
-          );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        setState({
-          key,
-          leads: snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Lead[],
-          error: null,
-        });
-      },
-      (err) => {
-        console.error('[useLeads]', err);
-        setState({ key, leads: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-    // `uid` is encoded in `key`, so the key alone identifies the subscription.
+    return key === 'all'
+      ? query(leadsRef, orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE))
+      : query(leadsRef, where(scopeField, '==', uid), orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE));
+    // `uid` and `role` are both encoded in `key`, so the key alone identifies
+    // the query — depending on them as well would rebuild it every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  const live = useLive(`leads:${key}`, build, !IS_DEMO && key !== 'idle', describeLiveError);
 
   if (IS_DEMO) {
     const leads = wholePipeline
@@ -264,12 +243,10 @@ export function useLeads(
     return { leads, loading: false, error: null };
   }
 
-  const current = state?.key === key ? state : null;
-
   return {
-    leads: current?.leads ?? [],
-    loading: key !== 'idle' && current === null,
-    error: current?.error ?? null,
+    leads: live.rows as unknown as Lead[],
+    loading: key !== 'idle' && live.loading,
+    error: live.error,
   };
 }
 
@@ -407,3 +384,12 @@ export function describeFirestoreError(err: { code?: string; message?: string })
   }
   return err?.message ?? 'Could not load data.';
 }
+
+/**
+ * The same describer, with a stable identity.
+ *
+ * `useLive` takes it as a dependency, so a fresh closure per render would
+ * resubscribe every render and cost exactly what the sharing is there to save.
+ */
+export const describeLiveError = (error: unknown): string =>
+  describeFirestoreError(error as { code?: string; message?: string });

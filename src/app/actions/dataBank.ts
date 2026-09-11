@@ -29,6 +29,7 @@ import {
   MAX_FIELDS_PER_FOLDER,
   PROMOTED_FOLDER_ID,
   WRITE_BATCH_SIZE,
+  DELETE_BUDGET,
   RECORD_STATUSES,
   type ColumnMap,
   type DataBankField,
@@ -220,10 +221,59 @@ export async function updateDataBankFolder(
  * halfway leaves a folder with fewer rows rather than orphaned rows with no
  * folder — which would be invisible in the UI and impossible to clean up.
  */
+/**
+ * How much deleting a folder would cost, before anybody presses the button.
+ *
+ * **One read, not one per record.** A `count()` aggregation is billed as a
+ * single document read for up to a thousand matches, so asking "how big is
+ * this" is free next to the answer. That is what makes it worth asking every
+ * time rather than only when somebody is suspicious.
+ */
+export async function countFolderRecords(
+  token: string,
+  folderId: string
+): Promise<ActionResult<{ live: number; promoted: number; total: number; withinOneRun: boolean }>> {
+  return runAction("countFolderRecords", async () => {
+    await requireManager(token);
+    const [live, promoted] = await Promise.all([
+      adminDb.collection(RECORDS).where("folderId", "==", folderId).count().get(),
+      adminDb.collection(RECORDS).where("promotedFromFolderId", "==", folderId).count().get(),
+    ]);
+    const total = live.data().count + promoted.data().count;
+    return {
+      live: live.data().count,
+      promoted: promoted.data().count,
+      total,
+      withinOneRun: total <= DELETE_BUDGET,
+    };
+  });
+}
+
+/**
+ * Deletes a folder and its records, **bounded so it cannot take the day down**.
+ *
+ * The free plan meters deletes at 20,000 a day and **the whole app stops when
+ * that runs out** — every write fails, not just this one. A folder of 5,500
+ * rows used to spend a quarter of the budget in a single press, and two of them
+ * took the business offline until midnight Pacific. That is the failure this
+ * bound exists to prevent.
+ *
+ * So one run removes at most `DELETE_BUDGET` documents and then **stops and
+ * says so**. The folder is marked `deletionPending` and disappears from every
+ * screen immediately — from the reader's point of view it is gone — and the
+ * next run finishes it. Resumable rather than atomic is the right trade here:
+ * a half-deleted folder leaves unreachable rows, which is untidy; a spent
+ * quota leaves a company that cannot record a lead, which is not.
+ *
+ * **The cost is one read plus one delete per document and that is a floor**,
+ * not a setting: one record is one document. The only way past it is fewer,
+ * larger documents — see the note on bucketing in CLAUDE.md — which is a
+ * storage rewrite and the owner's call.
+ */
 export async function deleteDataBankFolder(
   token: string,
   folderId: string
-): Promise<ActionResult<{ deleted: number }>> {
+): Promise<ActionResult<{ deleted: number; remaining: number; done: boolean }>> {
   return runAction("deleteDataBankFolder", async () => {
     const auth = await requireManager(token);
 
@@ -238,6 +288,8 @@ export async function deleteDataBankFolder(
     }
 
     let deleted = 0;
+    let hitTheCeiling = false;
+
     // Two passes: the folder's live rows, then any promoted row whose
     // tombstone outlived its own delete (see `PROMOTED_FOLDER_ID`). Without
     // the second pass those documents become unreachable — their `folderId`
@@ -246,11 +298,12 @@ export async function deleteDataBankFolder(
       ["folderId", folderId],
       ["promotedFromFolderId", folderId],
     ] as const) {
-      for (;;) {
+      while (deleted < DELETE_BUDGET) {
         const page = await adminDb
           .collection(RECORDS)
           .where(field, "==", value)
-          .limit(WRITE_BATCH_SIZE)
+          // Never overshoot the budget on the last page.
+          .limit(Math.min(WRITE_BATCH_SIZE, DELETE_BUDGET - deleted))
           .get();
         if (page.empty) break;
 
@@ -259,10 +312,36 @@ export async function deleteDataBankFolder(
         await batch.commit();
         deleted += page.size;
       }
+      if (deleted >= DELETE_BUDGET) {
+        hitTheCeiling = true;
+        break;
+      }
     }
 
-    await adminDb.collection(FOLDERS).doc(folderId).delete();
-    return { deleted };
+    if (!hitTheCeiling) {
+      await adminDb.collection(FOLDERS).doc(folderId).delete();
+      return { deleted, remaining: 0, done: true };
+    }
+
+    /*
+      Still rows left. The folder is **marked rather than deleted**: its own
+      document is what the next run needs to find the rest, and a reader must
+      not see a folder that is on its way out — so every surface filters
+      `deletionPending` out and it is gone from their point of view.
+    */
+    const [live, promoted] = await Promise.all([
+      adminDb.collection(RECORDS).where("folderId", "==", folderId).count().get(),
+      adminDb.collection(RECORDS).where("promotedFromFolderId", "==", folderId).count().get(),
+    ]);
+    const remaining = live.data().count + promoted.data().count;
+
+    await adminDb.collection(FOLDERS).doc(folderId).update({
+      deletionPending: true,
+      deletionRemaining: remaining,
+      deletionUpdatedAt: FieldValue.serverTimestamp(),
+    });
+
+    return { deleted, remaining, done: false };
   });
 }
 

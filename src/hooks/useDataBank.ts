@@ -110,7 +110,17 @@ export function useDataBankFolders(
         : query(collection(db, "dataBankFolders"), orderBy("name")),
       (snapshot) => {
         setState({
-          folders: snapshot.docs.map((snap) => folderFrom(snap.id, snap.data())),
+          /*
+            **A folder part-way through deletion is gone from the reader's
+            point of view.** A big one is removed over more than one run so a
+            single press cannot spend the day's delete quota and stop the whole
+            app; filtering here is what makes that invisible rather than
+            confusing. Its own document survives because the next run needs it
+            to find the rest.
+          */
+          folders: snapshot.docs
+            .filter((snap) => snap.data().deletionPending !== true)
+            .map((snap) => folderFrom(snap.id, snap.data())),
           error: null,
         });
       },
