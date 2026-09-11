@@ -22,7 +22,7 @@ import { usePagination } from "@/hooks/usePagination";
 import { MobileLeads } from "@/components/mobile/MobileLeads";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useLeads, type Lead } from "@/hooks/useLeads";
-import { useEmployees } from "@/hooks/useEmployees";
+import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { resolveRange, formatBusinessDateTime } from "@/lib/dates";
 import {
   LEAD_FILTER_LABELS,
@@ -155,6 +155,15 @@ export function LeadsWorkspace({
     uid: user?.uid,
     companyWide,
   });
+
+  /*
+    **Managers are assignable, and only the admin and HR may do it.** Read only
+    for them — a Sales manager subscribing to the roster of their peers is the
+    cross-team visibility §22 forbids, and the list would be offered to nobody
+    anyway since the server refuses it.
+  */
+  const canAssignSideways = workspaceRole === "admin" || companyWide;
+  const { subAdmins } = useSubAdmins(canAssignSideways && roleReady);
 
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -552,6 +561,7 @@ export function LeadsWorkspace({
         <AssignModal
           lead={assigningLead}
           employees={employees}
+          managers={canAssignSideways ? subAdmins : []}
           onClose={() => setAssigningLead(null)}
           getIdToken={getIdToken}
           runAction={async (fn, success) => {

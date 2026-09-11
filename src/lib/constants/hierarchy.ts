@@ -121,31 +121,73 @@ export function isHrManager(role: unknown, managerKind: unknown): boolean {
 }
 
 /**
- * Whether `actor` may hand a lead to `employee`.
+ * Whether `actor` may hand a lead to `recipient`.
  *
  * The one place this question is answered. `assignLead`, `reassignLeadManual`
- * and `assignLeadsBulk` all ask it, and the two read hooks build their
- * assignment list from the same distinction — three call sites restating
- * "unless they are HR" is how one of them ends up not saying it.
+ * and `assignLeadsBulk` all ask it, and the read hooks build their assignment
+ * list from the same distinction — three call sites restating "unless they are
+ * HR" is how one of them ends up not saying it.
  *
  * | actor | reach |
  * |---|---|
- * | admin | anybody |
- * | HR manager | anybody — their reach is the company (§13) |
- * | Sales manager | their own team: `employee.subAdminUid === actor.uid` |
+ * | admin | anybody, employee or manager |
+ * | HR manager | anybody, employee or manager — their reach is the company (§13) |
+ * | Sales manager | the employees on their own team, and no manager |
  * | employee | nobody |
  *
- * It answers *reach* only. Whether the recipient exists, is an employee rather
- * than a manager, and is still active are separate checks the actions make
- * against the document itself — this function is given the link, not the
- * person's whole state, precisely so it cannot be mistaken for all of them.
+ * **A manager can be given a lead, and only by the admin or HR.** A manager
+ * works their own leads — `canWorkLead` has always allowed it, and a Data Bank
+ * promotion into their Client section already produces one — so there was never
+ * a reason the pipeline could not hand them one directly, except that nothing
+ * offered it. What stays closed is a Sales manager handing work sideways to
+ * another manager: that is cross-team distribution, which is the admin's and
+ * HR's to do.
+ *
+ * It answers *reach* only. Whether the recipient exists and is still active are
+ * separate checks the actions make against the document itself — this function
+ * is given the link and the role, not the person's whole state, precisely so it
+ * cannot be mistaken for all of them.
  */
 export function canAssignLeadTo(
   actor: { role: unknown; uid: string; managerKind?: unknown },
-  employee: { subAdminUid?: string | null }
+  recipient: { subAdminUid?: string | null; role?: unknown }
 ): boolean {
   if (actor.role === 'admin') return true;
   if (actor.role !== 'subadmin') return false;
   if (isHrManager(actor.role, actor.managerKind)) return true;
-  return employee.subAdminUid === actor.uid;
+
+  /*
+    A Sales manager's reach is their own team, and a manager is not on it.
+
+    The role test is **belt and braces, not load-bearing**: a manager carries no
+    `subAdminUid`, so the comparison below would refuse them anyway. It is
+    spelled out because the next person to widen this function should have to
+    delete a line that says "no manager" rather than discover the rule by
+    accident in a field that happens to be empty.
+
+    `Boolean(actor.uid)` is load-bearing: with an actor whose uid is somehow
+    missing, `undefined === undefined` would say yes to every recipient whose
+    own link is unset.
+  */
+  if (recipient.role === 'subadmin' || recipient.role === 'admin') return false;
+  return Boolean(actor.uid) && recipient.subAdminUid === actor.uid;
+}
+
+/**
+ * Which sub admin a lead belongs to once `recipient` is working it.
+ *
+ * For an employee it is their manager, as it always was. **For a manager it is
+ * themselves**, and that is not a nicety: a manager's leads query is
+ * `where('subAdminUid','==',me)` and the Security Rule checks exactly that
+ * clause, so a lead handed to a manager with somebody else's uid on it — or
+ * with none — is one they are refused and cannot see. The screen would render
+ * empty, which is this project's most-repeated symptom.
+ */
+export function owningSubAdminFor(recipient: {
+  uid?: string | null;
+  role?: unknown;
+  subAdminUid?: string | null;
+}): string | null {
+  if (recipient.role === 'subadmin') return recipient.uid ?? null;
+  return recipient.subAdminUid ?? null;
 }

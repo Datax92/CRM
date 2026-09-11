@@ -22,7 +22,7 @@ import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useLeads, type Lead } from "@/hooks/useLeads";
-import { useEmployees } from "@/hooks/useEmployees";
+import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
 import { resolveRange } from "@/lib/dates";
 import {
@@ -136,6 +136,11 @@ export function MobileLeads({
     () => (scope ? allLeads.filter((lead) => scope.leadIds.has(lead.id)) : allLeads),
     [allLeads, scope]
   );
+  // Managers are assignable, and only the admin and HR may do it — the same
+  // rule the desktop applies, from the same predicate.
+  const canAssignSideways = workspaceRole === "admin" || companyWide;
+  const { subAdmins } = useSubAdmins(canAssignSideways && roleReady);
+
   const { employees } = useEmployees(isManager && roleReady, {
     role: workspaceRole,
     uid: user?.uid,
@@ -591,6 +596,7 @@ export function MobileLeads({
         <AssignModal
           lead={assigning}
           employees={employees}
+          managers={canAssignSideways ? subAdmins : []}
           onClose={() => setAssigning(null)}
           getIdToken={getIdToken}
           runAction={async (fn, success) => {

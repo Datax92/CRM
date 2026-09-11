@@ -5,6 +5,7 @@ import {
   canAssignLeadTo,
   isHrManager,
   normalizeManagerKind,
+  owningSubAdminFor,
 } from './hierarchy.ts';
 
 /*
@@ -67,4 +68,71 @@ test('isHrManager is the company-wide test the whole app shares', () => {
   assert.equal(isHrManager('subadmin', 'HR'), true);
   assert.equal(isHrManager('subadmin', 'SALES'), false);
   assert.equal(isHrManager('employee', 'HR'), false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Handing a lead to a manager                                                 */
+/* -------------------------------------------------------------------------- */
+
+const hr = { role: 'subadmin', uid: 'hr1', managerKind: 'HR' };
+const sales = { role: 'subadmin', uid: 'sales1', managerKind: 'SALES' };
+const admin = { role: 'admin', uid: 'admin1' };
+
+test('HR may hand a lead to another manager', () => {
+  assert.equal(canAssignLeadTo(hr, { role: 'subadmin', subAdminUid: null }), true);
+});
+
+test('the admin may hand a lead to a manager', () => {
+  assert.equal(canAssignLeadTo(admin, { role: 'subadmin', subAdminUid: null }), true);
+});
+
+test('a Sales manager may not hand a lead to another manager', () => {
+  // Cross-team distribution is the admin's and HR's to do.
+  assert.equal(canAssignLeadTo(sales, { role: 'subadmin', subAdminUid: null }), false);
+});
+
+test('a Sales manager may not hand a lead to themselves through this route', () => {
+  // The trap: a manager's own `subAdminUid` is normally absent, and so is an
+  // unmanaged employee's — `undefined === undefined` would have said yes.
+  assert.equal(canAssignLeadTo(sales, { role: 'subadmin', subAdminUid: undefined }), false);
+});
+
+test("a Sales manager still reaches their own team, and nobody else's", () => {
+  assert.equal(canAssignLeadTo(sales, { role: 'employee', subAdminUid: 'sales1' }), true);
+  assert.equal(canAssignLeadTo(sales, { role: 'employee', subAdminUid: 'sales2' }), false);
+});
+
+test("an employee with no manager is not everybody's to assign", () => {
+  // Both sides absent used to compare equal. An unmanaged employee belongs to
+  // the admin, not to whichever manager happens to ask.
+  assert.equal(canAssignLeadTo(sales, { role: 'employee', subAdminUid: null }), false);
+  assert.equal(canAssignLeadTo(sales, { role: 'employee' }), false);
+  assert.equal(canAssignLeadTo(admin, { role: 'employee', subAdminUid: null }), true);
+  assert.equal(canAssignLeadTo(hr, { role: 'employee', subAdminUid: null }), true);
+});
+
+test('an employee may still assign to nobody', () => {
+  assert.equal(canAssignLeadTo({ role: 'employee', uid: 'e1' }, { role: 'employee', subAdminUid: 'e1' }), false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Which manager the lead files under                                          */
+/* -------------------------------------------------------------------------- */
+
+test("an employee's lead files under their manager", () => {
+  assert.equal(owningSubAdminFor({ uid: 'e1', role: 'employee', subAdminUid: 'sales1' }), 'sales1');
+});
+
+test("a manager's lead files under themselves", () => {
+  // Their leads query is `where('subAdminUid','==',me)` and the Security Rule
+  // checks that clause, so anything else is a lead they cannot see.
+  assert.equal(owningSubAdminFor({ uid: 'mgr1', role: 'subadmin', subAdminUid: null }), 'mgr1');
+});
+
+test('a manager who somehow carries another uid still files under themselves', () => {
+  assert.equal(owningSubAdminFor({ uid: 'mgr1', role: 'subadmin', subAdminUid: 'mgr2' }), 'mgr1');
+});
+
+test('an unmanaged employee files under nobody, which means the admin', () => {
+  assert.equal(owningSubAdminFor({ uid: 'e9', role: 'employee' }), null);
 });

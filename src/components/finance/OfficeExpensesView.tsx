@@ -142,9 +142,22 @@ export function stamp(iso: string): string {
   }).format(date);
 }
 
-export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
-  const { getIdToken } = useAuth();
-  const { expenses, loading, error } = useOfficeExpenses(true);
+export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean }) {
+  const { getIdToken, user, role } = useAuth();
+  /*
+    **The role decides, not the route.** `/admin/accounts/office-expenses`
+    renders this with `isAdmin` hardcoded, and an HR manager may open it — which
+    would run the unscoped query their rule refuses and leave the screen empty.
+    The prop is a ceiling, never the answer: both have to agree.
+  */
+  const isAdmin = routeIsAdmin && role === "admin";
+  /*
+    **HR reads only what HR recorded; the admin reads everything.** The clause
+    is in the query because a Firestore *list* is checked against the rules
+    before it runs — an unscoped read here is refused outright rather than
+    trimmed, and the screen would render empty.
+  */
+  const { expenses, loading, error } = useOfficeExpenses(true, isAdmin ? null : user?.uid ?? null);
   // Mobile is the primary surface here: the filters stack, the two header
   // actions go full width, and every action stays present rather than
   // being dropped for space.
@@ -311,15 +324,28 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
     const { paid, settled } = readPaid(expense);
     const actions: RowAction[] = [];
 
-    if (expense.status !== "APPROVED") {
+    /*
+      **Approving is the admin's.** For HR the two buttons are *absent* rather
+      than present and failing — offering a control whose only outcome is
+      "That action is for administrators" is worse than not offering it. The
+      server refuses it either way; this is what the screen says about it.
+    */
+    if (isAdmin && expense.status !== "APPROVED") {
       actions.push({ key: "approve", label: "Approve", d: ICON.check, tone: "good", onClick: () => void decide(expense, "APPROVED"), disabled: busyId === expense.id });
     }
-    if (expense.status !== "REJECTED") {
+    if (isAdmin && expense.status !== "REJECTED") {
       actions.push({ key: "reject", label: "Reject", d: ICON.cross, tone: "bad", onClick: () => void decide(expense, "REJECTED"), disabled: busyId === expense.id });
     }
     // **A settled expense offers no Pay button at all.** It used to offer one
     // reading "Paid", which opened the split panel on an expense with nothing
     // left to allocate — every submission from it could only be refused.
+    /*
+      **Paying stays open to HR, and deliberately.** They cannot approve, and
+      only an approved expense can be funded — so an HR expense has already been
+      through the admin by the time this appears. Hiding it would also put the
+      screen at odds with the server, which allows it: a control missing for a
+      thing you are permitted to do is as confusing as one that errors.
+    */
     if (expense.status === "APPROVED" && !settled) {
       actions.push({
         key: "pay",
@@ -407,7 +433,7 @@ export function OfficeExpensesView({ isAdmin }: { isAdmin: boolean }) {
       <ExpenseHero
         eyebrow="Office Expenses"
         figure={rupees(summary.spend)}
-        caption={`approved${isMobile ? "" : " in this period"} · ${summary.count} record${summary.count === 1 ? "" : "s"}`}
+        caption={`${isAdmin ? "approved" : "your expenses, approved"}${isMobile ? "" : " in this period"} · ${summary.count} record${summary.count === 1 ? "" : "s"}`}
         isMobile={isMobile}
         tileIcon={ICON.receipt}
         stats={[

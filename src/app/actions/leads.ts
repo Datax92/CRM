@@ -19,7 +19,7 @@ import {
 } from "@/lib/constants/distribution";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
-import { canAssignLeadTo } from "@/lib/constants/hierarchy";
+import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
 
 /**
  * Manual assignment inside the 5-minute window (FR-8, BR-4).
@@ -464,7 +464,8 @@ export async function assignLeadsBulk(
     if (ids.length > 500) throw new UserFacingError("Assign at most 500 leads at a time.");
 
     const employeeSnap = await adminDb.collection("users").doc(userId).get();
-    if (!employeeSnap.exists || employeeSnap.data()?.role !== "employee") {
+    const bulkRole = employeeSnap.data()?.role;
+    if (!employeeSnap.exists || (bulkRole !== "employee" && bulkRole !== "subadmin")) {
       throw new UserFacingError("Choose a team member to assign these to.");
     }
     const employee = employeeSnap.data()!;
@@ -472,7 +473,7 @@ export async function assignLeadsBulk(
       throw new UserFacingError("That employee is paused — resume them or choose someone else.");
     }
     // Same reach rule as `readAssignableEmployee`, from the same predicate.
-    if (!canAssignLeadTo(actor, { subAdminUid: employee.subAdminUid ?? null })) {
+    if (!canAssignLeadTo(actor, { subAdminUid: employee.subAdminUid ?? null, role: bulkRole })) {
       throw new UserFacingError("That team member is not on your team.");
     }
 
@@ -573,9 +574,9 @@ function canWorkLead(auth: DecodedAuth, lead: Record<string, unknown>): boolean 
  *
  * Answers §9 — "who gave this lead to whom, and under which sub admin" — from
  * the lead document alone, with no join. `subAdminUid` is taken from the
- * **employee**, not from the actor: an admin assigning to somebody on Sub Admin
- * A's team means the lead belongs to that team, and a sub admin's own uid is
- * the same value by definition.
+ * **recipient**, never from the actor: an admin assigning to somebody on Sub
+ * Admin A's team means the lead belongs to that team, and a lead given to a
+ * manager belongs to that manager.
  *
  * Names are denormalised beside the uids on purpose. The assignment history has
  * to stay readable after somebody leaves the company and their profile is
@@ -586,7 +587,18 @@ function assignmentStamp(
   actor: DecodedAuth,
   employee: Record<string, unknown>
 ): Record<string, unknown> {
-  const subAdminUid = (employee.subAdminUid as string | undefined) ?? null;
+  /*
+    **A manager's lead files under the manager themselves.** Their leads query
+    is `where('subAdminUid','==',me)` and the Security Rule checks exactly that
+    clause, so a lead handed to a manager carrying somebody else's uid — or
+    none — is one they are refused and cannot see. `owningSubAdminFor` is the
+    single place that decision is made.
+  */
+  const subAdminUid = owningSubAdminFor({
+    uid: employee.uid as string | undefined,
+    role: employee.role,
+    subAdminUid: (employee.subAdminUid as string | undefined) ?? null,
+  });
 
   return {
     assignedByUid: actor.uid,
@@ -612,11 +624,22 @@ async function readAssignableEmployee(t: Transaction, uid: string, actor?: Decod
   }
 
   const user = userSnap.data()!;
-  if (user.role !== "employee") {
-    throw new UserFacingError("Leads can only be assigned to employees.");
+  /*
+    **A manager may be given a lead; the admin cannot be.** A manager works
+    their own leads — `canWorkLead` has always allowed it and a Data Bank
+    promotion already produces one — so the pipeline handing them one directly
+    was a missing option rather than a forbidden act. Who may do the handing is
+    `canAssignLeadTo`'s question, two lines down.
+  */
+  if (user.role !== "employee" && user.role !== "subadmin") {
+    throw new UserFacingError("Leads can only be assigned to employees and managers.");
   }
   if (user.status === "DISABLED") {
-    throw new UserFacingError("That employee is disabled and cannot receive new leads.");
+    throw new UserFacingError(
+      user.role === "subadmin"
+        ? "That manager is disabled and cannot receive new leads."
+        : "That employee is disabled and cannot receive new leads."
+    );
   }
   // Reach — a Sales manager feeds their own team, HR feeds anybody. Asked here
   // rather than at the top of the action so it reads from the transaction's
@@ -626,11 +649,17 @@ async function readAssignableEmployee(t: Transaction, uid: string, actor?: Decod
   // The lead still files under the **recipient's** manager: `assignmentStamp`
   // takes `subAdminUid` off the employee, never off the person assigning, so a
   // lead HR gives to one of B's people lands in B's pipeline, not in HR's.
-  if (actor && !canAssignLeadTo(actor, { subAdminUid: user.subAdminUid ?? null })) {
-    throw new UserFacingError("That team member is not on your team.");
+  if (actor && !canAssignLeadTo(actor, { subAdminUid: user.subAdminUid ?? null, role: user.role })) {
+    throw new UserFacingError(
+      user.role === "subadmin"
+        ? "Handing a lead to another manager is the admin's or HR's to do."
+        : "That team member is not on your team."
+    );
   }
 
-  return user;
+  // `uid` rides back on the object so `assignmentStamp` can file a manager's
+  // lead under **themselves** without a second read.
+  return { ...user, uid } as Record<string, unknown> & { uid: string };
 }
 
 /**

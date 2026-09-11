@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
@@ -17,13 +17,21 @@ import {
  * somebody is looking at the dashboard, and a pending count that only moved on
  * refresh would be the one number on the screen people stopped trusting.
  *
- * **Unscoped by design, and safe because of who may read it.** The Security
- * Rule allows this collection to the admin and to HR only, and both may see
- * every row — so a query with no `where` is provable, which is not true of the
- * lead and notification collections. Employees and Sales managers are refused
- * the whole query rather than shown a filtered view.
+ * **Scoped, and the scope is not an optimisation.** The admin reads every
+ * expense; an HR manager reads only the ones they recorded. Firestore checks a
+ * *list* query against the rules **before** it runs, so an HR manager's query
+ * has to carry `where('addedByUid','==',uid)` — without it the query is refused
+ * outright rather than trimmed, and the screen renders with nothing in it,
+ * which is this project's most-repeated symptom. The rule mirrors that clause
+ * exactly.
+ *
+ * Employees and Sales managers are refused the whole query either way.
  */
-export function useOfficeExpenses(enabled = true) {
+export function useOfficeExpenses(
+  enabled = true,
+  /** An HR manager's own uid. Absent means the admin's unscoped read. */
+  mineOnly?: string | null
+) {
   const [state, setState] = useState<{ expenses: OfficeExpense[]; error: string | null } | null>(
     null
   );
@@ -33,7 +41,14 @@ export function useOfficeExpenses(enabled = true) {
     if (IS_DEMO || !enabled) return;
 
     const unsubscribe = onSnapshot(
-      query(collection(db, 'expenses'), orderBy('dayKey', 'desc'), limit(1000)),
+      mineOnly
+        ? query(
+            collection(db, 'expenses'),
+            where('addedByUid', '==', mineOnly),
+            orderBy('dayKey', 'desc'),
+            limit(1000)
+          )
+        : query(collection(db, 'expenses'), orderBy('dayKey', 'desc'), limit(1000)),
       (snap) => {
         setState({
           expenses: snap.docs.map((doc) => mapExpense(doc.id, doc.data())),
@@ -47,7 +62,7 @@ export function useOfficeExpenses(enabled = true) {
     );
 
     return () => unsubscribe();
-  }, [enabled]);
+  }, [enabled, mineOnly]);
 
   const demoExpenses = useMemo(
     () => (demoState.expenses ?? []).map((row) => mapExpense(row.id, row as unknown as Record<string, unknown>)),

@@ -227,9 +227,17 @@ export async function createOfficeExpense(
     const auth = await requireExpenseAccess(token);
     const clean = await cleanInput(input);
 
-    const status: ExpenseStatus = EXPENSE_STATUSES.includes(input.status as ExpenseStatus)
+    /*
+      **Only the admin may record an expense as already approved.** An HR
+      manager files one and it goes to the admin for a decision — letting the
+      person recording the spend also approve it is the single thing an approval
+      step exists to prevent, and hiding the control on the screen is not
+      enforcement. Asked of the token, never of the payload.
+    */
+    const asked = EXPENSE_STATUSES.includes(input.status as ExpenseStatus)
       ? (input.status as ExpenseStatus)
       : "PENDING";
+    const status: ExpenseStatus = auth.role === "admin" ? asked : "PENDING";
 
     const ref = adminDb.collection(EXPENSES).doc();
     await ref.create({
@@ -254,6 +262,28 @@ export async function createOfficeExpense(
         },
       ],
     });
+
+    /*
+      **An expense waiting on somebody is told to them.** A Pending row nobody
+      is looking at is an approval that never happens, and HR has no way to
+      chase it — they cannot see the screen the admin decides on. Only for a
+      non-admin: the admin recording their own does not need telling about it.
+    */
+    if (auth.role !== "admin" && status === "PENDING") {
+      await adminDb.collection("notifications").doc().create({
+        type: "EXPENSE_APPROVAL",
+        targetRole: "admin",
+        targetUid: null,
+        payload: {
+          message: `${auth.name ?? auth.email ?? "HR"} recorded an office expense: ${clean.title} — ${formatMoney(clean.amount)}. It needs your approval.`,
+          expenseId: ref.id,
+          amount: clean.amount,
+          category: clean.category,
+        },
+        read: false,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
 
     return { expenseId: ref.id };
   });
@@ -281,6 +311,16 @@ export async function updateOfficeExpense(
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
 
     const before = snap.data() ?? {};
+
+    /*
+      **HR edits only what HR recorded.** The read is already scoped to their own
+      rows, so this is the case where somebody holds an id from somewhere else —
+      a stale tab, a copied link, a screen open since before the scope changed.
+      The server is the boundary; a scoped query is not one.
+    */
+    if (auth.role !== "admin" && before.addedByUid !== auth.uid) {
+      throw new UserFacingError("That expense is not yours to edit.");
+    }
 
     /*
       **An expense cannot be edited below what has already left an account.**
@@ -321,6 +361,14 @@ export async function updateOfficeExpense(
 }
 
 /** Approves or rejects, with the reason kept. */
+/**
+ * Approves or rejects — **the admin's alone**.
+ *
+ * HR records expenses and the admin decides them. Both halves matter: an
+ * approver who can also file the spend is not an approver, and an HR manager
+ * approving the admin's own expenses would be deciding on money they are not
+ * even shown.
+ */
 export async function setOfficeExpenseStatus(
   token: string,
   expenseId: string,
@@ -328,7 +376,7 @@ export async function setOfficeExpenseStatus(
   note?: string
 ): Promise<ActionResult<{ status: ExpenseStatus }>> {
   return runAction("setOfficeExpenseStatus", async () => {
-    const auth = await requireExpenseAccess(token);
+    const auth = await requireAdmin(token);
 
     if (!EXPENSE_STATUSES.includes(status)) {
       throw new UserFacingError("That is not an expense status.");

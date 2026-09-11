@@ -272,8 +272,25 @@ service cloud.firestore {
     // Office expenses — admin and HR only, by the brief. A Sales manager and
     // every employee are refused the read outright rather than shown a
     // filtered ledger.
+    /**
+     * Office expenses.
+     *
+     * **The admin sees every one; HR sees only the ones they recorded.** An HR
+     * manager files expenses and sends them to the admin for approval; the
+     * company's own spending is not theirs to read. `isHr()` is unconditional
+     * on the caller, so the clause has to be checked on the **document** — and
+     * a `list` is checked against the rules before it runs, so the query must
+     * carry `where('addedByUid','==',uid)` or it is refused outright rather
+     * than trimmed. `useOfficeExpenses` adds exactly that clause.
+     *
+     * `get` and `list` are split because a `get` of a document that does not
+     * exist has a null `resource`, which would error rather than return empty.
+     */
     match /expenses/{expenseId} {
-      allow read: if isAdmin() || isHr();
+      allow get: if isAdmin()
+        || (isHr() && resource != null && resource.data.addedByUid == request.auth.uid);
+      allow list: if isAdmin()
+        || (isHr() && resource.data.addedByUid == request.auth.uid);
       allow write: if false;
     }
 
