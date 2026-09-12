@@ -25,7 +25,13 @@ import type { AttendanceStatus } from "@/lib/attendance";
 import type { AttendanceDay } from "@/hooks/useAttendance";
 import { A, StatusPill } from "./attendanceChrome";
 
-const ADJUSTABLE: AttendanceStatus[] = ["PRESENT", "LATE", "ABSENT", "LEAVE", "HALF_DAY", "OFF"];
+/*
+  Half day is gone: the day is decided by the time somebody arrived, and the
+  band it used to occupy is Late. An admin setting a day by hand chooses from
+  the same five the system can produce, or the calendar would show a status
+  nothing else in the app can explain.
+*/
+const ADJUSTABLE: AttendanceStatus[] = ["PRESENT", "LATE", "ABSENT", "LEAVE", "OFF"];
 
 function clock(date: Date | null | undefined): string {
   if (!date) return "—";

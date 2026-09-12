@@ -59,6 +59,7 @@ const SOURCE_ROUTES: Record<string, string> = {
   OFFICE_EXPENSE: "/admin/accounts/office-expenses",
   PERSONAL_EXPENSE: "/admin/accounts/personal-expense",
   MARKETING_INCOME: "/admin/accounts/marketing-income",
+  CAR_SALE: "/admin/accounts/car-sale",
   STATELIFE: "/admin/accounts/statelife",
   RECEIVABLE: "/admin/accounts/receivable",
 };
@@ -67,6 +68,7 @@ const SOURCE_LABELS: Record<string, string> = {
   OFFICE_EXPENSE: "Office Expense",
   PERSONAL_EXPENSE: "Personal Expense",
   MARKETING_INCOME: "Marketing Income",
+  CAR_SALE: "Car Sale",
   STATELIFE: "StateLife",
   CAPITAL_INVESTMENT: "Capital Investment",
   RECEIVABLE: "Receivable",

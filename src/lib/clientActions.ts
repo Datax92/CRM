@@ -156,6 +156,13 @@ import {
   type MarketingIncomeInput,
 } from '@/app/actions/accountModules';
 
+import {
+  saveCarSale as _saveCarSale,
+  deleteCarSale as _deleteCarSale,
+  countCarSaleProfit as _countCarSaleProfit,
+  type CarSaleInput,
+} from '@/app/actions/carSale';
+
 /** Who the demo store should attribute mutations to. */
 const actor = () => getDemoSession() ?? { uid: 'demo-admin', email: 'admin@crm.com' };
 
@@ -1162,6 +1169,18 @@ export async function deleteMarketingIncome(token: string, recordId: string) {
 
 export async function countMarketingIncomeReceipts(token: string, recordId: string) {
   return _countMarketingIncomeReceipts(token, recordId);
+}
+
+export async function saveCarSale(token: string, input: CarSaleInput, recordId?: string) {
+  return _saveCarSale(token, input, recordId);
+}
+
+export async function deleteCarSale(token: string, recordId: string) {
+  return _deleteCarSale(token, recordId);
+}
+
+export async function countCarSaleProfit(token: string, recordId: string) {
+  return _countCarSaleProfit(token, recordId);
 }
 
 export async function updateTransaction(

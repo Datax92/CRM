@@ -355,6 +355,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /*
+      Car Sale — the same shape as marketing income: an income record the
+      browser only ever reads, written by `saveCarSale` with the Admin SDK.
+    */
+    match /carSales/{recordId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
     /**
      * What a capital investment has been spent on.
      *

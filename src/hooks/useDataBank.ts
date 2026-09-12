@@ -110,16 +110,18 @@ export function useDataBankFolders(
         : query(collection(db, "dataBankFolders"), orderBy("name")),
       (snapshot) => {
         setState({
-          /*
-            **A folder part-way through deletion is gone from the reader's
-            point of view.** A big one is removed over more than one run so a
-            single press cannot spend the day's delete quota and stop the whole
-            app; filtering here is what makes that invisible rather than
-            confusing. Its own document survives because the next run needs it
-            to find the rest.
-          */
           folders: snapshot.docs
-            .filter((snap) => snap.data().deletionPending !== true)
+            .filter((snap) => {
+              /*
+                **A folder part-way through deletion is gone from the reader's
+                point of view.** A big one is removed over more than one run so
+                a single press cannot spend the day's delete quota and stop the
+                whole app; filtering here is what makes that invisible rather
+                than confusing. Its own document survives because the next run
+                needs it to find the rest.
+              */
+              return snap.data().deletionPending !== true;
+            })
             .map((snap) => folderFrom(snap.id, snap.data())),
           error: null,
         });
@@ -136,11 +138,30 @@ export function useDataBankFolders(
     const folders = teamOf
       ? demoState.dataBankFolders.filter((folder) => folder.subAdminUid === teamOf)
       : demoState.dataBankFolders;
-    return { folders: enabled ? folders : [], loading: false, error: null };
+    return { folders: enabled ? folders : [], mirrors: [], loading: false, error: null };
   }
 
+  const all = ready ? (state?.folders ?? []) : [];
+
+  /*
+    **The admin's grid drops the managers' mirrors; the mirrors are handed back
+    separately so the source folder can name who holds its rows.**
+
+    A mirror carries `sourceFolderId`. It used to appear as its own card, with
+    the same name as the folder it came from and the grid ordered by name — so
+    it sat directly beside its source and read as a duplicate that had appeared
+    on its own. Measured 2026-09-12: four mirrors among twelve folders, four
+    names showing twice.
+
+    A manager is unaffected: their query is already scoped to their own
+    `subAdminUid`, and the mirror is genuinely theirs.
+  */
+  const mirrors = teamOf ? [] : all.filter((folder) => Boolean(folder.sourceFolderId));
+  const folders = teamOf ? all : all.filter((folder) => !folder.sourceFolderId);
+
   return {
-    folders: ready ? (state?.folders ?? []) : [],
+    folders,
+    mirrors,
     loading: ready && state === null,
     error: ready ? (state?.error ?? null) : null,
   };

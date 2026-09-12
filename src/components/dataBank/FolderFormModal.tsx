@@ -41,11 +41,21 @@ const LABEL = "flex flex-col gap-1.5 text-xs text-[#5b6d6b]";
 
 export function FolderFormModal({
   folder,
+  existing,
   getIdToken,
   onClose,
   onSaved,
 }: {
   folder?: DataBankFolder | null;
+  /**
+   * Every folder already in this Data Bank, **mirrors included**, so a name
+   * being typed can be checked against them.
+   *
+   * Passed in rather than read here: both call sites are already listening to
+   * the folder list, and a second listener on the same collection would cost a
+   * second copy of it every time somebody opened this form.
+   */
+  existing?: Array<{ id: string; name: string }>;
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
@@ -90,6 +100,30 @@ export function FolderFormModal({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /*
+    **A warning, never a refusal.** Two folders legitimately carry one name —
+    two intakes from the same society a season apart, or a source re-imported
+    after a clean-out — so refusing the name would block work that is correct.
+    What it is worth saying is that the name is already taken, at the moment it
+    is being typed, because the complaint this answers is an admin opening the
+    grid and finding two folders they cannot tell apart.
+
+    Case- and space-insensitive: "Faisal Town 2" and "faisal town  2" are the
+    same name to the person reading the list, which is whose confusion this is
+    about.
+  */
+  const clash = (() => {
+    const typed = name.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!typed) return null;
+    return (
+      (existing ?? []).find(
+        (other) =>
+          other.id !== folder?.id &&
+          other.name.trim().toLowerCase().replace(/\s+/g, " ") === typed
+      ) ?? null
+    );
+  })();
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -203,6 +237,13 @@ export function FolderFormModal({
                 placeholder="e.g. Capital Smart City"
                 className={INPUT}
               />
+              {clash && (
+                <span className="text-[12px] leading-[1.45] text-[#9a6b1f]">
+                  A folder called <strong className="font-medium">{clash.name}</strong> already
+                  exists. You can still use this name — the two will sit next to each other in the
+                  list, so give them something to tell them apart if they are different sources.
+                </span>
+              )}
             </label>
             <label className={LABEL}>
               <span>Short Code</span>

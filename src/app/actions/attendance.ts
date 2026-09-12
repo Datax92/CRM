@@ -15,7 +15,7 @@ import {
   classifyLocation,
   classifyWifi,
   clientIpFromHeaders,
-  deriveStatus,
+  statusOfRecord,
   formatDistance,
   isValidCoordinate,
   normalizeNetworkName,
@@ -375,6 +375,9 @@ export async function punchAttendance(
                 // The threshold as it stood at the punch. A policy changed next
                 // month must not silently re-judge a day already recorded.
                 lateAfter: verdict.lateAfter,
+                // The cutoff as it stood at the punch, frozen for the same
+                // reason: moving it to 12:00 decides tomorrow, not last Tuesday.
+                absentAfter: verdict.absentAfter,
                 // The address the day was opened from (§2), kept beside the
                 // last one so a check-out elsewhere does not erase it.
                 checkInIp: ip || null,
@@ -399,7 +402,8 @@ export async function punchAttendance(
           lastNetworkName: reportedName || null,
           punchedBy: "SELF",
           /*
-            **Turning up supersedes the system's guess that you did not.**
+            **Turning up before the cutoff supersedes the system's guess that
+            you would not.**
 
             The absence sweep runs at the cutoff and writes
             `overrideStatus: "ABSENT"` on everybody who has not checked in. A
@@ -409,12 +413,18 @@ export async function punchAttendance(
             project on 2026-09-11: two such days, one where the employee had
             checked in *and* out.
 
-            Only the sweep's own conclusion is cleared. `markedAbsentBy` is
-            exactly the distinction the sweep records it for — an override HR
-            typed is a person's decision about the day and must survive a punch,
-            or an employee could undo their manager by tapping a button.
+            **Arriving after the cutoff does not.** Somebody who walks in at
+            14:00 against a 13:00 cutoff is absent and stays absent — their punch
+            is still recorded, and the day still reads Absent, which is exactly
+            what the owner asked for. `verdict.status` is the same arrival-band
+            reading every screen uses.
+
+            Only the sweep's own conclusion is ever cleared. `markedAbsentBy` is
+            the distinction the sweep records it for — an override HR typed is a
+            person's decision about the day and must survive a punch, or an
+            employee could undo their manager by tapping a button.
           */
-          ...(existing?.markedAbsentBy === "SYSTEM"
+          ...(existing?.markedAbsentBy === "SYSTEM" && verdict.status !== "ABSENT"
             ? {
                 overrideStatus: FieldValue.delete(),
                 markedAbsentBy: FieldValue.delete(),
@@ -1164,7 +1174,6 @@ export interface TeamAttendanceRow {
   late: number;
   absent: number;
   leave: number;
-  halfDay: number;
   off: number;
   workedMinutes: number;
   /** Present + half-days counted as half, over the days that could be worked. */
@@ -1256,9 +1265,9 @@ export async function getTeamAttendance(
       const last = data.lastActionAt?.toDate?.() ?? null;
       const minutes = Number(data.workedMinutes ?? 0) || workedMinutesFrom(first, last);
 
-      const status: AttendanceStatus =
-        (data.overrideStatus as AttendanceStatus) ??
-        (data.late ? "LATE" : deriveStatus(minutes, Boolean(first ?? data.checkedOut)));
+      // One reader — see `statusOfRecord`. Arrival decides the day, against
+      // the bands the record itself carries.
+      const status = statusOfRecord(data);
 
       const list = byUid.get(uid) ?? [];
       list.push({
@@ -1286,7 +1295,6 @@ export async function getTeamAttendance(
 
       const present = count("PRESENT");
       const late = count("LATE");
-      const halfDay = count("HALF_DAY");
       const absent = count("ABSENT");
       const leave = count("LEAVE");
       const off = count("OFF");
@@ -1294,8 +1302,11 @@ export async function getTeamAttendance(
       // Approved leave leaves the denominator rather than counting against the
       // employee — the same rule `attendanceRate` applies, kept identical here
       // so the report and the employee's own screen cannot disagree.
-      const considered = present + late + halfDay + absent;
-      const credited = present + late + halfDay * 0.5;
+      const considered = present + late + absent;
+      // No half day any more: a late day is a full day attended, and the
+      // penalty for lateness is the deduction rule rather than a second one
+      // hidden in the attendance percentage.
+      const credited = present + late;
 
       return {
         uid: doc.id,
@@ -1310,7 +1321,6 @@ export async function getTeamAttendance(
         late,
         absent,
         leave,
-        halfDay,
         off,
         workedMinutes: days.reduce((sum, day) => sum + day.minutes, 0),
         rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
@@ -1367,7 +1377,6 @@ export interface AttendanceSummary {
   late: number;
   absent: number;
   leave: number;
-  halfDay: number;
   workedMinutes: number;
   rate: number;
   /** Every late in the month, with the rule each was charged under. */
@@ -1427,7 +1436,6 @@ export async function getAttendanceSummary(
     let late = 0;
     let absent = 0;
     let leave = 0;
-    let halfDay = 0;
     let minutesTotal = 0;
 
     for (const doc of snap.docs) {
@@ -1437,22 +1445,19 @@ export async function getAttendanceSummary(
       const minutes = Number(data.workedMinutes ?? 0) || workedMinutesFrom(first, last);
       minutesTotal += minutes;
 
-      const status: AttendanceStatus =
-        (data.overrideStatus as AttendanceStatus) ??
-        (data.late ? "LATE" : deriveStatus(minutes, Boolean(first ?? data.checkedOut)));
+      const status = statusOfRecord(data);
 
       if (status === "PRESENT") present += 1;
       else if (status === "LATE") late += 1;
       else if (status === "ABSENT") absent += 1;
       else if (status === "LEAVE") leave += 1;
-      else if (status === "HALF_DAY") halfDay += 1;
     }
 
     // Approved leave leaves the denominator rather than counting against the
     // employee — the same rule `attendanceRate` uses, so this figure and the
     // one on their own calendar cannot disagree.
-    const considered = present + late + halfDay + absent;
-    const credited = present + late + halfDay * 0.5;
+    const considered = present + late + absent;
+    const credited = present + late;
 
     const { outcomes, total } = monthDeductions(
       late,
@@ -1467,7 +1472,6 @@ export async function getAttendanceSummary(
       late,
       absent,
       leave,
-      halfDay,
       workedMinutes: minutesTotal,
       rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
       deductions: outcomes,

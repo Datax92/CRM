@@ -49,6 +49,7 @@
  * the achievable goal.
  */
 
+
 export type AttendanceNetwork = 'OFFICE' | 'REMOTE' | 'UNKNOWN';
 
 /**
@@ -61,15 +62,25 @@ export type AttendanceNetwork = 'OFFICE' | 'REMOTE' | 'UNKNOWN';
 export type AttendanceStatus =
   | 'PRESENT'
   | 'LATE'
-  | 'HALF_DAY'
   | 'ABSENT'
   | 'LEAVE'
   | 'OFF'
   | 'UNRECORDED';
 
 /** A full day, below which the day is a half day. Minutes. */
-export const FULL_DAY_MINUTES = 6 * 60;
-export const HALF_DAY_MINUTES = 2 * 60;
+/*
+  The one import this module has, and it carries an explicit `.ts` extension on
+  purpose: the raw `--experimental-strip-types` test runner cannot resolve an
+  extensionless path, and this file is imported by `attendance.test.ts` without
+  a bundler. `attendancePolicy` is itself dependency-free, so nothing else comes
+  with it. Same convention `dossierPeriod` follows for the same reason.
+*/
+import {
+  statusForArrival,
+  parseClock,
+  karachiMinutesOfDay,
+} from './attendancePolicy.ts';
+
 
 /** Pakistan's working week runs Monday to Saturday; Sunday is the weekly off. */
 export const WEEKLY_OFF_DAY = 0;
@@ -330,34 +341,89 @@ export function formatClock(date: Date | null | undefined): string {
 }
 
 /**
- * The status a day earns from the hours actually worked.
+ * The status a day earns, **from when somebody arrived**.
  *
- * An admin override always wins — someone at a client site all day worked, and
- * only a human knows that. This is the default the override starts from.
+ * A thin wrapper over `statusForArrival` in `lib/attendancePolicy`, kept here
+ * because every reader of a day already imports this module and one more import
+ * per call site is how two surfaces end up asking different questions.
+ *
+ * **Half day is gone.** It existed because the status was decided by hours
+ * worked: a day under six hours — including one opened and never closed — was
+ * half a day. With arrival deciding the day, the band it occupied is `LATE`,
+ * which is what the owner asked for and is also easier to act on: "you were
+ * late" is a fact about a person, "you were a half day" is a fact about a
+ * timesheet.
  */
-export function deriveStatus(minutes: number, hadActivity: boolean): AttendanceStatus {
-  if (!hadActivity) return 'ABSENT';
-  if (minutes >= FULL_DAY_MINUTES) return 'PRESENT';
+export function deriveStatus(
+  /** Minutes past midnight, Karachi. `null` when nobody checked in. */
+  arrivedAtMinutes: number | null,
+  lateAfterMinutes: number,
+  absentAfterMinutes: number | null
+): AttendanceStatus {
+  return statusForArrival(arrivedAtMinutes, lateAfterMinutes, absentAfterMinutes);
+}
+
+/**
+ * The status of one **stored** attendance record.
+ *
+ * The single reader. Three places used to work this out for themselves — the
+ * team report, the monthly rollup and payroll — each spelling
+ * `override ?? (late ? LATE : deriveStatus(...))`, which is how two screens end
+ * up disagreeing about one person's Tuesday.
+ *
+ * **The bands come from the record, not from today's settings.** A day carries
+ * the `lateAfter` and `absentAfter` it was judged against, so moving the cutoff
+ * to 12:00 decides tomorrow and leaves last Tuesday alone — and a day recorded
+ * before those fields existed keeps the `late` verdict it was given at the
+ * time, which needs no policy read and cannot be re-judged by a later one.
+ */
+export function statusOfRecord(record: {
+  overrideStatus?: unknown;
+  firstActionAt?: { toDate?: () => Date } | Date | null;
+  checkedOut?: unknown;
+  late?: unknown;
+  lateAfter?: unknown;
+  absentAfter?: unknown;
+}): AttendanceStatus {
+  // An override is a person's decision about the day and outranks the clock.
+  if (typeof record.overrideStatus === 'string' && isAttendanceStatus(record.overrideStatus)) {
+    return record.overrideStatus;
+  }
+
+  const raw = record.firstActionAt;
+  const arrived =
+    raw instanceof Date
+      ? raw
+      : typeof (raw as { toDate?: () => Date })?.toDate === 'function'
+        ? (raw as { toDate: () => Date }).toDate()
+        : null;
+
+  if (!arrived) return record.checkedOut ? 'LATE' : 'ABSENT';
+
+  const lateAfter = parseClock(typeof record.lateAfter === 'string' ? record.lateAfter : null);
 
   /*
-    **Everything short of a full day is a half day, including a day that was
-    opened and never closed.** `HALF_DAY_MINUTES` is deliberately *not* a floor
-    here: somebody who checked in and forgot to check out has `0` minutes
-    recorded, and grading that absent would punish them for the one thing the
-    system cannot observe. It is a threshold the reports use to describe a day,
-    not a cliff that decides one.
-
-    This used to read `if (minutes >= HALF_DAY_MINUTES) return 'HALF_DAY';
-    return 'HALF_DAY';` — two branches with the same answer, which looked like
-    a rule and was not one.
+    **A day recorded before the bands were stored keeps the verdict it was
+    given.** `late` was computed against the policy in force that morning, so
+    honouring it is more accurate than re-judging the day against a threshold
+    that may have moved since — and it needs no policy read at all.
   */
-  return 'HALF_DAY';
+  if (lateAfter === null) return record.late ? 'LATE' : 'PRESENT';
+
+  const absentAfter = parseClock(typeof record.absentAfter === 'string' ? record.absentAfter : null);
+  return statusForArrival(karachiMinutesOfDay(arrived), lateAfter, absentAfter);
+}
+
+export function isAttendanceStatus(value: unknown): value is AttendanceStatus {
+  return (
+    value === 'PRESENT' || value === 'LATE' || value === 'ABSENT' ||
+    value === 'LEAVE' || value === 'OFF' || value === 'UNRECORDED'
+  );
 }
 
 export const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
   PRESENT: 'Present',
   LATE: 'Late',
-  HALF_DAY: 'Half day',
   ABSENT: 'Absent',
   LEAVE: 'Leave',
   OFF: 'Weekly off',
@@ -392,12 +458,11 @@ export function attendanceRate(
   const workingDays = statuses.filter(
     (s) => s !== 'OFF' && s !== 'UNRECORDED' && s !== 'LEAVE'
   ).length;
-  // A half day is half a day, not a whole one — counting it as present would
-  // let a month of two-hour appearances read as perfect attendance. A late day
-  // is a full day attended: the penalty for it is the deduction rule, not a
-  // second punishment hidden in the attendance percentage.
+  // A late day is a full day attended: the penalty for it is the deduction
+  // rule, not a second punishment hidden in the attendance percentage. There is
+  // no half day any more — the band it used to occupy is now Late.
   const present = statuses.reduce(
-    (total, s) => total + (s === 'PRESENT' || s === 'LATE' ? 1 : s === 'HALF_DAY' ? 0.5 : 0),
+    (total, s) => total + (s === 'PRESENT' || s === 'LATE' ? 1 : 0),
     0
   );
 

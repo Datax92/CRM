@@ -88,14 +88,36 @@ export function MobileDataBankFolders() {
 
   // A sub admin sees the folders assigned to them; the query and the Security
   // Rule agree on that, so nothing is filtered afterwards.
-  const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: user?.uid });
-  // Only to name the manager on a handed-over folder — an admin's list now
-  // shows the mirrors alongside the originals.
+  const { folders, mirrors, loading, error } = useDataBankFolders(isManager, {
+    role,
+    uid: user?.uid,
+  });
+  // To name the manager on a handed-over folder, and to name who is holding a
+  // folder's handed-over rows. The mirrors are no longer cards of their own in
+  // the admin's list — same name as their source, next to it in a
+  // name-ordered list, which read as a duplicate appearing on its own.
   const { subAdmins } = useSubAdmins(isAdmin);
   const managerNames = useMemo(
     () => new Map(subAdmins.map((manager) => [manager.uid, manager.name])),
     [subAdmins]
   );
+
+  /* Mirrors grouped under the folder they came out of, from the same snapshot
+     the list is already reading — so this costs no extra reads. */
+  const heldBySource = useMemo(() => {
+    const byId = new Map<string, Array<{ id: string; name: string; records: number }>>();
+    for (const mirror of mirrors) {
+      if (!mirror.sourceFolderId) continue;
+      const list = byId.get(mirror.sourceFolderId) ?? [];
+      list.push({
+        id: mirror.id,
+        name: mirror.subAdminUid ? (managerNames.get(mirror.subAdminUid) ?? "a manager") : "a manager",
+        records: mirror.recordCount,
+      });
+      byId.set(mirror.sourceFolderId, list);
+    }
+    return byId;
+  }, [mirrors, managerNames]);
 
   const [formFor, setFormFor] = useState<{ folder: DataBankFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<DataBankFolder | null>(null);
@@ -318,6 +340,47 @@ export function MobileDataBankFolders() {
                 </div>
               </button>
 
+              {/* Outside the navigating button, because each chip is its own
+                  destination — the folder those rows are sitting in now. */}
+              {(heldBySource.get(folder.id)?.length ?? 0) > 0 && (
+                <div style={{ borderTop: `1px solid ${M.divider}`, padding: "10px 16px" }}>
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 700,
+                      letterSpacing: "0.9px",
+                      textTransform: "uppercase",
+                      color: M.fainter,
+                    }}
+                  >
+                    Held by
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+                    {heldBySource.get(folder.id)?.map((mirror) => (
+                      <button
+                        key={mirror.id}
+                        type="button"
+                        className="mob-press"
+                        onClick={() => router.push(`/admin/data-bank/${mirror.id}`)}
+                        style={{
+                          border: "none",
+                          borderRadius: 999,
+                          background: "#eaf1f6",
+                          color: "#4d7590",
+                          padding: "5px 11px",
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          WebkitTapHighlightColor: "transparent",
+                        }}
+                      >
+                        {mirror.name} — {mirror.records.toLocaleString()} ›
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Outside the navigating button, so they are separate targets.
                   A manager owns every folder their query returns, so both are
                   theirs; the Server Action re-checks it. */}
@@ -353,6 +416,10 @@ export function MobileDataBankFolders() {
       {formFor && (
         <FolderFormModal
           folder={formFor.folder}
+          /* Mirrors included: they are hidden from the grid, but a new folder
+             sharing a mirror's name is exactly the collision worth warning
+             about. No extra read — both lists are already on screen. */
+          existing={[...folders, ...mirrors]}
           getIdToken={getIdToken}
           onClose={() => setFormFor(null)}
           onSaved={(message) => {

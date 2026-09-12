@@ -7,7 +7,7 @@ import {
   Activity, Search, ChevronDown, Wallet,
   Settings, ChevronsLeft, ChevronsRight, Database, FolderOpen,
   ListChecks, IdCard, SlidersHorizontal,
-  Handshake, Receipt, FileBarChart, Users2, Building2, TrendingUp,
+  Handshake, Receipt, FileBarChart, Users2, Building2, TrendingUp, Car,
   PiggyBank, ReceiptText, Wallet2, BarChart3, Megaphone, PieChart,
   CalendarCheck, CalendarDays, CalendarClock, UserCheck, AlertTriangle, LayoutDashboard,
   BadgeDollarSign
@@ -179,6 +179,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           { title: "Personal Expenses", path: "/admin/accounts/personal-expense", icon: Wallet2 },
           { title: "StateLife", path: "/admin/accounts/statelife", icon: ReceiptText },
           { title: "Marketing Income", path: "/admin/accounts/marketing-income", icon: TrendingUp },
+          { title: "Car Sale", path: "/admin/accounts/car-sale", icon: Car },
           { title: "Capital Investments", path: "/admin/accounts/capital-investments", icon: PiggyBank },
           { title: "Committee", path: "/admin/accounts/committee", icon: Users2 },
           { title: "Receivable", path: "/admin/accounts/receivable", icon: ReceiptText },

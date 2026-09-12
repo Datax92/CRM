@@ -23,7 +23,7 @@ import {
   type PayrollStatus,
   type SalaryProfile,
 } from "@/lib/payroll";
-import { deriveStatus, type AttendanceStatus } from "@/lib/attendance";
+import { statusOfRecord } from "@/lib/attendance";
 import { readPolicy } from "./attendance";
 import { FieldValue } from "firebase-admin/firestore";
 
@@ -275,16 +275,14 @@ async function attendanceByUid(
     const uid = String(data.uid ?? "");
     if (!uid) continue;
 
-    const first = data.firstActionAt?.toDate?.() ?? null;
-    const minutes = Number(data.workedMinutes ?? 0);
-    const status: AttendanceStatus =
-      (data.overrideStatus as AttendanceStatus) ??
-      (data.late ? "LATE" : deriveStatus(minutes, Boolean(first ?? data.checkedOut)));
+    // The same reader every other surface uses, so payroll and the calendar
+    // cannot disagree about a day somebody is being paid for.
+    const status = statusOfRecord(data);
 
     if (status === "LATE") bump(uid, { late: 1, present: 1 });
     else if (status === "ABSENT") bump(uid, { absent: 1 });
     else if (status === "LEAVE") bump(uid, { leave: 1 });
-    else if (status === "PRESENT" || status === "HALF_DAY") bump(uid, { present: 1 });
+    else if (status === "PRESENT") bump(uid, { present: 1 });
   }
 
   const closed = periodSnap.exists && periodSnap.data()?.finalized;

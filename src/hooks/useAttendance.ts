@@ -12,7 +12,7 @@ import { withTimeout, ActionTimeout } from '@/lib/withTimeout';
 import type { PunchKind } from '@/app/actions/attendance';
 import {
   attendanceRate,
-  deriveStatus,
+  statusOfRecord,
   formatClock,
   NETWORK_LABELS,
   WEEKLY_OFF_DAY,
@@ -385,20 +385,19 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
       const minutes =
         record?.workedMinutes ?? workedMinutes(firstAt?.getTime(), lastAt?.getTime());
 
+      /*
+        **One reader, `statusOfRecord`.** The day is decided by the time of
+        arrival against the bands the record itself carries — so the calendar,
+        the reports and payroll cannot disagree about one person's Tuesday, and
+        moving the cutoff does not re-judge days already recorded.
+      */
       let status: AttendanceStatus;
-      if (record?.overrideStatus) {
-        status = record.overrideStatus;
-      } else if (record?.late) {
-        // §3 — Late is its own colour on the calendar, and its own column in
-        // the reports. An override still wins: HR excusing a late is exactly
-        // the case a manual adjustment exists for.
-        status = 'LATE';
-      } else if (dayKey > todayKey) {
+      if (dayKey > todayKey && !record) {
         status = 'UNRECORDED';
-      } else if (weekday === WEEKLY_OFF_DAY) {
-        status = record ? deriveStatus(minutes, true) : 'OFF';
+      } else if (!record) {
+        status = weekday === WEEKLY_OFF_DAY ? 'OFF' : 'ABSENT';
       } else {
-        status = deriveStatus(minutes, Boolean(record));
+        status = statusOfRecord(record);
       }
 
       return {
@@ -423,16 +422,7 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
     const year = todayKey.slice(0, 4);
     const yearStatuses = everything
       .filter((r) => r.dayKey.startsWith(year) && r.dayKey <= todayKey)
-      .map((r) =>
-        r.overrideStatus ??
-        (r.late
-          ? ('LATE' as AttendanceStatus)
-          : deriveStatus(
-              r.workedMinutes ??
-                workedMinutes(toDate(r.firstActionAt)?.getTime(), toDate(r.lastActionAt)?.getTime()),
-              true
-            ))
-      );
+      .map((r) => statusOfRecord(r));
 
     return {
       days,

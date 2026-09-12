@@ -409,6 +409,70 @@ async function mirrorFolderIds(folderId: string): Promise<string[]> {
 }
 
 /**
+ * Deletes a manager's mirror once the last row has left it.
+ *
+ * A mirror is created by handing rows to a manager and is *only* a holding
+ * place: the manager promotes each row into their team's pipeline, and when the
+ * last one goes the folder is an empty duplicate of its source, with the same
+ * name, sitting next to it in a name-ordered list. That is the "folders
+ * appearing on their own" the owner's client reported — measured 2026-09-12,
+ * three of the four mirrors in the project were already empty.
+ *
+ * Deleting it is safe because the id is deterministic (`mgr_{uid}_{sourceId}`):
+ * the next hand-off to the same manager recreates the same folder.
+ *
+ * **The counts move back to the source so the numbers still add up.** The rows
+ * the manager promoted were promoted out of *this* folder, so its
+ * `promotedCount` is added to the source's, and the source's `handedOffCount`
+ * comes down by everything that was ever handed here — otherwise the source
+ * would read "9 handed on" pointing at a folder that no longer exists, which is
+ * the confusion this is meant to remove. Clamped at zero: a mirror written
+ * before `handedInCount` existed falls back to its promoted figure, which can
+ * only be an under-estimate.
+ *
+ * Best-effort by design. It runs after the promotion has committed, so a
+ * failure leaves an empty folder and nothing else — never a lead that did not
+ * get created, and never a delete quota taking a promotion down with it.
+ */
+async function cleanupEmptyMirror(mirrorId: string): Promise<void> {
+  try {
+    await adminDb.runTransaction(async (tx) => {
+      const mirrorRef = adminDb.collection(FOLDERS).doc(mirrorId);
+      const mirror = await tx.get(mirrorRef);
+      if (!mirror.exists) return;
+
+      const data = mirror.data() as {
+        sourceFolderId?: string | null;
+        recordCount?: number;
+        promotedCount?: number;
+        handedInCount?: number;
+      };
+      const sourceId = data.sourceFolderId;
+      // Not a mirror, or still holding rows: leave it exactly as it is.
+      if (!sourceId) return;
+      if ((data.recordCount ?? 0) > 0) return;
+
+      const promotedHere = Math.max(0, Number(data.promotedCount ?? 0) || 0);
+      const handedIn =
+        typeof data.handedInCount === "number" ? Math.max(0, data.handedInCount) : promotedHere;
+
+      const sourceRef = adminDb.collection(FOLDERS).doc(sourceId);
+      const source = await tx.get(sourceRef);
+      if (source.exists) {
+        const handedOff = Math.max(0, Number(source.data()?.handedOffCount ?? 0) || 0);
+        tx.update(sourceRef, {
+          handedOffCount: Math.max(0, handedOff - handedIn),
+          promotedCount: FieldValue.increment(promotedHere),
+        });
+      }
+      tx.delete(mirrorRef);
+    });
+  } catch (error) {
+    console.warn(`[dataBank] empty mirror ${mirrorId} left in place`, error);
+  }
+}
+
+/**
  * Refuses a phone number the folder already holds, **naming who holds it**.
  *
  * One number is one prospective client, and two rows for one number means two
@@ -574,12 +638,16 @@ export async function deleteDataBankRecord(
     if (!snap.exists) return;
 
     const folderId = snap.data()!.folderId as string;
-    assertFolderAccess(auth, await loadFolder(folderId));
+    const folder = await loadFolder(folderId);
+    assertFolderAccess(auth, folder);
     await ref.delete();
     await adminDb
       .collection(FOLDERS)
       .doc(folderId)
       .update({ recordCount: FieldValue.increment(-1) });
+
+    // The other way a manager's mirror empties — see `cleanupEmptyMirror`.
+    if (folder.sourceFolderId) await cleanupEmptyMirror(folderId);
   });
 }
 
@@ -908,6 +976,11 @@ export async function promoteDataBankRecord(
     } catch (error) {
       console.warn(`[promote] record ${recordId} tombstoned but not deleted`, error);
     }
+
+    // If that was the last row in a manager's mirror, the mirror is now an
+    // empty copy of its source sitting beside it in the list. See
+    // `cleanupEmptyMirror` — best effort, after the lead exists.
+    if (folder.sourceFolderId) await cleanupEmptyMirror(folder.ref.id);
 
     // One line, only when it was actually slow, naming which phase cost the
     // time: the auth check and the three parallel reads, the folder read, or
@@ -1263,6 +1336,13 @@ export async function promoteDataBankRecords(
       await Promise.all(
         ids.slice(0, promoted).map((id) => adminDb.collection(RECORDS).doc(id).delete().catch(() => {}))
       );
+
+      // Any manager's mirror this selection emptied. `folders` already holds
+      // every folder the records came out of, so this costs no extra read on
+      // the overwhelming majority of promotions, which touch no mirror at all.
+      for (const [folderId, folder] of folders) {
+        if (folder.sourceFolderId) await cleanupEmptyMirror(folderId);
+      }
     }
 
     return { promoted, skipped, leadIds };
@@ -1472,6 +1552,11 @@ export async function assignRecordsToManager(
       for (const [mirrorId, count] of mirrorAdds) {
         batch.update(adminDb.collection(FOLDERS).doc(mirrorId), {
           recordCount: FieldValue.increment(count),
+          // How many have *ever* been handed here, which `recordCount` stops
+          // being the moment one is promoted or deleted. `cleanupEmptyMirror`
+          // needs it to give the source back the right `handedOffCount` when
+          // the mirror empties.
+          handedInCount: FieldValue.increment(count),
           updatedAt: now,
         });
       }

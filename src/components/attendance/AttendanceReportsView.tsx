@@ -98,8 +98,7 @@ export function AttendanceReportsView() {
       "Late",
       "Absent",
       "Leave",
-      "Half day",
-      "Hours",
+            "Hours",
       "Attendance %",
       "Deduction (PKR)",
     ];
@@ -110,7 +109,6 @@ export function AttendanceReportsView() {
       row.late,
       row.absent,
       row.leave,
-      row.halfDay,
       formatWorkedHours(row.workedMinutes),
       row.rate,
       row.deduction,

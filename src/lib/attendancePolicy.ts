@@ -208,6 +208,12 @@ export interface CheckInVerdict {
   lateByMinutes: number;
   /** The moment after which a check-in is late, `HH:MM`. */
   lateAfter: string;
+  /** The cutoff this day was judged against, or `null` when none is set. */
+  absentAfter: string | null;
+  /** Minutes past midnight, Karachi — what the bands were compared with. */
+  arrivedAtMinutes: number;
+  /** Present / Late / Absent, decided by the arrival time alone. */
+  status: 'PRESENT' | 'LATE' | 'ABSENT';
 }
 
 /**
@@ -222,12 +228,60 @@ export function classifyCheckIn(at: Date, policy: AttendancePolicy): CheckInVerd
   const grace = Math.max(0, Math.floor(policy.graceMinutes || 0));
   const threshold = start + grace;
   const actual = karachiMinutesOfDay(at);
+  const cutoff = parseClock(policy.absentCutoff);
 
   return {
     late: actual > threshold,
     lateByMinutes: actual > threshold ? actual - threshold : 0,
     lateAfter: formatClockValue(threshold),
+    /*
+      **Both thresholds are frozen onto the record at the punch**, because the
+      admin can move them. A day judged under an 11:10 / 13:00 rule must keep
+      being read that way after somebody sets the cutoff to 12:00 — the new
+      setting decides tomorrow, not last Tuesday.
+    */
+    absentAfter: cutoff === null ? null : formatClockValue(cutoff),
+    arrivedAtMinutes: actual,
+    /** What the day is worth, from the time of arrival alone. */
+    status: statusForArrival(actual, threshold, cutoff),
   };
+}
+
+/**
+ * The status a day earns **from the time somebody arrived**.
+ *
+ * ```
+ *            start 11:00   grace 10                    cutoff 13:00
+ *   ───────────────┬──────────┬───────────────────────────┬──────────────→
+ *        Present   │  Present │           Late            │    Absent
+ * ```
+ *
+ * **Arrival decides the day, not hours worked.** It used to be the other way
+ * round — `PRESENT` needed six hours on the clock — which meant somebody who
+ * checked in at 10:58 read **Half day** all morning and only became Present
+ * after checking out. Measured on 2026-09-12: three people in at 10:58, 10:59
+ * and 11:01, every one of them showing Half day.
+ *
+ * Two things fall out of this that are worth having:
+ *
+ * - **The day is right the moment somebody arrives**, and stays right whether
+ *   or not they remember to check out.
+ * - **Absence no longer depends on the sweep running.** Somebody who checks in
+ *   after the cutoff reads Absent from their own arrival time; the cron is only
+ *   needed for people who never check in at all.
+ */
+export function statusForArrival(
+  /** Minutes past midnight, Karachi. `null` when nobody checked in. */
+  arrivedAtMinutes: number | null,
+  lateAfterMinutes: number,
+  absentAfterMinutes: number | null
+): 'PRESENT' | 'LATE' | 'ABSENT' {
+  if (arrivedAtMinutes === null) return 'ABSENT';
+  if (arrivedAtMinutes <= lateAfterMinutes) return 'PRESENT';
+  // An unset cutoff means nothing is late enough to be an absence — the day is
+  // late and stays late, rather than everybody after the grace becoming absent.
+  if (absentAfterMinutes === null) return 'LATE';
+  return arrivedAtMinutes <= absentAfterMinutes ? 'LATE' : 'ABSENT';
 }
 
 /** Whether the absent cutoff has passed for a given moment (§4). */

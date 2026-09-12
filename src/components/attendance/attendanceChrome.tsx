@@ -58,7 +58,6 @@ export const ATTENDANCE_TONES: Record<AttendanceStatus, StatusTone> = {
   LATE: { soft: "#f3ece2", border: "#e0cdb4", text: "#7a5230", solid: "#8a5a33", onSolid: "#fff", letter: "L" },
   ABSENT: { soft: "#fdeeeb", border: "#f0c4bd", text: "#a33a29", solid: "#c0503c", onSolid: "#fff", letter: "A" },
   LEAVE: { soft: "#fdf5e0", border: "#ecdcae", text: "#8a6a17", solid: "#d9ad2b", onSolid: "#3a2d05", letter: "V" },
-  HALF_DAY: { soft: "#eef6fb", border: "#cfe2ee", text: "#3f7ea3", solid: "#4d86a8", onSolid: "#fff", letter: "H" },
   OFF: { soft: "#f2f6f6", border: "#e2eae9", text: "#8fa2a0", solid: "#c3d2d0", onSolid: "#25403e", letter: "—" },
   UNRECORDED: { soft: "#f9fbfb", border: "#eef3f2", text: "#b3c4c2", solid: "#e6eeed", onSolid: "#5b6d6b", letter: "·" },
 };

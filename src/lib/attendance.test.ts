@@ -14,8 +14,6 @@ import {
   normalizeIp,
   normalizeNetworkName,
   workedMinutes,
-  FULL_DAY_MINUTES,
-  HALF_DAY_MINUTES,
 } from './attendance.ts';
 
 const headers = (map: Record<string, string>) => ({
@@ -87,28 +85,76 @@ describe('worked time', () => {
   });
 });
 
-describe('derived day status', () => {
-  test('a full day is present', () => {
-    assert.equal(deriveStatus(597, true), 'PRESENT');
+describe('the day, decided by the time somebody arrived', () => {
+  /*
+    The owner's own settings, 2026-09-12: start 11:00, ten minutes' grace, and
+    absent from 13:00. So the bands are:
+
+        in by 11:10   → Present
+        11:10 – 13:00 → Late
+        after 13:00   → Absent
+  */
+  const LATE_AFTER = 11 * 60 + 10; // 11:10
+  const ABSENT_AFTER = 13 * 60; //    13:00
+  const at = (h: number, m = 0) => h * 60 + m;
+  const day = (h: number, m = 0) => deriveStatus(at(h, m), LATE_AFTER, ABSENT_AFTER);
+
+  test('in before the start is present', () => {
+    // The three people who prompted this: 10:58, 10:59 and 11:01, every one of
+    // them reading Half day because nobody had checked out yet.
+    assert.equal(day(10, 58), 'PRESENT');
+    assert.equal(day(10, 59), 'PRESENT');
+    assert.equal(day(11, 1), 'PRESENT');
   });
 
-  test('exactly six hours is still a full day', () => {
-    assert.equal(deriveStatus(360, true), 'PRESENT');
+  test('the last minute of grace is still present', () => {
+    assert.equal(day(11, 10), 'PRESENT');
   });
 
-  test('a short day is a half day, not an absence', () => {
-    assert.equal(deriveStatus(200, true), 'HALF_DAY');
+  test('a minute past the grace is late', () => {
+    assert.equal(day(11, 11), 'LATE');
   });
 
-  test('no activity at all is an absence', () => {
-    assert.equal(deriveStatus(0, false), 'ABSENT');
+  test('anything up to the cutoff is late, not absent', () => {
+    assert.equal(day(12, 0), 'LATE');
+    assert.equal(day(12, 59), 'LATE');
+    assert.equal(day(13, 0), 'LATE');
+  });
+
+  test('after the cutoff is absent, even though they turned up', () => {
+    assert.equal(day(13, 1), 'ABSENT');
+    assert.equal(day(17, 30), 'ABSENT');
+  });
+
+  test('never checking in is absent', () => {
+    assert.equal(deriveStatus(null, LATE_AFTER, ABSENT_AFTER), 'ABSENT');
+  });
+
+  test('checking out is irrelevant — arrival alone decides', () => {
+    // The old rule needed six hours on the clock before a day was Present, so
+    // somebody who had not checked out yet read Half day all morning.
+    assert.equal(day(10, 58), 'PRESENT');
+  });
+
+  test('moving the cutoff moves the band, which is what the setting is for', () => {
+    // "if i set 12 instead of 1 it should consider everyone after 12 absent"
+    const noon = 12 * 60;
+    assert.equal(deriveStatus(at(12, 30), LATE_AFTER, ABSENT_AFTER), 'LATE');
+    assert.equal(deriveStatus(at(12, 30), LATE_AFTER, noon), 'ABSENT');
+  });
+
+  test('with no cutoff set, a late arrival stays late rather than becoming absent', () => {
+    // Absent-from-nothing would mark the whole company absent the moment the
+    // field was cleared.
+    assert.equal(deriveStatus(at(20, 0), LATE_AFTER, null), 'LATE');
   });
 });
 
 describe('attendance rate', () => {
-  test('counts a half day as half, not as present', () => {
-    const { percent } = attendanceRate(['PRESENT', 'PRESENT', 'HALF_DAY', 'PRESENT']);
-    assert.equal(percent, 87.5);
+  test('a late day is a full day attended', () => {
+    // The penalty for lateness is the deduction rule, not a second one hidden
+    // in the attendance percentage.
+    assert.equal(attendanceRate(['PRESENT', 'PRESENT', 'LATE', 'PRESENT']).percent, 100);
   });
 
   test('weekly offs are not working days', () => {
@@ -203,11 +249,13 @@ test('punch: an earlier check out never shortens a recorded day', () => {
   assert.deepEqual(lastAt, T('18:10'));
 });
 
-test('punch: a day checked in but not out is never graded absent', () => {
-  // `workedMinutes` is 0 until check-out, and 0 minutes with a record present
-  // must still count as attendance — otherwise everyone reads absent all morning.
-  assert.equal(deriveStatus(0, true), 'HALF_DAY');
-  assert.notEqual(deriveStatus(0, true), 'ABSENT');
+test('punch: a day checked in but not out is graded on the arrival, not the hours', () => {
+  // This is the whole change. `workedMinutes` is 0 until check-out, and the old
+  // rule read that as "not a full day" — so somebody who arrived at 10:58 was a
+  // half day until they went home. Arrival decides it now.
+  const lateAfter = 11 * 60 + 10;
+  assert.equal(deriveStatus(10 * 60 + 58, lateAfter, 13 * 60), 'PRESENT');
+  assert.notEqual(deriveStatus(10 * 60 + 58, lateAfter, 13 * 60), 'ABSENT');
 });
 
 
@@ -416,42 +464,6 @@ describe('distance, as somebody reads it', () => {
   test('no distance says so rather than reading zero', () => {
     assert.equal(formatDistance(null), 'an unknown distance');
   });
-});
-
-/* -------------------------------------------------------------------------- */
-/* The status a day earns                                                      */
-/* -------------------------------------------------------------------------- */
-
-test('a full day is Present', () => {
-  assert.equal(deriveStatus(FULL_DAY_MINUTES, true), 'PRESENT');
-  assert.equal(deriveStatus(FULL_DAY_MINUTES + 120, true), 'PRESENT');
-});
-
-test('a day with no activity at all is Absent', () => {
-  assert.equal(deriveStatus(0, false), 'ABSENT');
-  assert.equal(deriveStatus(480, false), 'ABSENT');
-});
-
-test('a day opened and never closed is a half day, never absent', () => {
-  // The system cannot observe a check-out that did not happen; grading it
-  // absent punishes somebody for the one thing it cannot see.
-  assert.equal(deriveStatus(0, true), 'HALF_DAY');
-});
-
-test('everything short of a full day is a half day', () => {
-  for (const minutes of [1, 30, HALF_DAY_MINUTES - 1, HALF_DAY_MINUTES, FULL_DAY_MINUTES - 1]) {
-    assert.equal(deriveStatus(minutes, true), 'HALF_DAY', `${minutes} minutes`);
-  }
-});
-
-test('a half day counts as half in the rate, and leave leaves the denominator', () => {
-  // PRESENT and LATE are both a full day worked — being late is a punctuality
-  // fact, not an attendance one.
-  assert.equal(attendanceRate(['PRESENT', 'LATE']).percent, 100);
-  assert.equal(attendanceRate(['PRESENT', 'ABSENT']).percent, 50);
-  assert.equal(attendanceRate(['PRESENT', 'HALF_DAY']).percent, 75);
-  assert.equal(attendanceRate(['PRESENT', 'LEAVE']).percent, 100);
-  assert.equal(attendanceRate(['PRESENT', 'OFF']).percent, 100);
 });
 
 test('a month of nothing but leave has no rate, rather than a rate of zero', () => {

@@ -11,7 +11,7 @@ import { duplicatePhoneMessage, fieldKeyFor, phoneKey, type DataBankStatus } fro
 import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
-import { deriveStatus, type AttendanceStatus } from '@/lib/attendance';
+import { statusOfRecord, type AttendanceStatus } from '@/lib/attendance';
 import { dealAmounts, readCutBase, readDealType, readPayoutSource, validateDealAmounts } from '@/lib/dealAmounts';
 import {
   buildPayrollLine,
@@ -2387,9 +2387,9 @@ export const demo = {
         .sort((a, b) => a.dayKey.localeCompare(b.dayKey))
         .map((row) => {
           const minutes = row.workedMinutes ?? 0;
-          const status: AttendanceStatus =
-            row.overrideStatus ??
-            (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt || row.adjustedCheckIn)));
+          // The demo mirrors the real path exactly, or it demonstrates
+          // behaviour the product does not have.
+          const status: AttendanceStatus = statusOfRecord(row);
           const clock = (value: FirestoreTimestamp | undefined) => {
             const date = value?.toDate?.();
             return date
@@ -2420,10 +2420,9 @@ export const demo = {
       const count = (status: AttendanceStatus) => days.filter((d) => d.status === status).length;
       const present = count('PRESENT');
       const late = count('LATE');
-      const halfDay = count('HALF_DAY');
       const absent = count('ABSENT');
-      const considered = present + late + halfDay + absent;
-      const credited = present + late + halfDay * 0.5;
+      const considered = present + late + absent;
+      const credited = present + late;
 
       return {
         uid: employee.uid,
@@ -2438,7 +2437,6 @@ export const demo = {
         late,
         absent,
         leave: count('LEAVE'),
-        halfDay,
         off: count('OFF'),
         workedMinutes: days.reduce((sum, day) => sum + day.minutes, 0),
         rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
@@ -2530,9 +2528,7 @@ export const demo = {
       const days = state.attendance.filter(
         (row) => row.uid === employee.uid && row.dayKey.startsWith(month)
       );
-      const statusOf = (row: (typeof days)[number]): AttendanceStatus =>
-        row.overrideStatus ??
-        (row.late ? 'LATE' : deriveStatus(row.workedMinutes ?? 0, Boolean(row.firstActionAt)));
+      const statusOf = (row: (typeof days)[number]): AttendanceStatus => statusOfRecord(row);
 
       const late = days.filter((row) => statusOf(row) === 'LATE').length;
 
@@ -2552,7 +2548,7 @@ export const demo = {
         lateCount: late,
         absentCount: days.filter((row) => statusOf(row) === 'ABSENT').length,
         leaveCount: days.filter((row) => statusOf(row) === 'LEAVE').length,
-        presentCount: days.filter((row) => ['PRESENT', 'HALF_DAY', 'LATE'].includes(statusOf(row))).length,
+        presentCount: days.filter((row) => ['PRESENT', 'LATE'].includes(statusOf(row))).length,
       });
     });
 
@@ -3038,23 +3034,21 @@ export const demo = {
     const employee = state.employees.find((e) => e.uid === target);
     const policy = state.attendancePolicy;
 
-    let present = 0, late = 0, absent = 0, leave = 0, halfDay = 0, minutesTotal = 0;
+    let present = 0, late = 0, absent = 0, leave = 0, minutesTotal = 0;
 
     for (const row of state.attendance) {
       if (row.uid !== target || !row.dayKey.startsWith(month)) continue;
       const minutes = row.workedMinutes ?? 0;
       minutesTotal += minutes;
-      const status: AttendanceStatus =
-        row.overrideStatus ?? (row.late ? 'LATE' : deriveStatus(minutes, Boolean(row.firstActionAt)));
+      const status: AttendanceStatus = statusOfRecord(row);
       if (status === 'PRESENT') present += 1;
       else if (status === 'LATE') late += 1;
       else if (status === 'ABSENT') absent += 1;
       else if (status === 'LEAVE') leave += 1;
-      else if (status === 'HALF_DAY') halfDay += 1;
     }
 
-    const considered = present + late + halfDay + absent;
-    const credited = present + late + halfDay * 0.5;
+    const considered = present + late + absent;
+    const credited = present + late;
     const { outcomes, total } = monthDeductions(late, policy, employee?.monthlySalary ?? 0);
 
     return ok({
@@ -3064,7 +3058,6 @@ export const demo = {
       late,
       absent,
       leave,
-      halfDay,
       workedMinutes: minutesTotal,
       rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
       deductions: outcomes,
@@ -3940,6 +3933,16 @@ export const demo = {
     if (folder) {
       folder.recordCount = Math.max(0, folder.recordCount - 1);
       folder.promotedCount += 1;
+
+      // An emptied manager's mirror is deleted, as `cleanupEmptyMirror` does on
+      // the real path: it is a holding place, and once the last row has been
+      // promoted it is an empty folder with its source's name sitting beside
+      // it in the list. Its promoted rows are credited back to the source.
+      if (folder.sourceFolderId && folder.recordCount === 0) {
+        const source = state.dataBankFolders.find((f) => f.id === folder.sourceFolderId);
+        if (source) source.promotedCount += folder.promotedCount;
+        state.dataBankFolders = state.dataBankFolders.filter((f) => f.id !== folder.id);
+      }
     }
     emit();
     return ok({ leadId, clientFolderId: goesToClients && folder ? `db_${assignedUserId}_${folder.id}` : null });

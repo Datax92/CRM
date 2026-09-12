@@ -72,6 +72,12 @@ const MODULES: Array<Omit<Entry, "figure" | "detail"> & { detail: string }> = [
     d: "M4 16l5-5 4 3 7-8M15 6h6v6",
   },
   {
+    label: "Car Sale",
+    detail: "Cars bought with partners, and what each one earned",
+    href: "/admin/accounts/car-sale",
+    d: "M5 17h14M6 17l-1-5 2-4h10l2 4-1 5M7.5 13.5h.01M16.5 13.5h.01",
+  },
+  {
     label: "Capital Investments",
     detail: "What went into a venture, and what it cost",
     href: "/admin/accounts/capital-investments",

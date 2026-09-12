@@ -47,19 +47,39 @@ export default function DataBankPage() {
   // on the surface actually rendering so the two do not both subscribe.
   const isMobile = useIsMobile();
 
-  const { folders, loading, error } = useDataBankFolders(isManager && !isMobile, {
+  const { folders, mirrors, loading, error } = useDataBankFolders(isManager && !isMobile, {
     role,
     uid: user?.uid,
   });
-  // Only to name the manager on a handed-over folder. An admin's grid now
-  // shows both the originals and the managers' mirrors of them, and two cards
-  // reading "Facile Town 2" with no way to tell them apart would be worse than
-  // not showing the mirror at all.
+  // To name who is holding a folder's handed-over rows. The mirrors are no
+  // longer cards of their own in the admin's grid — they sat beside the folder
+  // they came from, with the same name, and read as duplicates appearing on
+  // their own. `Handed on` is the way into them instead.
   const { subAdmins } = useSubAdmins(isAdmin && !isMobile);
   const managerNames = useMemo(
     () => new Map(subAdmins.map((manager) => [manager.uid, manager.name])),
     [subAdmins]
   );
+
+  /*
+    Mirrors grouped under the folder they came out of, so a source folder can
+    say **who** is holding its handed-over rows rather than only how many.
+    Costs nothing: they arrive in the same snapshot the grid is already reading.
+  */
+  const heldBySource = useMemo(() => {
+    const byId = new Map<string, Array<{ id: string; name: string; records: number }>>();
+    for (const mirror of mirrors) {
+      if (!mirror.sourceFolderId) continue;
+      const list = byId.get(mirror.sourceFolderId) ?? [];
+      list.push({
+        id: mirror.id,
+        name: mirror.subAdminUid ? (managerNames.get(mirror.subAdminUid) ?? "a manager") : "a manager",
+        records: mirror.recordCount,
+      });
+      byId.set(mirror.sourceFolderId, list);
+    }
+    return byId;
+  }, [mirrors, managerNames]);
 
   const [formFor, setFormFor] = useState<{ folder: DataBankFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<DataBankFolder | null>(null);
@@ -158,6 +178,7 @@ export default function DataBankPage() {
                   ? (managerNames.get(folder.subAdminUid) ?? "a manager")
                   : null
               }
+              heldBy={heldBySource.get(folder.id)}
               basePath={isAdmin ? "/admin/data-bank" : "/subadmin/data-bank"}
               /* A manager owns every folder their query returns, so both
                  controls are theirs. The Server Action re-checks it. */
@@ -171,6 +192,10 @@ export default function DataBankPage() {
       {formFor && (
         <FolderFormModal
           folder={formFor.folder}
+          /* Mirrors included: they are hidden from the grid, but a new folder
+             sharing a mirror's name is exactly the collision worth warning
+             about. No extra read — both lists are already on screen. */
+          existing={[...folders, ...mirrors]}
           getIdToken={getIdToken}
           onClose={() => setFormFor(null)}
           onSaved={(message) => {
@@ -195,6 +220,7 @@ export default function DataBankPage() {
 function FolderCard({
   folder,
   ownerName,
+  heldBy,
   basePath,
   onEdit,
   onDelete,
@@ -202,6 +228,16 @@ function FolderCard({
   folder: DataBankFolder;
   /** Set when this folder is a manager's mirror — see `ensureManagerFolder`. */
   ownerName?: string | null;
+  /**
+   * The managers holding rows from this folder, and how many each has.
+   *
+   * They used to be cards of their own in the grid — same name as this folder,
+   * ordered next to it, which read as a duplicate that had appeared on its own.
+   * The count below names them instead, so "where did my 9 rows go" is answered
+   * on the folder they left rather than by a second folder that looks like a
+   * copy of it.
+   */
+  heldBy?: Array<{ id: string; name: string; records: number }>;
   /**
    * Where this role's Data Bank lives. Hardcoding `/admin/data-bank` sent a
    * manager into the admin's URL space — it happened to render, because the
@@ -279,6 +315,27 @@ function FolderCard({
           )}
         </div>
       </Link>
+
+      {/* Outside the <Link>, because each of these is its own destination — a
+          link inside a link is not a nested target, it is an invalid one. */}
+      {heldBy && heldBy.length > 0 && (
+        <div className="border-t border-[#f0f6f5] px-5 py-3">
+          <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Held by</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {heldBy.map((mirror) => (
+              <Link
+                key={mirror.id}
+                href={`${basePath}/${mirror.id}`}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#eaf1f6] px-2.5 py-1 text-[11.5px] text-[#4d7590] transition-colors hover:bg-[#dbe8f1]"
+              >
+                <UserCheck size={11} />
+                {mirror.name} — {mirror.records.toLocaleString()}
+                <ChevronRight size={11} />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Kept out of the <Link> so they are separate targets, not nested ones.
           Absent only when a caller passes neither, so the row collapses rather
