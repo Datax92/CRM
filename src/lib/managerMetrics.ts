@@ -35,6 +35,16 @@ export interface ManagerMetrics {
   name: string;
   email: string;
   status: 'ACTIVE' | 'DISABLED';
+  /**
+   * Sales or HR (§13).
+   *
+   * Carried through because this *is* the manager on every screen that shows
+   * one, and it was being dropped here — so the phone's manager card had no way
+   * to tell an HR manager from a sales one, and HR's reach is the whole company
+   * while a sales manager's is one team. Absent is read as Sales by
+   * `normalizeManagerKind`, so nothing needs migrating.
+   */
+  managerKind?: EmployeeMetrics['managerKind'];
   /** The employees this total is the sum of. */
   team: EmployeeMetrics[];
   headcount: number;
@@ -80,6 +90,7 @@ export function buildManagerMetrics(
     name: manager.name,
     email: manager.email,
     status: manager.status,
+    managerKind: manager.managerKind,
     team,
     // The team, not everyone in the total — see the module note.
     headcount: team.length,

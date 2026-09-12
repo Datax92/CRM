@@ -56,6 +56,7 @@ import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "./AnalyticsPanels";
 import { buildManagerMetrics } from "@/lib/managerMetrics";
 import { formatCompactMoney } from "@/lib/money";
 import { countByFilter } from "@/lib/leadBuckets";
+import { roleTitle } from "@/lib/constants/hierarchy";
 import { useDossierActivity } from "@/hooks/useDossierActivity";
 import { DossierFilterBar, Pager } from "./DossierControls";
 
@@ -390,7 +391,11 @@ export function EmployeeDetailModal({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  Manager · {(team ?? []).length} {(team ?? []).length === 1 ? "employee" : "employees"}
+                  {/* **The kind, not just "Manager".** Sales and HR differ in
+                      what they can reach across the whole app (§13), and the
+                      card behind this panel already says which — so a bare
+                      "Manager" here read as the panel disagreeing with it. */}
+                  {roleTitle(employee)} · {(team ?? []).length} {(team ?? []).length === 1 ? "employee" : "employees"}
                 </span>
               ) : (
                 <span
@@ -424,7 +429,10 @@ export function EmployeeDetailModal({
             </div>
             <div style={{ fontSize: 12.5, fontWeight: 500, opacity: 0.85, marginTop: 4 }}>
               {employee.email}
-              {employee.jobTitle && <> &nbsp;·&nbsp; {employee.jobTitle}</>}
+              {/* `roleTitle`, never `jobTitle`: a manager has no job title, and
+                  every manager on this project carries a stale "Sales
+                  Executive" from before they were promoted. */}
+              {!isManager && <> &nbsp;·&nbsp; {roleTitle(employee)}</>}
               {(employee.joinedAt || employee.createdAt) && (
                 <> &nbsp;·&nbsp; Joined {formatBusinessDate(employee.joinedAt ?? employee.createdAt)}</>
               )}
@@ -1102,7 +1110,7 @@ function TeamRoster({
                   whiteSpace: "nowrap",
                 }}
               >
-                {member.jobTitle || member.email}
+                {roleTitle(member) || member.email}
               </span>
             </span>
 

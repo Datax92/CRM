@@ -10,7 +10,7 @@ import {
 import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { karachiMonthKey } from "@/lib/dates";
-import { monthDeductions, type AttendancePolicy } from "@/lib/attendancePolicy";
+import { monthAttendanceDeductions, type AttendancePolicy } from "@/lib/attendancePolicy";
 import {
   DEFAULT_SALARY_PROFILE,
   buildPayrollLine,
@@ -24,7 +24,9 @@ import {
   type SalaryProfile,
 } from "@/lib/payroll";
 import { statusOfRecord } from "@/lib/attendance";
+import { roleTitle } from "@/lib/constants/hierarchy";
 import { readPolicy } from "./attendance";
+import { payFromAccounts } from "./ledger";
 import { FieldValue } from "firebase-admin/firestore";
 
 /**
@@ -104,7 +106,7 @@ export async function listSalaryProfiles(
           uid: doc.id,
           name: (data.name as string) ?? (data.email as string) ?? "Unnamed",
           email: (data.email as string) ?? null,
-          jobTitle: (data.jobTitle as string) ?? null,
+          jobTitle: roleTitle(data),
           role: (data.role as string) ?? "employee",
           ...readProfile(data),
         };
@@ -188,6 +190,23 @@ export interface PayrollPeriod {
   totals: ReturnType<typeof payrollTotals>;
   generatedAt: string | null;
   generatedByUid: string | null;
+  /**
+   * **What the month owes, and how much of it has actually left an account.**
+   *
+   * `amount` is the net total, written whenever the period is generated;
+   * `paidAmount` is **summed from the payslips** rather than stored, because
+   * salaries are paid one person at a time and a second running total is a
+   * second thing that can be wrong.
+   *
+   * Approving a payroll says the company agreed the figures; paying says the
+   * money moved. Two different facts, and the screen shows both — exactly as an
+   * office expense does.
+   */
+  amount: number;
+  paidAmount: number;
+  paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID";
+  /** Per person, keyed by uid. Empty until the month is approved. */
+  payments: Record<string, { amount: number; paidAmount: number; status: string }>;
   /** Every status change and every line edit, oldest first. */
   history: {
     at: string | null;
@@ -233,6 +252,8 @@ interface AttendanceFigures {
   absent: number;
   leave: number;
   present: number;
+  /** Why the deduction is what it is, one line per charge. */
+  basis: string[];
 }
 
 /**
@@ -260,13 +281,14 @@ async function attendanceByUid(
   const figures = new Map<string, AttendanceFigures>();
   const bump = (uid: string, patch: Partial<AttendanceFigures>) => {
     const current =
-      figures.get(uid) ?? { deduction: 0, late: 0, absent: 0, leave: 0, present: 0 };
+      figures.get(uid) ?? { deduction: 0, late: 0, absent: 0, leave: 0, present: 0, basis: [] };
     figures.set(uid, {
       deduction: current.deduction + (patch.deduction ?? 0),
       late: current.late + (patch.late ?? 0),
       absent: current.absent + (patch.absent ?? 0),
       leave: current.leave + (patch.leave ?? 0),
       present: current.present + (patch.present ?? 0),
+      basis: patch.basis ?? current.basis,
     });
   };
 
@@ -291,9 +313,29 @@ async function attendanceByUid(
       bump(line.uid, { deduction: Number(line.amount ?? 0) });
     }
   } else {
+    /*
+      **Lates *and* absences.** This read `monthDeductions(entry.late, …)` until
+      2026-09-12, so a month of absences reduced nobody's pay — measured on the
+      live September payroll, all seven people were docked Rs 0 including
+      somebody absent five days on a 35,000 salary. `monthAttendanceDeductions`
+      is the single reading of "what does this month's attendance cost", so the
+      two halves can never again be added at one call site and forgotten at
+      another.
+    */
     for (const [uid, entry] of figures) {
+      const charges = monthAttendanceDeductions(
+        { late: entry.late, absent: entry.absent },
+        policy,
+        salaries.get(uid) ?? 0
+      );
       bump(uid, {
-        deduction: monthDeductions(entry.late, policy, salaries.get(uid) ?? 0).total,
+        deduction: charges.total,
+        // Frozen onto the line so a payslip can say *why* — "Absence #1 of the
+        // month — one day's pay (26-day month)" — for ever, even after the
+        // policy behind it changes.
+        basis: [...charges.late, ...charges.absent]
+          .filter((outcome) => outcome.deducted)
+          .map((outcome) => outcome.basis),
       });
     }
   }
@@ -351,10 +393,12 @@ export async function generatePayroll(
         uid: doc.id,
         name: (data.name as string) ?? (data.email as string) ?? "Unnamed",
         email: (data.email as string) ?? null,
-        jobTitle: (data.jobTitle as string) ?? null,
+        // A manager's kind, an employee's job title — see `listSalaryProfiles`.
+        jobTitle: roleTitle(data),
         profile: readProfile(data),
         commission: commission.get(doc.id) ?? 0,
         attendanceDeduction: figures?.deduction ?? 0,
+        deductionBasis: figures?.basis ?? [],
         lateCount: figures?.late ?? 0,
         absentCount: figures?.absent ?? 0,
         leaveCount: figures?.leave ?? 0,
@@ -371,6 +415,21 @@ export async function generatePayroll(
         status: "DRAFT",
         lines,
         totals,
+        /*
+          **The obligation, in the shape the ledger already understands.**
+          `payFromAccounts` reads `amount` off whatever record it is funding —
+          so writing the net total here is the whole of what makes a payroll
+          payable from the Committee, Car Sale or any other account, with the
+          same split control and the same duplicate-payment guard every other
+          module uses.
+
+          Regenerating is only possible while the period is editable, and an
+          editable period cannot have been paid, so resetting the payment here
+          can never wipe a payment that exists.
+        */
+        amount: totals.net,
+        paidAmount: 0,
+        paymentStatus: "UNPAID",
         generatedAt: FieldValue.serverTimestamp(),
         generatedByUid: auth.uid,
         history: FieldValue.arrayUnion({
@@ -404,6 +463,10 @@ export async function getPayroll(
         status: "DRAFT" as PayrollStatus,
         lines: [],
         totals: payrollTotals([]),
+        amount: 0,
+        paidAmount: 0,
+        paymentStatus: "UNPAID" as const,
+        payments: {},
         generatedAt: null,
         generatedByUid: null,
         history: [],
@@ -414,11 +477,56 @@ export async function getPayroll(
     const data = snap.data() ?? {};
     const lines = (data.lines ?? []) as PayrollLine[];
 
+    /*
+      **Each person's payment, read from their payslip.** They exist only once
+      the month is approved, so before that this is empty and the screen shows
+      no Pay from — which is the rule, not a coincidence.
+    */
+    const payments: PayrollPeriod["payments"] = {};
+    let paidTotal = 0;
+    if (data.status === "APPROVED" || data.status === "PAID") {
+      const slips = await adminDb.collection(SLIPS).where("monthKey", "==", month).get();
+      for (const slip of slips.docs) {
+        const slipData = slip.data();
+        if (slipData.current === false) continue;
+        const uid = String(slipData.uid ?? "");
+        if (!uid) continue;
+        const amount = typeof slipData.amount === "number"
+          ? slipData.amount
+          : Number((slipData.line as PayrollLine | undefined)?.net ?? 0);
+        const paidAmount = Number(slipData.paidAmount ?? 0);
+        paidTotal += paidAmount;
+        payments[uid] = {
+          amount,
+          paidAmount,
+          status: paidAmount <= 0 ? "UNPAID" : paidAmount >= amount ? "PAID" : "PARTIALLY_PAID",
+        };
+      }
+    }
+
     return {
       monthKey: month,
       status: (data.status as PayrollStatus) ?? "DRAFT",
+      payments,
       lines,
       totals: payrollTotals(lines),
+      /*
+        **Read out of the snapshot, not assumed.** A field typed on an
+        interface and never taken out of the document is this project's most
+        repeated bug — seven times now — and it never shows as an error, only
+        as a screen confidently displaying the default. `amount` falls back to
+        the recomputed net so a period generated before this field existed is
+        still payable.
+      */
+      amount: typeof data.amount === "number" ? data.amount : payrollTotals(lines).net,
+      // Summed from the payslips above — never a stored second total.
+      paidAmount: paidTotal,
+      paymentStatus:
+        paidTotal <= 0
+          ? ("UNPAID" as const)
+          : paidTotal >= (typeof data.amount === "number" ? data.amount : payrollTotals(lines).net)
+            ? ("PAID" as const)
+            : ("PARTIALLY_PAID" as const),
       generatedAt: data.generatedAt?.toDate?.()?.toISOString() ?? null,
       generatedByUid: (data.generatedByUid as string) ?? null,
       history: ((data.history ?? []) as Record<string, unknown>[]).map((entry) => ({
@@ -490,6 +598,67 @@ export async function adjustPayrollLine(
 }
 
 /**
+ * Freezes the month onto one payslip per employee, and tells each of them.
+ *
+ * Shared by the status change and by the payment, which are two ways of
+ * reaching the same state: approving copies the lines onto the slips, and
+ * paying the last rupee moves the month to `PAID`. Two copies of this would be
+ * two chances for a payslip to say something the payroll does not.
+ */
+function writeSlipsAndNotices(
+  batch: FirebaseFirestore.WriteBatch,
+  month: string,
+  lines: PayrollLine[],
+  status: PayrollStatus,
+  auth: DecodedAuth
+): void {
+  for (const line of lines) {
+    batch.set(
+      adminDb.collection(SLIPS).doc(`${line.uid}_${month}`),
+      {
+        uid: line.uid,
+        monthKey: month,
+        status,
+        line,
+        /*
+          **The payslip is the obligation, and that is what makes a salary
+          payable per person.** `payFromAccounts` reads `amount` off whatever
+          record it funds and writes `paidAmount` back, so one person's month
+          can be settled from the Committee while another's comes out of Car
+          Sale — which is what the owner asked for.
+
+          It only exists once the month is approved, which is exactly when
+          paying becomes allowed. `merge: true` means a re-approval never
+          resets a payment that has already been made.
+        */
+        amount: line.net,
+        current: true,
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedByUid: auth.uid,
+        approvedByName: auth.name ?? auth.email ?? null,
+      },
+      { merge: true }
+    );
+
+    batch.set(adminDb.collection("notifications").doc(), {
+      type: status === "PAID" ? "SALARY_PAID" : "SALARY_APPROVED",
+      leadId: null,
+      targetRole: "employee",
+      targetUid: line.uid,
+      payload: {
+        message:
+          status === "PAID"
+            ? `Your salary for ${month} has been paid: Rs ${line.net.toLocaleString("en-PK")}.`
+            : `Your salary slip for ${month} is ready: Rs ${line.net.toLocaleString("en-PK")}.`,
+        monthKey: month,
+      },
+      createdAt: FieldValue.serverTimestamp(),
+      readAt: null,
+    });
+  }
+}
+
+/**
  * Moves the period through Draft → Reviewed → Approved → Paid.
  *
  * **Approving freezes the month.** The lines are copied into one `payslips`
@@ -515,18 +684,31 @@ export async function setPayrollStatus(
     const data = snap.data() ?? {};
     const current = (data.status as PayrollStatus) ?? "DRAFT";
 
-    if (!canTransition(current, status)) {
+    const isAdmin = auth.role === "admin";
+
+    /*
+      **Only the admin approves, and only the admin pays.** HR prepares a
+      payroll and sends it up; approving their own would make the review step a
+      formality that proved nothing — which is what it was, because this used to
+      check the role on `PAID` alone.
+    */
+    if (status === "APPROVED" && !isAdmin) {
+      throw new UserFacingError(
+        "Only an administrator can approve a payroll. Send it for approval and the admin will release it."
+      );
+    }
+    if (status === "PAID") {
+      throw new UserFacingError(
+        "A payroll becomes paid when the salaries are actually paid out of an account — use Pay from on each person."
+      );
+    }
+
+    if (!canTransition(current, status, isAdmin)) {
       throw new UserFacingError(
         current === "PAID"
           ? "This payroll has been paid. Correct it with an adjustment on the next month rather than rewriting a paid one."
           : `A ${current.toLowerCase()} payroll cannot go straight to ${status.toLowerCase()}.`
       );
-    }
-
-    // Only the admin marks money as paid. HR prepares and reviews; releasing
-    // the payment is the decision the brief keeps with the admin.
-    if (status === "PAID" && auth.role !== "admin") {
-      throw new UserFacingError("Only an administrator can mark a payroll as paid.");
     }
 
     const lines = (data.lines ?? []) as PayrollLine[];
@@ -545,39 +727,10 @@ export async function setPayrollStatus(
       }),
     });
 
-    if (status === "APPROVED" || status === "PAID") {
-      for (const line of lines) {
-        batch.set(
-          adminDb.collection(SLIPS).doc(`${line.uid}_${month}`),
-          {
-            uid: line.uid,
-            monthKey: month,
-            status,
-            line,
-            current: true,
-            approvedAt: FieldValue.serverTimestamp(),
-            approvedByUid: auth.uid,
-            approvedByName: auth.name ?? auth.email ?? null,
-          },
-          { merge: true }
-        );
-
-        batch.set(adminDb.collection("notifications").doc(), {
-          type: status === "PAID" ? "SALARY_PAID" : "SALARY_APPROVED",
-          leadId: null,
-          targetRole: "employee",
-          targetUid: line.uid,
-          payload: {
-            message:
-              status === "PAID"
-                ? `Your salary for ${month} has been paid: Rs ${line.net.toLocaleString("en-PK")}.`
-                : `Your salary slip for ${month} is ready: Rs ${line.net.toLocaleString("en-PK")}.`,
-            monthKey: month,
-          },
-          createdAt: FieldValue.serverTimestamp(),
-          readAt: null,
-        });
-      }
+    // `PAID` is refused above — it is reached by paying, not by a status
+    // change — so approving is the only thing that writes the slips here.
+    if (status === "APPROVED") {
+      writeSlipsAndNotices(batch, month, lines, status, auth);
     }
 
     if (status === "REVIEWED" && current === "APPROVED") {
@@ -689,4 +842,156 @@ export async function setSalaryAccess(
 /** The default profile, so a caller can render an empty form without guessing. */
 export async function defaultSalaryProfile(): Promise<SalaryProfile> {
   return { ...DEFAULT_SALARY_PROFILE };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Paying people, out of real accounts                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pays **one person's** month out of one or more accounts.
+ *
+ * The owner's instruction: *"in front of every employee there should be an
+ * option to pay from, after approved, and we can select any account which
+ * generates income."* So the obligation is the **payslip** — `payslips/{uid}_{month}`,
+ * which exists only once the month is approved and already carries the frozen
+ * figures — and the funding is any account, exactly as an office expense works.
+ * Sundus can be paid out of the Committee and Rafia out of Car Sale, on
+ * different days, and each carries her own paid/unpaid state.
+ *
+ * It is a **wrapper, not a second payment path**: `payFromAccounts` does the
+ * money, so this inherits the split arithmetic, the refusal to over-allocate
+ * and the in-transaction guard that makes a double payment impossible. What it
+ * adds is the three rules payroll owns and the ledger has no business knowing:
+ *
+ * - **Only an approved month may be paid.** Money must not leave against
+ *   figures nobody has approved.
+ * - **Only the admin pays.** HR prepares, reviews and approves.
+ * - **When the last person is settled the month becomes `PAID`.** The status
+ *   follows the money rather than the other way round.
+ */
+export async function payPayrollLine(
+  token: string,
+  monthKey: string,
+  uid: string,
+  input: {
+    allocations: Array<{ accountId: string; amount: number }>;
+    dayKey?: string;
+    note?: string | null;
+  }
+): Promise<ActionResult<{ posted: number; fullyPaid: boolean; monthSettled: boolean }>> {
+  return runAction("payPayrollLine", async () => {
+    const auth = await verifyAuth(token);
+    if (auth.role !== "admin") {
+      throw new UserFacingError("Only an administrator can pay a salary.");
+    }
+
+    const month = monthKey.slice(0, 7);
+    const periodRef = adminDb.collection(PERIODS).doc(month);
+    const periodSnap = await periodRef.get();
+    if (!periodSnap.exists) throw new UserFacingError("Generate the payroll for this month first.");
+
+    const data = periodSnap.data() ?? {};
+    const status = (data.status as PayrollStatus) ?? "DRAFT";
+    if (status === "DRAFT" || status === "REVIEWED") {
+      throw new UserFacingError(
+        `${month} is ${status.toLowerCase()}. Approve it before paying anybody — money should not leave against figures nobody has approved.`
+      );
+    }
+
+    const lines = (data.lines ?? []) as PayrollLine[];
+    const line = lines.find((entry) => entry.uid === uid);
+    if (!line) throw new UserFacingError("That employee is not on this payroll.");
+
+    const slipRef = adminDb.collection(SLIPS).doc(`${uid}_${month}`);
+    const slipSnap = await slipRef.get();
+    if (!slipSnap.exists) throw new UserFacingError("That payslip does not exist yet.");
+    // A slip approved before the payment fields existed carries no `amount`.
+    if (typeof slipSnap.data()?.amount !== "number") {
+      await slipRef.update({ amount: line.net });
+    }
+
+    const result = await payFromAccounts(token, {
+      sourceModule: "PAYROLL",
+      sourceCollection: SLIPS,
+      sourceId: `${uid}_${month}`,
+      sourceLabel: `${line.name} — salary ${month}`,
+      allocations: input.allocations,
+      dayKey: input.dayKey,
+      note: input.note ?? null,
+    });
+    if (!result.ok) throw new UserFacingError(result.error);
+
+    /*
+      **The month is settled when everybody is.** Read back rather than counted
+      up from this payment, so two people paid at once cannot both conclude
+      they were the last.
+    */
+    const slips = await adminDb.collection(SLIPS).where("monthKey", "==", month).get();
+    const settled = slips.docs
+      .filter((doc) => doc.data().current !== false)
+      .every((doc) => Number(doc.data().paidAmount ?? 0) >= Number(doc.data().amount ?? 0));
+
+    if (settled && status === "APPROVED") {
+      await periodRef.update({
+        status: "PAID",
+        paidAt: FieldValue.serverTimestamp(),
+        paidByUid: auth.uid,
+        history: FieldValue.arrayUnion({
+          at: new Date(),
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          action: "STATUS_PAID",
+          detail: `APPROVED → PAID — everybody on ${month} has been paid`,
+        }),
+      });
+    }
+
+    return { posted: result.data.posted, fullyPaid: result.data.fullyPaid, monthSettled: settled };
+  });
+}
+
+/**
+ * Deletes a month's payroll so it can be started again.
+ *
+ * **The admin's alone**, at the owner's instruction — HR prepares a payroll and
+ * does not throw one away.
+ *
+ * **Refused once a rupee of it has been paid.** Deleting then would leave money
+ * gone from an account with nothing on the books explaining it, and unlike a
+ * regenerate there would be no record left to correct. The message names who
+ * has been paid so there is something to act on.
+ */
+export async function deletePayroll(
+  token: string,
+  monthKey: string
+): Promise<ActionResult<{ slipsRemoved: number }>> {
+  return runAction("deletePayroll", async () => {
+    const auth = await requireAdmin(token);
+    const month = monthKey.slice(0, 7);
+
+    const ref = adminDb.collection(PERIODS).doc(month);
+    const snap = await ref.get();
+    if (!snap.exists) throw new UserFacingError("There is no payroll for that month.");
+
+    const slips = await adminDb.collection(SLIPS).where("monthKey", "==", month).get();
+    const paid = slips.docs.filter((doc) => Number(doc.data().paidAmount ?? 0) > 0);
+    if (paid.length > 0) {
+      const names = paid
+        .map((doc) => (doc.data().line as PayrollLine | undefined)?.name ?? "somebody")
+        .slice(0, 3)
+        .join(", ");
+      throw new UserFacingError(
+        `${month} cannot be deleted — ${paid.length} ${paid.length === 1 ? "salary has" : "salaries have"} already been paid (${names}${paid.length > 3 ? "…" : ""}). Remove those payments from their accounts first.`
+      );
+    }
+
+    const batch = adminDb.batch();
+    slips.docs.forEach((doc) => batch.delete(doc.ref));
+    batch.delete(ref);
+    await batch.commit();
+
+    void auth;
+    return { slipsRemoved: slips.size };
+  });
 }

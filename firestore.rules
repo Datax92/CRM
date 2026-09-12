@@ -152,8 +152,16 @@ service cloud.firestore {
     // it, which is exactly why the per-person slips are a separate collection.
     // Written only by the server: a payroll a browser could edit is not a
     // payroll.
+    //
+    // **This said `isSubAdmin()` until 2026-09-12, which is not what the
+    // sentence above describes.** Verified against the live project with a
+    // Sales manager's own ID token: the list query succeeded, handing over
+    // every employee's basic, allowances, commission and net pay. The sidebar
+    // hid the screen and `requirePayrollAccess` refused the Server Action, so
+    // nothing in the app revealed it — but a rule is the only thing standing
+    // between a manager's login and the raw collection, and this one was open.
     match /payrollPeriods/{monthKey} {
-      allow read: if isAdmin() || isSubAdmin();
+      allow read: if isAdmin() || isHr();
       allow write: if false;
     }
 
@@ -164,11 +172,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // A closed month's frozen deductions (§12). Every manager reads it — a
-    // Sales manager needs to know their team's month is closed — but only the
-    // server writes it, so a period cannot be re-cut from a browser.
+    // A closed month's frozen deductions (§12). Only the server writes it, so
+    // a period cannot be re-cut from a browser.
+    //
+    // **Admin and HR only, since 2026-09-12.** It used to grant every manager,
+    // on the reasoning that a Sales manager needs to know their team's month is
+    // closed — but the document carries `monthlySalary` for every employee, and
+    // Firestore grants a whole document or none of it, so that reasoning bought
+    // a Sales manager the entire company's salaries. Nothing in the browser
+    // reads this collection at all: every path goes through
+    // `getAttendancePeriod`, which is where the "is it closed" answer comes
+    // from and which now redacts the salaries for a non-HR manager.
     match /attendancePeriods/{monthKey} {
-      allow read: if isAdmin() || isSubAdmin();
+      allow read: if isAdmin() || isHr();
       allow write: if false;
     }
 

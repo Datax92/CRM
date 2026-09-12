@@ -6,6 +6,7 @@ import {
   isHrManager,
   normalizeManagerKind,
   owningSubAdminFor,
+  roleTitle,
 } from './hierarchy.ts';
 
 /*
@@ -135,4 +136,41 @@ test('a manager who somehow carries another uid still files under themselves', (
 
 test('an unmanaged employee files under nobody, which means the admin', () => {
   assert.equal(owningSubAdminFor({ uid: 'e9', role: 'employee' }), null);
+});
+
+/* -------------------------------------------------------------------------- */
+/* What a person's role reads as                                               */
+/* -------------------------------------------------------------------------- */
+
+test("a manager reads as their kind, never as a leftover job title", () => {
+  // Every manager in the live project carries `jobTitle: "Sales Executive"`,
+  // left over from the employee form. It is not what they are.
+  assert.equal(
+    roleTitle({ role: 'subadmin', managerKind: 'SALES', jobTitle: 'Sales Executive' }),
+    'Sales Manager'
+  );
+  assert.equal(
+    roleTitle({ role: 'subadmin', managerKind: 'HR', jobTitle: 'Sales Executive' }),
+    'HR Manager'
+  );
+});
+
+test("a manager with no kind recorded reads as Sales, not as blank", () => {
+  assert.equal(roleTitle({ role: 'subadmin' }), 'Sales Manager');
+  assert.equal(roleTitle({ role: 'subadmin', managerKind: 'NONSENSE' }), 'Sales Manager');
+});
+
+test("an employee reads as their job title, and never as nothing", () => {
+  assert.equal(roleTitle({ role: 'employee', jobTitle: 'Sales Executive' }), 'Sales Executive');
+  assert.equal(roleTitle({ role: 'employee', jobTitle: '   ' }), 'Employee');
+  assert.equal(roleTitle({ role: 'employee' }), 'Employee');
+});
+
+test("the admin reads as Admin", () => {
+  assert.equal(roleTitle({ role: 'admin', jobTitle: 'Sales Executive' }), 'Admin');
+});
+
+test("accessRole is accepted wherever role is — useEmployees spells it that way", () => {
+  assert.equal(roleTitle({ accessRole: 'subadmin', managerKind: 'HR' }), 'HR Manager');
+  assert.equal(roleTitle({ accessRole: 'employee', jobTitle: 'Closer' }), 'Closer');
 });

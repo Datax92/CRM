@@ -75,6 +75,15 @@ export interface PayrollLine {
   absentCount: number;
   leaveCount: number;
   presentCount: number;
+  /**
+   * **Why the attendance deduction is what it is**, in words, one line per
+   * charge — "Absence #1 of the month — one day's pay (26-day month)".
+   *
+   * Frozen onto the line at generation, so a payslip explains itself for ever
+   * even after the policy behind it changes. Optional, because lines generated
+   * before this existed have none and must still render.
+   */
+  deductionBasis?: string[];
   /** Free text an approver added — why a figure was adjusted. */
   note: string | null;
   net: number;
@@ -92,29 +101,59 @@ export const PAYROLL_STATUS_LABELS: Record<PayrollStatus, string> = {
 };
 
 /**
- * Which statuses a period may move to.
+ * Which statuses a period may move to, **and it depends who is asking**.
  *
- * Forward one step at a time, and back one step at a time — an approved
- * payroll that turned out to be wrong has to be correctable, but jumping
- * straight from Draft to Paid would skip the two reviews the workflow exists
- * for. **`PAID` is terminal**: money has left the building, and the way to fix
- * a paid month is an adjustment on the next one, not a rewrite of this one.
+ * The owner's instruction, and it is the difference between a workflow and
+ * ceremony: *"for HR he sends approval to admin; admin doesn't need approval."*
+ *
+ * | | HR | admin |
+ * |---|---|---|
+ * | Draft | → Reviewed *(send to the admin)* | → **Approved**, directly |
+ * | Reviewed | → Draft *(take it back)* | → Approved, or → Draft |
+ * | Approved | — | → Reviewed *(send it back to correct it)* |
+ * | Paid | — | — |
+ *
+ * **Only the admin approves.** HR prepares a payroll and hands it up; letting
+ * them approve their own would make the review step a formality that proved
+ * nothing — and until 2026-09-12 that is exactly what it was, because the
+ * server only checked the role on `PAID`.
+ *
+ * **The admin never sends anything to themselves.** A one-person chain of Draft
+ * → Reviewed → Approved is three presses to say one thing, which is why the
+ * owner could not tell what the buttons were for.
+ *
+ * **`PAID` is not reachable here at all.** A month becomes paid when the last
+ * salary is actually paid out of an account — the status follows the money.
+ * And it is terminal: the way to fix a paid month is an adjustment on the next
+ * one, not a rewrite of this one.
  */
-export function allowedTransitions(from: PayrollStatus): PayrollStatus[] {
+export function allowedTransitions(from: PayrollStatus, isAdmin = true): PayrollStatus[] {
+  if (isAdmin) {
+    switch (from) {
+      case "DRAFT":
+        return ["APPROVED"];
+      case "REVIEWED":
+        return ["APPROVED", "DRAFT"];
+      case "APPROVED":
+        return ["REVIEWED"];
+      case "PAID":
+        return [];
+    }
+  }
+
   switch (from) {
     case "DRAFT":
       return ["REVIEWED"];
     case "REVIEWED":
-      return ["APPROVED", "DRAFT"];
+      return ["DRAFT"];
     case "APPROVED":
-      return ["PAID", "REVIEWED"];
     case "PAID":
       return [];
   }
 }
 
-export function canTransition(from: PayrollStatus, to: PayrollStatus): boolean {
-  return allowedTransitions(from).includes(to);
+export function canTransition(from: PayrollStatus, to: PayrollStatus, isAdmin = true): boolean {
+  return allowedTransitions(from, isAdmin).includes(to);
 }
 
 /**
@@ -193,6 +232,8 @@ export function buildPayrollLine(input: {
   presentCount?: number;
   extraAdditions?: number;
   extraDeductions?: number;
+  /** Why the attendance deduction is what it is, one line per charge. */
+  deductionBasis?: string[];
   note?: string | null;
 }): PayrollLine {
   const { profile } = input;
@@ -223,6 +264,10 @@ export function buildPayrollLine(input: {
     absentCount: Math.max(0, Math.floor(input.absentCount ?? 0)),
     leaveCount: Math.max(0, Math.floor(input.leaveCount ?? 0)),
     presentCount: Math.max(0, Math.floor(input.presentCount ?? 0)),
+    // Only when the deduction was actually applied — a profile with attendance
+    // deductions switched off must not carry an explanation for a charge that
+    // was never made.
+    deductionBasis: attendanceDeduction > 0 ? (input.deductionBasis ?? []) : [],
     note: input.note?.trim() || null,
     net: computeLineTotals(parts).net,
   };

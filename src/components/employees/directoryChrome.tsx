@@ -48,6 +48,7 @@ export {
   type DossierPeriod,
 } from "@/lib/dossierPeriod";
 import { resolveDossierRange, type DossierFilters, type DossierPeriod } from "@/lib/dossierPeriod";
+import { roleTitle } from "@/lib/constants/hierarchy";
 
 export { LEAD_FILTER_LABELS, ACTIVITY_FILTER_HINTS, isActivityFilter };
 export type { LeadFilterKey, RangeKey, EntryTally };
@@ -829,12 +830,20 @@ export function buildActivity(
 
   entries.push({
     action: "Account created",
-    // A manager has no job title and no lane priority — the Add Manager form
-    // does not offer either, because they take no leads. Restating an employee
-    // line for them would print "undefined, priority 0".
-    detail: employee.jobTitle
-      ? `${employee.jobTitle}, priority ${employee.priority}`
-      : "Manager account",
+    /*
+      A manager has no job title and no lane priority — the Add Manager form
+      offers neither, because they take no leads.
+
+      **The test used to be whether `jobTitle` was set**, on the reasoning that
+      a manager would not have one. Every manager on this project does: a stale
+      "Sales Executive" from before they were promoted. So a manager's timeline
+      read "Sales Executive, priority 99" — a rank in a lane they are not in.
+      It asks the role instead, which is the thing that actually decides it.
+    */
+    detail:
+      employee.accessRole === "subadmin"
+        ? `${roleTitle(employee)} account`
+        : `${roleTitle(employee)}, priority ${employee.priority}`,
     at: toDate(employee.joinedAt ?? employee.createdAt),
     icon: ICON_JOINED,
   });

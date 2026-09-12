@@ -29,11 +29,12 @@ import {
   classifyCheckIn,
   lateDeduction,
   formatClockValue,
-  monthDeductions,
+  monthAttendanceDeductions,
   parseClock,
   normalizePolicy,
   type AttendancePolicy,
 } from "@/lib/attendancePolicy";
+import { roleTitle } from "@/lib/constants/hierarchy";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 
 /**
@@ -1312,7 +1313,15 @@ export async function getTeamAttendance(
         uid: doc.id,
         name: (data.name as string) ?? (data.email as string) ?? "Unnamed",
         email: (data.email as string) ?? null,
-        jobTitle: (data.jobTitle as string) ?? null,
+        /*
+          **What to print under their name — not the raw `jobTitle` field.**
+          A manager has no job title (the Add Manager form does not ask for
+          one), and every manager on this project carries a stale "Sales
+          Executive" from before they were promoted — so the attendance roster
+          listed a manager as an executive. `roleTitle` gives a manager their
+          kind, Sales Manager or HR Manager, and an employee their job title.
+        */
+        jobTitle: roleTitle(data),
         subAdminUid: (data.subAdminUid as string) ?? null,
         managerName: nameOf(data.subAdminUid as string | undefined),
         monthlySalary: Number(data.monthlySalary ?? 0),
@@ -1324,7 +1333,13 @@ export async function getTeamAttendance(
         off,
         workedMinutes: days.reduce((sum, day) => sum + day.minutes, 0),
         rate: considered === 0 ? 0 : Math.round((credited / considered) * 100),
-        deduction: monthDeductions(late, policy, Number(data.monthlySalary ?? 0)).total,
+        // Lates **and** absences — see `monthAttendanceDeductions`. Reading
+        // only the lates here is what made every figure on the payroll Rs 0.
+        deduction: monthAttendanceDeductions(
+          { late, absent },
+          policy,
+          Number(data.monthlySalary ?? 0)
+        ).total,
       };
     });
 
@@ -1459,11 +1474,13 @@ export async function getAttendanceSummary(
     const considered = present + late + absent;
     const credited = present + late;
 
-    const { outcomes, total } = monthDeductions(
-      late,
+    const charges = monthAttendanceDeductions(
+      { late, absent },
       policy,
       Number(profile.data()?.monthlySalary ?? 0)
     );
+    const outcomes = [...charges.late, ...charges.absent];
+    const total = charges.total;
 
     return {
       uid: target,
@@ -1484,6 +1501,10 @@ export async function getAttendanceSummary(
         allowedLates: policy.allowedLates,
         deductionMode: policy.deductionMode,
         deductionValue: policy.deductionValue,
+        allowedAbsents: policy.allowedAbsents,
+        absentDeductionMode: policy.absentDeductionMode,
+        absentDeductionValue: policy.absentDeductionValue,
+        workingDaysPerMonth: policy.workingDaysPerMonth,
         wifiRestriction: policy.wifiRestriction,
         locationRestriction: policy.locationRestriction,
       },
@@ -1501,6 +1522,8 @@ export interface PayrollDeductionLine {
   name: string;
   monthlySalary: number;
   lateCount: number;
+  /** Absent days charged. Absent on lines frozen before absences were charged. */
+  absentCount?: number;
   amount: number;
   /** The rule each charge was made under, in words, as it stood at closing. */
   basis: string[];
@@ -1568,16 +1591,27 @@ export async function finalizeAttendanceDeductions(
         .get(),
     ]);
 
-    const lateCounts = new Map<string, number>();
+    /*
+      **Counted through `statusOfRecord`, and counting absences too.**
+
+      It read the raw `late` flag and skipped anything with an override, which
+      had two faults: it never counted an absence at all — so closing a month
+      froze a deduction of zero for somebody who had not turned up — and the
+      stored flag is no longer what decides a day. `statusOfRecord` is the one
+      reader every other surface uses, and it already honours an override, so a
+      late HR has excused is still excused.
+    */
+    const counts = new Map<string, { late: number; absent: number }>();
     for (const doc of records.docs) {
       const data = doc.data();
-      // An override wins: a late HR has excused is not a late any more, and
-      // charging for it after somebody corrected it would be the exact bug
-      // this whole module's audit trail exists to prevent.
-      const excused = data.overrideStatus && data.overrideStatus !== "LATE";
-      if (!data.late || excused) continue;
       const uid = String(data.uid ?? "");
-      if (uid) lateCounts.set(uid, (lateCounts.get(uid) ?? 0) + 1);
+      if (!uid) continue;
+      const status = statusOfRecord(data);
+      if (status !== "LATE" && status !== "ABSENT") continue;
+      const current = counts.get(uid) ?? { late: 0, absent: 0 };
+      if (status === "LATE") current.late += 1;
+      else current.absent += 1;
+      counts.set(uid, current);
     }
 
     const lines: PayrollDeductionLine[] = [];
@@ -1585,20 +1619,23 @@ export async function finalizeAttendanceDeductions(
       const data = doc.data();
       if (data.role === "admin") continue;
 
-      const lateCount = lateCounts.get(doc.id) ?? 0;
-      if (lateCount === 0) continue;
+      const tally = counts.get(doc.id) ?? { late: 0, absent: 0 };
+      if (tally.late === 0 && tally.absent === 0) continue;
 
       const salary = Number(data.monthlySalary ?? 0);
-      const { outcomes, total } = monthDeductions(lateCount, policy, salary);
-      if (total === 0) continue;
+      const charges = monthAttendanceDeductions(tally, policy, salary);
+      if (charges.total === 0) continue;
 
       lines.push({
         uid: doc.id,
         name: (data.name as string) ?? (data.email as string) ?? "Unnamed",
         monthlySalary: salary,
-        lateCount,
-        amount: total,
-        basis: outcomes.filter((outcome) => outcome.deducted).map((outcome) => outcome.basis),
+        lateCount: tally.late,
+        absentCount: tally.absent,
+        amount: charges.total,
+        basis: [...charges.late, ...charges.absent]
+          .filter((outcome) => outcome.deducted)
+          .map((outcome) => outcome.basis),
       });
     }
 
@@ -1679,7 +1716,7 @@ export async function getAttendancePeriod(
   monthKey: string
 ): Promise<ActionResult<AttendancePeriod>> {
   return runAction("getAttendancePeriod", async () => {
-    await requireManager(token);
+    const auth = await requireManager(token);
     const month = monthKey.slice(0, 7);
 
     const snap = await adminDb.collection("attendancePeriods").doc(month).get();
@@ -1703,7 +1740,20 @@ export async function getAttendancePeriod(
       finalizedAt: data.finalizedAt?.toDate?.()?.toISOString() ?? null,
       finalizedByUid: (data.finalizedByUid as string) ?? null,
       finalizedByName: (data.finalizedByName as string) ?? null,
-      lines: (data.lines as PayrollDeductionLine[]) ?? [],
+      /*
+        **A Sales manager gets the deductions without the salaries.**
+
+        Every manager may ask whether a month is closed and what it charged —
+        that is what the Late & Absence screen is for, and it reads `finalized`,
+        `total`, and each line's name, late count and amount. It does **not**
+        read `monthlySalary`, and until 2026-09-12 this handed it over anyway:
+        `requireManager` let a Sales manager call this and receive the whole
+        company's pay, which §12 keeps to the admin and HR. Redacted rather than
+        refused, so the screen a Sales manager is entitled to keeps working.
+      */
+      lines: ((data.lines as PayrollDeductionLine[]) ?? []).map((line) =>
+        auth.isHr ? line : { ...line, monthlySalary: 0 }
+      ),
       total: Number(data.total ?? 0),
       policy: (data.policy as AttendancePolicy) ?? null,
     };

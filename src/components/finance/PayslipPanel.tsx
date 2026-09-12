@@ -122,6 +122,22 @@ export function PayslipPanel({
             value={rupees(line.attendanceDeduction)}
             negative={line.attendanceDeduction > 0}
           />
+          {/*
+            **Why that figure, in the words the rule was written in.** A number
+            somebody cannot check is a number they will dispute — and this is
+            the one deduction an employee did not agree to in advance. Frozen
+            onto the line when the payroll was generated, so it still explains
+            itself after the policy behind it changes.
+          */}
+          {(line.deductionBasis ?? []).length > 0 && (
+            <ul style={{ margin: "8px 0 2px", paddingLeft: 16, display: "grid", gap: 4 }}>
+              {(line.deductionBasis ?? []).map((basis, index) => (
+                <li key={index} style={{ fontSize: 11.5, color: F.muted, lineHeight: 1.5 }}>
+                  {basis}
+                </li>
+              ))}
+            </ul>
+          )}
           <Row
             label="Other deductions"
             value={rupees(line.otherDeductions)}

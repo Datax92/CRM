@@ -7,6 +7,9 @@ import {
   pastAbsentCutoff,
   lateDeduction,
   monthDeductions,
+  monthAbsentDeductions,
+  monthAttendanceDeductions,
+  dailyRate,
   leaveBalances,
   leaveDayCount,
   leaveDayKeys,
@@ -329,4 +332,86 @@ describe('office Wi-Fi policy', () => {
     assert.deepEqual(next.officeWifiNames, ['Leadway-Office']);
     assert.equal(next.wifiRestriction, true);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Absences cost money — the bug that made every deduction Rs 0                */
+/* -------------------------------------------------------------------------- */
+
+const payPolicy = (over: Partial<AttendancePolicy> = {}): AttendancePolicy => ({
+  ...DEFAULT_ATTENDANCE_POLICY,
+  ...over,
+});
+
+test("the live September case: five absences on 35,000 are no longer free", () => {
+  // Measured 2026-09-12 against the live payroll: Sundus Jameel, 35,000 basic,
+  // 5 absent and 1 late, deducted **Rs 0**. The rule only ever charged lates.
+  const before = monthDeductions(1, payPolicy(), 35_000).total;
+  assert.equal(before, 0, "one late is inside the two allowed");
+
+  const now = monthAttendanceDeductions({ late: 1, absent: 5 }, payPolicy(), 35_000);
+  // 35,000 / 26 = 1,346 a day, five days.
+  assert.equal(now.absentTotal, 6_730);
+  assert.equal(now.lateTotal, 0);
+  assert.equal(now.total, 6_730);
+});
+
+test("a day's pay divides by the policy's figure, not by the length of the month", () => {
+  // The whole reason `workingDaysPerMonth` is a setting: the same absence must
+  // not cost more in February than in March.
+  assert.equal(dailyRate(26_000, payPolicy({ workingDaysPerMonth: 26 })), 1_000);
+  assert.equal(dailyRate(26_000, payPolicy({ workingDaysPerMonth: 30 })), 867);
+  // A policy that somehow arrived with 0 in it must not produce Infinity.
+  assert.equal(dailyRate(26_000, payPolicy({ workingDaysPerMonth: 0 })), 1_000);
+});
+
+test("a flat absence charge ignores salary; a percentage does not", () => {
+  const flat = payPolicy({ absentDeductionMode: "AMOUNT", absentDeductionValue: 1_000 });
+  assert.equal(monthAbsentDeductions(5, flat, 35_000).total, 5_000);
+  assert.equal(monthAbsentDeductions(5, flat, 90_000).total, 5_000);
+
+  const pct = payPolicy({ absentDeductionMode: "PERCENT", absentDeductionValue: 2 });
+  assert.equal(monthAbsentDeductions(3, pct, 50_000).total, 3_000);
+});
+
+test("absences inside the allowance are free, and the count restarts after it", () => {
+  const policy = payPolicy({ allowedAbsents: 1 });
+  const outcomes = monthAbsentDeductions(3, policy, 26_000).outcomes;
+  assert.equal(outcomes[0].deducted, false);
+  assert.equal(outcomes[1].deducted, true);
+  assert.equal(outcomes[2].deducted, true);
+  assert.equal(monthAbsentDeductions(3, policy, 26_000).total, 2_000);
+});
+
+test("somebody with no salary recorded is never docked a figure", () => {
+  // Half the roster has `monthlySalary: 0`; a day's pay of 0 is right, and any
+  // other answer would invent money.
+  assert.equal(monthAttendanceDeductions({ late: 5, absent: 5 }, payPolicy(), 0).absentTotal, 0);
+});
+
+test("the combined reading is lates plus absences, and reports both halves", () => {
+  const policy = payPolicy({ allowedLates: 0, deductionValue: 500 });
+  const result = monthAttendanceDeductions({ late: 2, absent: 2 }, policy, 26_000);
+  assert.equal(result.lateTotal, 1_000);
+  assert.equal(result.absentTotal, 2_000);
+  assert.equal(result.total, 3_000);
+  assert.equal(result.late.length, 2);
+  assert.equal(result.absent.length, 2);
+});
+
+test("the new fields survive normalizePolicy, and a junk one falls back", () => {
+  const saved = normalizePolicy({
+    absentDeductionMode: "PERCENT",
+    absentDeductionValue: 3,
+    allowedAbsents: 2,
+    workingDaysPerMonth: 30,
+  });
+  assert.equal(saved.absentDeductionMode, "PERCENT");
+  assert.equal(saved.absentDeductionValue, 3);
+  assert.equal(saved.allowedAbsents, 2);
+  assert.equal(saved.workingDaysPerMonth, 30);
+
+  const junk = normalizePolicy({ absentDeductionMode: "NONSENSE" as never, workingDaysPerMonth: 0 });
+  assert.equal(junk.absentDeductionMode, "DAY_SALARY");
+  assert.equal(junk.workingDaysPerMonth, 26);
 });

@@ -630,6 +630,7 @@ const SOURCE_COLLECTIONS: Partial<Record<SourceModule, string>> = {
   PERSONAL_EXPENSE: "personalExpenses",
   MARKETING_INCOME: "marketingIncome",
   CAR_SALE: "carSales",
+  PAYROLL: "payrollPeriods",
   CAPITAL_INVESTMENT: "capitalSpendings",
 };
 

@@ -9,6 +9,7 @@ import {
 } from '@/lib/distribution';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
+import { karachiDayKey } from '@/lib/dates';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -335,8 +336,25 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
  * so this is one indexed query rather than a subcollection read per lead.
  * The notification id is derived from the lead, so a lead that stays stale
  * across many sweeps updates a single alert instead of flooding the panel.
+ *
+ * **It runs at most once a Karachi day, whatever the schedule.** The deadline
+ * half of this route has to run every few minutes — the accept window is five —
+ * but this half asks a question about the last 24 hours and rewrites one
+ * document per stale lead every time it runs. Measured on the live project on
+ * 2026-09-12: **165 stale leads**, so on a five-minute schedule it would spend
+ * ~47,500 writes a day against a 20,000 cap and take the whole app down. That
+ * is the exact failure mode the owner has already been bitten by, and a
+ * deterministic id does nothing to prevent it: merging still costs a write.
+ *
+ * The gate is a marker document rather than an hour comparison, so a missed run,
+ * a retry or a schedule change cannot make it run twice or skip a day.
  */
 async function processStaleLeads(): Promise<number> {
+  const today = karachiDayKey();
+  const marker = adminDb.collection('config').doc('cronState');
+  const swept = (await marker.get()).data()?.staleSweepDayKey;
+  if (swept === today) return 0;
+
   const hours = await readMonitoringWindowHours();
   const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
 
@@ -364,6 +382,10 @@ async function processStaleLeads(): Promise<number> {
         targetRole: 'admin',
         payload: {
           message: `No follow-up logged on "${lead.name ?? doc.id}" for over ${hours} hours.`,
+          // **How long it has actually been stale**, from the lead itself.
+          // `createdAt` below is rewritten by each sweep, so it says when the
+          // alert was last refreshed rather than when the lead went quiet.
+          staleSince: lead.lastActivityAt ?? null,
           assignedUserId: lead.assignedUserId ?? null,
           campaignName: lead.campaignName ?? null,
           leadStatus: lead.status,
@@ -378,6 +400,9 @@ async function processStaleLeads(): Promise<number> {
   }
 
   await batch.commit();
+  // Marked after the commit: a failed sweep must be retried, not recorded as
+  // done. Re-running the same day is idempotent anyway — the ids are derived.
+  await marker.set({ staleSweepDayKey: today, staleSweptAt: FieldValue.serverTimestamp() }, { merge: true });
   return count;
 }
 

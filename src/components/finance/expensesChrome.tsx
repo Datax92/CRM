@@ -207,18 +207,21 @@ export function ExpenseHero({
 }
 
 /** The hero's glass pill — ghost on the left of the pair, solid on the right. */
-export function HeroButton({ onClick, icon, children, solid, full }: {
+export function HeroButton({ onClick, icon, children, solid, full, disabled }: {
   onClick: () => void; icon: ReactNode; children: ReactNode; solid?: boolean; full?: boolean;
+  /** Dimmed and inert while the action it fires is in flight. */
+  disabled?: boolean;
 }) {
   return (
-    <button type="button" onClick={onClick} className="acc-press"
+    <button type="button" onClick={onClick} className="acc-press" disabled={disabled}
       style={{
+        opacity: disabled ? 0.55 : 1,
         display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
         padding: solid ? "11px 22px" : "11px 20px", borderRadius: 999,
         background: solid ? "#fff" : "rgba(255,255,255,0.15)",
         border: solid ? "none" : "1px solid rgba(255,255,255,0.45)",
         color: solid ? X.darkest : "#fff",
-        fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+        fontSize: 13.5, fontWeight: 700, cursor: disabled ? "default" : "pointer", fontFamily: "inherit",
         flex: full ? 1 : undefined,
       }}>
       {icon}

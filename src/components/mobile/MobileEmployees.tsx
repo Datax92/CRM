@@ -68,6 +68,7 @@ import { MobileLeadDetail, Sheet, SheetAction } from "./MobileLeadDetail";
 import { useAuth } from "@/context/AuthContext";
 import { ManagerFormModal } from "@/components/employees/ManagerFormModal";
 import { buildAllManagerMetrics, buildManagerMetrics } from "@/lib/managerMetrics";
+import { roleTitle } from "@/lib/constants/hierarchy";
 import type { DataBankFolder } from "@/hooks/useDataBank";
 import type { CentreAction } from "./MobileTabBar";
 
@@ -739,6 +740,26 @@ function ManagerCard({
           >
             {manager.email}
           </div>
+          {/* **Sales or HR, on the card.** The desktop manager card has always
+              carried this pill and the phone carried nothing, so on a phone
+              there was no way at all to tell the HR manager from the sales
+              one — and HR's reach is the whole company (§13). */}
+          <span
+            style={{
+              display: "inline-block",
+              marginTop: 5,
+              padding: "2px 8px",
+              borderRadius: 999,
+              fontSize: 9.5,
+              fontWeight: 800,
+              letterSpacing: "0.7px",
+              border: `1px solid ${manager.managerKind === "HR" ? "#c9dedb" : "#dceae8"}`,
+              background: manager.managerKind === "HR" ? "#e2f0ee" : "#fff",
+              color: manager.managerKind === "HR" ? E.teal : E.label,
+            }}
+          >
+            {roleTitle({ accessRole: "subadmin", managerKind: manager.managerKind }).toUpperCase()}
+          </span>
         </div>
 
         {onEdit && (
@@ -918,7 +939,8 @@ function RosterCard({
                 textOverflow: "ellipsis",
               }}
             >
-              {employee.jobTitle}
+              {/* A manager reads as their kind — see `roleTitle`. */}
+              {roleTitle(employee)}
             </span>
           </div>
         </div>
@@ -1555,7 +1577,7 @@ function MobileTeamRoster({
                 whiteSpace: "nowrap",
               }}
             >
-              {member.jobTitle || member.email}
+              {roleTitle(member) || member.email}
             </span>
           </span>
 

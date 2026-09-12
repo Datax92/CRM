@@ -228,7 +228,12 @@ export function useSubAdmins(enabled = true) {
  * than the local part of their email address.
  */
 export function useMyProfile(uid: string | undefined) {
-  const [state, setState] = useState<{ key: string; name: string | null; targets?: KpiTargets } | null>(null);
+  const [state, setState] = useState<{
+    key: string;
+    name: string | null;
+    jobTitle: string | null;
+    targets?: KpiTargets;
+  } | null>(null);
   const demoState = useDemoState();
   const key = uid ?? 'idle';
 
@@ -242,6 +247,10 @@ export function useMyProfile(uid: string | undefined) {
         setState({
           key: uid,
           name: typeof raw?.name === 'string' && raw.name.trim() ? raw.name.trim() : null,
+          // Read out of the snapshot, for the same reason `name` is: a screen
+          // that has to invent somebody's role prints a hardcoded default, and
+          // "Sales Executive" on every manager is how that goes wrong.
+          jobTitle: typeof raw?.jobTitle === 'string' && raw.jobTitle.trim() ? raw.jobTitle.trim() : null,
           targets: raw?.targets as KpiTargets | undefined,
         });
       },
@@ -249,7 +258,7 @@ export function useMyProfile(uid: string | undefined) {
         // An admin may legitimately have no profile document; that is not an
         // error worth surfacing, the greeting just falls back to their email.
         console.error('[useMyProfile]', err);
-        setState({ key: uid, name: null });
+        setState({ key: uid, name: null, jobTitle: null });
       }
     );
 
@@ -258,9 +267,19 @@ export function useMyProfile(uid: string | undefined) {
 
   if (IS_DEMO) {
     const account = demoState.employees.find((employee) => employee.uid === uid);
-    return { name: account?.name ?? null, targets: account?.targets, loading: false };
+    return {
+      name: account?.name ?? null,
+      jobTitle: account?.jobTitle ?? null,
+      targets: account?.targets,
+      loading: false,
+    };
   }
 
   const current = state?.key === key ? state : null;
-  return { name: current?.name ?? null, targets: current?.targets, loading: Boolean(uid) && current === null };
+  return {
+    name: current?.name ?? null,
+    jobTitle: current?.jobTitle ?? null,
+    targets: current?.targets,
+    loading: Boolean(uid) && current === null,
+  };
 }

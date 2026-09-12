@@ -43,6 +43,7 @@ import { buildEmployeeMetrics, type EmployeeMetrics } from "@/lib/metrics";
 import { formatMoney } from "@/lib/money";
 import { initialsOf } from "@/lib/leadDisplay";
 import { recalculateEmployeePriorities } from "@/lib/clientActions";
+import { roleTitle } from "@/lib/constants/hierarchy";
 import { FullPageSpinner } from "@/components/admin/AdminShared";
 import { E, HeroRings, buildDirectoryStats, type DirectoryStat } from "@/components/employees/directoryChrome";
 import { Pager } from "@/components/employees/DossierControls";
@@ -65,7 +66,9 @@ export function filterRoster(
     if (filter === "Active" && employee.status !== "ACTIVE") return false;
     if (filter === "Inactive" && employee.status === "ACTIVE") return false;
     if (!q) return true;
-    return `${employee.name} ${employee.email} ${employee.jobTitle}`.toLowerCase().includes(q);
+    // Searched by what the row actually says — typing "HR" should find the HR
+    // manager, and it could not while the haystack held a stale job title.
+    return `${employee.name} ${employee.email} ${roleTitle(employee)}`.toLowerCase().includes(q);
   });
 }
 

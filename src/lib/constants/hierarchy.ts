@@ -121,6 +121,46 @@ export function isHrManager(role: unknown, managerKind: unknown): boolean {
 }
 
 /**
+ * **What this person's role reads as, on any screen that shows people.**
+ *
+ * The one answer to "what is written under their name", and the reason it
+ * exists: a **manager has no job title**. The Add Manager form does not ask for
+ * one (§ *A Manager is not an employee*), so `jobTitle` on a manager's document
+ * is either absent or a leftover from before they were promoted — and every
+ * manager in the live project carries the stale default, **"Sales Executive"**.
+ * Printing it made a manager's own dossier contradict the card behind it: the
+ * card said `SALES MANAGER`, the dossier said `Sales Executive`.
+ *
+ * So a manager reads as their **kind** — Sales Manager or HR Manager — which is
+ * the distinction that actually governs what they can reach (§13), and an
+ * employee reads as their job title. Nothing on a manager's record is thrown
+ * away; `jobTitle` is simply not the field that answers this question about
+ * them.
+ *
+ * | role | reads as |
+ * |---|---|
+ * | admin | Admin |
+ * | subadmin, `managerKind: 'HR'` | HR Manager |
+ * | subadmin, anything else | Sales Manager |
+ * | employee | their job title, or `Employee` |
+ *
+ * An absent `managerKind` falls back to Sales, so every manager who existed
+ * before that field keeps exactly the reading they had.
+ */
+export function roleTitle(person: {
+  role?: unknown;
+  /** `useEmployees` spells the same field `accessRole`; either is accepted. */
+  accessRole?: unknown;
+  managerKind?: unknown;
+  jobTitle?: string | null;
+}): string {
+  const role = person.role ?? person.accessRole;
+  if (role === 'admin') return ROLE_LABELS.admin;
+  if (role === 'subadmin') return MANAGER_KIND_LABELS[normalizeManagerKind(person.managerKind)];
+  return (person.jobTitle ?? '').trim() || ROLE_LABELS.employee;
+}
+
+/**
  * Whether `actor` may hand a lead to `recipient`.
  *
  * The one place this question is answered. `assignLead`, `reassignLeadManual`

@@ -152,3 +152,25 @@ test('an identity-only manager contributes nothing, as before', () => {
   assert.equal(totals.assigned, 10);
   assert.equal(totals.closedWon, 3);
 });
+
+test("a manager's kind survives the totals — it is part of who they are", () => {
+  const hr = buildManagerMetrics(
+    { uid: 'm1', name: 'Tayyab Ali', email: 't@x.com', status: 'ACTIVE', managerKind: 'HR' },
+    []
+  );
+  assert.equal(hr.managerKind, 'HR');
+
+  // It was being dropped here, so every screen reading ManagerMetrics — the
+  // phone's manager card among them — could only ever say "Sales".
+  const sales = buildManagerMetrics(
+    { uid: 'm2', name: 'Dilawar Riaz', email: 'd@x.com', status: 'ACTIVE', managerKind: 'SALES' },
+    []
+  );
+  assert.equal(sales.managerKind, 'SALES');
+
+  const all = buildAllManagerMetrics(
+    [{ uid: 'm1', name: 'Tayyab Ali', email: 't@x.com', status: 'ACTIVE', managerKind: 'HR' }],
+    []
+  );
+  assert.equal(all[0].managerKind, 'HR');
+});

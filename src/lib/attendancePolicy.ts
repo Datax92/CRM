@@ -25,6 +25,23 @@ export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
 /** How a late deduction is expressed. */
 export type DeductionMode = 'AMOUNT' | 'PERCENT';
 
+/**
+ * How an absence is charged.
+ *
+ * `DAY_SALARY` — `monthlySalary ÷ workingDaysPerMonth`, per absent day. The
+ * default, and what most businesses do.
+ * `AMOUNT` — a flat figure per absent day, whatever the salary.
+ * `PERCENT` — a percentage of monthly salary per absent day.
+ */
+export const ABSENT_DEDUCTION_MODES = ['DAY_SALARY', 'AMOUNT', 'PERCENT'] as const;
+export type AbsentDeductionMode = (typeof ABSENT_DEDUCTION_MODES)[number];
+
+export const ABSENT_DEDUCTION_LABELS: Record<AbsentDeductionMode, string> = {
+  DAY_SALARY: "A day's salary",
+  AMOUNT: 'A flat amount',
+  PERCENT: 'A percentage of salary',
+};
+
 export interface AttendancePolicy {
   /**
    * Employees who may check in from any network — §2's explicit exception.
@@ -97,6 +114,35 @@ export interface AttendancePolicy {
   /** Rupees when `AMOUNT`; percent of monthly salary when `PERCENT`. */
   deductionValue: number;
 
+  /**
+   * **What an absent day costs.**
+   *
+   * The rule was lates-only until 2026-09-12, and that was not a gap in the
+   * settings screen — it was a gap in the arithmetic: `monthDeductions` took a
+   * late count and nothing else, so a month of absences reduced nobody's pay.
+   * Measured on the live September payroll, every one of seven people was
+   * docked **Rs 0**, including somebody absent five days on a 35,000 salary.
+   *
+   * `DAY_SALARY` is the default and the owner's instruction — you do not pay
+   * for a day nobody worked — with the other two modes there because he asked
+   * to be able to set it himself.
+   */
+  absentDeductionMode: AbsentDeductionMode;
+  /** Ignored for `DAY_SALARY`; rupees for `AMOUNT`; percent for `PERCENT`. */
+  absentDeductionValue: number;
+  /** Absences allowed per month before deductions start. Default none. */
+  allowedAbsents: number;
+  /**
+   * The divisor behind a day's pay, and deliberately **not** the length of the
+   * calendar month.
+   *
+   * A day's pay must not change because February is short — the same absence
+   * would cost more in a 28-day month than in a 31-day one, which nobody would
+   * be able to explain to the person it was taken from. A fixed figure the
+   * admin sets is predictable and is what a payslip can state in words.
+   */
+  workingDaysPerMonth: number;
+
   /** Days granted per employee per year, by type (§6). */
   leaveAllowance: Record<LeaveType, number>;
 }
@@ -126,6 +172,11 @@ export const DEFAULT_ATTENDANCE_POLICY: AttendancePolicy = {
   allowedLates: 2,
   deductionMode: 'AMOUNT',
   deductionValue: 1000,
+
+  absentDeductionMode: 'DAY_SALARY',
+  absentDeductionValue: 0,
+  allowedAbsents: 0,
+  workingDaysPerMonth: 26,
 
   leaveAllowance: { CASUAL: 1, MEDICAL: 1 },
 };
@@ -369,6 +420,120 @@ export function monthDeductions(
   return { outcomes, total: outcomes.reduce((sum, outcome) => sum + outcome.amount, 0) };
 }
 
+/**
+ * A day's pay — `monthlySalary ÷ workingDaysPerMonth`, rounded to the rupee.
+ *
+ * The divisor is the policy's fixed figure rather than the length of the month,
+ * so the same absence costs the same in February as in March. See
+ * `workingDaysPerMonth`.
+ */
+export function dailyRate(monthlySalary: number, policy: AttendancePolicy): number {
+  /*
+    **A nonsense divisor falls back to the default, not to 1.** `normalizePolicy`
+    already clamps this to 1–31, so a bad value only reaches here from a
+    document written before the field existed — and dividing by 1 would charge a
+    whole month's salary for one absent day, which is worse than dividing by
+    zero because it looks like a number somebody meant.
+  */
+  const raw = Math.floor(Number(policy.workingDaysPerMonth));
+  const days = Number.isFinite(raw) && raw >= 1 && raw <= 31
+    ? raw
+    : DEFAULT_ATTENDANCE_POLICY.workingDaysPerMonth;
+  const salary = Math.max(0, Number(monthlySalary) || 0);
+  return Math.round(salary / days);
+}
+
+/**
+ * What the nth absence of the month costs.
+ *
+ * Same shape as `lateDeduction`, and deliberately so: the two rules are read
+ * side by side on the settings screen and by the person losing the money, and a
+ * second shape for the same question is how one of them ends up behaving in a
+ * way nobody expects.
+ */
+export function absentDeduction(
+  occurrence: number,
+  policy: AttendancePolicy,
+  monthlySalary = 0
+): DeductionOutcome {
+  const allowed = Math.max(0, Math.floor(policy.allowedAbsents ?? 0));
+  const nth = Math.max(1, Math.floor(occurrence));
+
+  if (nth <= allowed) {
+    return {
+      occurrence: nth,
+      deducted: false,
+      amount: 0,
+      basis: `Within the ${allowed} absence${allowed === 1 ? '' : 's'} allowed each month.`,
+    };
+  }
+
+  const mode = policy.absentDeductionMode ?? 'DAY_SALARY';
+  const value = Math.max(0, Number(policy.absentDeductionValue) || 0);
+
+  if (mode === 'AMOUNT') {
+    return {
+      occurrence: nth,
+      deducted: true,
+      amount: value,
+      basis: `Absence #${nth} of the month — flat ${value}.`,
+    };
+  }
+
+  if (mode === 'PERCENT') {
+    return {
+      occurrence: nth,
+      deducted: true,
+      amount: Math.round((Math.max(0, monthlySalary) * value) / 100),
+      basis: `Absence #${nth} of the month — ${value}% of monthly salary.`,
+    };
+  }
+
+  const rate = dailyRate(monthlySalary, policy);
+  return {
+    occurrence: nth,
+    deducted: true,
+    amount: rate,
+    basis: `Absence #${nth} of the month — one day's pay (${policy.workingDaysPerMonth ?? 26}-day month).`,
+  };
+}
+
+/** Every deduction a month of absences comes to, oldest first. */
+export function monthAbsentDeductions(
+  absentCount: number,
+  policy: AttendancePolicy,
+  monthlySalary = 0
+): { outcomes: DeductionOutcome[]; total: number } {
+  const outcomes = Array.from({ length: Math.max(0, Math.floor(absentCount)) }, (_, index) =>
+    absentDeduction(index + 1, policy, monthlySalary)
+  );
+  return { outcomes, total: outcomes.reduce((sum, outcome) => sum + outcome.amount, 0) };
+}
+
+/**
+ * **The whole month's attendance deduction — lates and absences together.**
+ *
+ * The one function payroll asks, because asking two and adding them at the call
+ * site is how a screen comes to charge for lateness and quietly forget the
+ * absences. That is not hypothetical: it is exactly what shipped, and it made
+ * every deduction on the live September payroll Rs 0.
+ */
+export function monthAttendanceDeductions(
+  counts: { late: number; absent: number },
+  policy: AttendancePolicy,
+  monthlySalary = 0
+): { late: DeductionOutcome[]; absent: DeductionOutcome[]; lateTotal: number; absentTotal: number; total: number } {
+  const late = monthDeductions(counts.late, policy, monthlySalary);
+  const absent = monthAbsentDeductions(counts.absent, policy, monthlySalary);
+  return {
+    late: late.outcomes,
+    absent: absent.outcomes,
+    lateTotal: late.total,
+    absentTotal: absent.total,
+    total: late.total + absent.total,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Leave                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -520,6 +685,17 @@ export function normalizePolicy(
         ? input.deductionMode
         : current.deductionMode,
     deductionValue: intOr(input.deductionValue, current.deductionValue, 0, 10_000_000),
+
+    absentDeductionMode: (ABSENT_DEDUCTION_MODES as readonly string[]).includes(
+      input.absentDeductionMode as string
+    )
+      ? (input.absentDeductionMode as AbsentDeductionMode)
+      : current.absentDeductionMode,
+    absentDeductionValue: intOr(input.absentDeductionValue, current.absentDeductionValue, 0, 10_000_000),
+    allowedAbsents: intOr(input.allowedAbsents, current.allowedAbsents, 0, 31),
+    // Never zero: it is a divisor, and a policy that arrived with 0 in it would
+    // make a day's pay Infinity on every payslip in the company.
+    workingDaysPerMonth: intOr(input.workingDaysPerMonth, current.workingDaysPerMonth, 1, 31),
 
     leaveAllowance: {
       CASUAL: intOr(input.leaveAllowance?.CASUAL, current.leaveAllowance.CASUAL, 0, 365),

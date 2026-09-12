@@ -48,6 +48,9 @@ import {
   formatClockValue,
   type AttendancePolicy,
   type DeductionMode,
+  type AbsentDeductionMode,
+  ABSENT_DEDUCTION_MODES,
+  ABSENT_DEDUCTION_LABELS,
 } from "@/lib/attendancePolicy";
 import { A, AttendanceCard } from "./attendanceChrome";
 
@@ -289,6 +292,105 @@ export function AttendanceSettingsView() {
           <li>
             Each charge is stored with the rule it was made under, so changing this later does not
             rewrite a month that has already been paid.
+          </li>
+        </ul>
+      </AttendanceCard>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Absence deductions — what a day nobody worked costs                */}
+      {/* ---------------------------------------------------------------- */}
+      <AttendanceCard title="Absence deductions" hint="What an absent day costs">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+          <Field label="Absences allowed each month">
+            <input
+              type="number"
+              min={0}
+              max={31}
+              value={policy.allowedAbsents}
+              onChange={(event) => patch("allowedAbsents", Number(event.target.value))}
+              style={fieldStyle}
+            />
+          </Field>
+          <Field label="Then charge">
+            <select
+              value={policy.absentDeductionMode}
+              onChange={(event) =>
+                patch("absentDeductionMode", event.target.value as AbsentDeductionMode)
+              }
+              style={fieldStyle}
+            >
+              {ABSENT_DEDUCTION_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {ABSENT_DEDUCTION_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {policy.absentDeductionMode === "DAY_SALARY" ? (
+            <Field label="Working days in a month">
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={policy.workingDaysPerMonth}
+                onChange={(event) => patch("workingDaysPerMonth", Number(event.target.value))}
+                style={fieldStyle}
+              />
+            </Field>
+          ) : (
+            <Field
+              label={
+                policy.absentDeductionMode === "PERCENT"
+                  ? "Percent of monthly salary"
+                  : "Rupees per absent day"
+              }
+            >
+              <input
+                type="number"
+                min={0}
+                value={policy.absentDeductionValue}
+                onChange={(event) => patch("absentDeductionValue", Number(event.target.value))}
+                style={fieldStyle}
+              />
+            </Field>
+          )}
+        </div>
+
+        {/* Each rule restated as a sentence, the way every other card on this
+            screen does it — a parameter list nobody can read is one nobody
+            dares change. */}
+        <ul style={ruleList}>
+          <li>
+            {policy.allowedAbsents > 0 ? (
+              <>
+                The first <strong>{policy.allowedAbsents}</strong> absence
+                {policy.allowedAbsents === 1 ? "" : "s"} in a month cost nothing. Every one after
+                that is charged{" "}
+              </>
+            ) : (
+              <>Every absent day is charged </>
+            )}
+            <strong>
+              {policy.absentDeductionMode === "DAY_SALARY"
+                ? `one day's pay — monthly salary ÷ ${policy.workingDaysPerMonth}`
+                : policy.absentDeductionMode === "PERCENT"
+                  ? `${policy.absentDeductionValue}% of monthly salary`
+                  : `Rs ${policy.absentDeductionValue.toLocaleString("en-PK")}`}
+            </strong>
+            .
+          </li>
+          <li>
+            The divisor is a fixed number of working days rather than the length of the month, so
+            the same absence does not cost more in February than in March.
+          </li>
+          <li>
+            Somebody with no monthly salary recorded is charged <strong>nothing</strong> under the
+            day&apos;s-pay and percentage rules, rather than a figure invented from a blank.
+          </li>
+          <li>
+            <strong>Absences used to cost nothing at all.</strong> The deduction rule only ever
+            charged for lateness, so a month of absences reduced nobody&apos;s pay. Any month
+            already approved keeps the figures it was approved with.
           </li>
         </ul>
       </AttendanceCard>

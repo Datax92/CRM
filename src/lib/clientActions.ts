@@ -70,6 +70,8 @@ import {
   getPayroll as _getPayroll,
   adjustPayrollLine as _adjustPayrollLine,
   setPayrollStatus as _setPayrollStatus,
+  payPayrollLine as _payPayrollLine,
+  deletePayroll as _deletePayroll,
   getPayslips as _getPayslips,
   setSalaryAccess as _setSalaryAccess,
   type PayrollPeriod,
@@ -950,6 +952,21 @@ export async function setPayrollStatus(
 ): Promise<ActionResult<{ status: PayrollStatus }>> {
   if (IS_DEMO) return demo.setPayrollStatus(monthKey, status, actor().uid);
   return _setPayrollStatus(token, monthKey, status);
+}
+
+/** Pays one person's month out of real accounts — see `payPayrollLine`. */
+export async function payPayrollLine(
+  token: string,
+  monthKey: string,
+  uid: string,
+  input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string; note?: string | null }
+) {
+  return _payPayrollLine(token, monthKey, uid, input);
+}
+
+/** Deletes a month's payroll so it can be started again. Admin only. */
+export async function deletePayroll(token: string, monthKey: string) {
+  return _deletePayroll(token, monthKey);
 }
 
 /** Somebody's salary history. An employee gets their own and nobody else's. */

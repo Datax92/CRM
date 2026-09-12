@@ -6,34 +6,39 @@
  * One month at a time, because payroll is a monthly act — the stepper is the
  * primary control and everything on screen belongs to the month it names.
  *
- * The workflow is visible rather than implied: the status pill says where the
- * month is, and the single button beside it says the one thing that can happen
- * next. A row of four buttons where three are disabled reads as three things
- * that have gone wrong.
+ * **Rebuilt on `expensesChrome`**, the language every other money screen now
+ * speaks: the same hero, stat cards, search, rows and detail panel as Office
+ * Expenses, Personal Expenses, StateLife, Marketing Income and Car Sale. That
+ * is not decoration — it is what gives payroll the phone layout for free, out
+ * of one implementation rather than a second that could drift.
+ *
+ * **Approving a payroll and paying it are two different facts, and the screen
+ * shows both.** `status` says the company agreed the figures; `paidAmount` says
+ * how much has actually left an account. So a month reads `Approved · Rs 180,000
+ * due` until the money moves, exactly as an office expense does — and the money
+ * moves through the same split control: *Pay salaries* opens `PayFromAccounts`
+ * and the month can be funded from the Committee, Car Sale, Mahziyar Marketing,
+ * a bank, or several at once. Paying the last rupee is what marks the month
+ * paid and releases the payslips; see `payPayrollFromAccounts` for why that
+ * lives on the server rather than here.
  *
  * **Nothing here recomputes commission or attendance.** Both arrive on the
  * generated line from the modules that own them, and once the period is
- * approved the figures are frozen — the screen shows that state plainly rather
- * than silently refusing edits.
+ * approved the figures are frozen.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ArrowRight,
-  Check,
-  Pencil,
-  RefreshCw,
-  Settings2,
-  Undo2,
-  Users,
-  Wallet,
-} from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useLedger } from "@/hooks/useLedger";
+import { usePagination } from "@/hooks/usePagination";
+import { Pager } from "@/components/employees/DossierControls";
 import {
   adjustPayrollLine,
   generatePayroll,
   getPayroll,
+  payPayrollLine,
+  deletePayroll,
   setPayrollStatus,
 } from "@/lib/clientActions";
 import type { PayrollPeriod } from "@/app/actions/payroll";
@@ -45,36 +50,77 @@ import {
   type PayrollLine,
   type PayrollStatus,
 } from "@/lib/payroll";
+import { formatMoney } from "@/lib/money";
 import { karachiMonthKey } from "@/lib/dates";
 import { monthLabel, shiftMonth } from "@/lib/attendanceCalendar";
 import { MonthStepper } from "@/components/attendance/MyAttendanceView";
+import { OverlayPanel } from "@/components/ui/OverlayPanel";
+import { PayFromAccounts } from "@/components/accounts/PayFromAccounts";
 import {
-  Banner,
-  F,
-  FinanceCard,
-  EmptyState,
-  Figure,
-  PrimaryButton,
-  rupees,
-} from "./financeChrome";
+  ChipRow,
+  DetailAction,
+  ExpenseDetail,
+  ExpenseHero,
+  ExpenseList,
+  FigureStrip,
+  HeroButton,
+  HeroTile,
+  ICON,
+  MobileSearch,
+  StatCards,
+  TONE,
+  X,
+  type ExpenseRowModel,
+  type Figure,
+  type FundingLeg,
+  type RowAction,
+  type StatCard,
+} from "./expensesChrome";
+import { stamp } from "./OfficeExpensesView";
 import { PayrollLineModal } from "./PayrollLineModal";
 import { SalaryProfilesPanel, useSalaryProfiles } from "./SalaryProfilesPanel";
 import { PayslipPanel } from "./PayslipPanel";
 
-/** The single next step, in the words of the person about to press it. */
-const NEXT_LABEL: Record<PayrollStatus, string> = {
-  DRAFT: "Send for review",
-  REVIEWED: "Approve payroll",
-  APPROVED: "Mark as paid",
-  PAID: "",
+/**
+ * The single next step, **in the words of the person about to press it**.
+ *
+ * It depends who that is. The admin approves their own payroll directly — a
+ * one-person chain of Draft → Reviewed → Approved is three presses to say one
+ * thing. HR prepares it and sends it up, and the button says exactly that
+ * rather than "Send for review", which never said to whom.
+ *
+ * There is no "Mark as paid": paying is an act with money behind it, so the
+ * status follows the money rather than the other way round.
+ */
+function nextLabel(to: PayrollStatus, isAdmin: boolean): string {
+  if (to === "APPROVED") return "Approve payroll";
+  if (to === "REVIEWED") return isAdmin ? "" : "Send to admin for approval";
+  return "";
+}
+
+const STATUS_TONE: Record<PayrollStatus, keyof typeof TONE> = {
+  DRAFT: "quiet",
+  REVIEWED: "warn",
+  APPROVED: "good",
+  PAID: "good",
+};
+
+/** Which cut of the payroll the chips are showing. */
+const CUTS = ["ALL", "COMMISSION", "DEDUCTIONS", "ADJUSTED"] as const;
+type Cut = (typeof CUTS)[number];
+
+const CUT_LABELS: Record<Cut, string> = {
+  ALL: "Everyone",
+  COMMISSION: "With commission",
+  DEDUCTIONS: "With deductions",
+  ADJUSTED: "Adjusted by hand",
 };
 
 export function PayrollView() {
   const { role, getIdToken } = useAuth();
   const isAdmin = role === "admin";
-  // A nine-column money table at 390px is unreadable, so the phone gets
-  // cards carrying the same figures rather than a table it has to scroll
-  // sideways through. Same data, same actions — not a reduced version.
+  // A nine-column money table at 390px is unreadable, so the phone gets cards
+  // carrying the same figures — the same row model, not a reduced version.
   const isMobile = useIsMobile();
 
   const [monthKey, setMonthKey] = useState(() => shiftMonth(karachiMonthKey(), 0));
@@ -84,10 +130,18 @@ export function PayrollView() {
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
   const [editing, setEditing] = useState<PayrollLine | null>(null);
   const [slipFor, setSlipFor] = useState<PayrollLine | null>(null);
+  const [opened, setOpened] = useState<string | null>(null);
+  const [paying, setPaying] = useState<PayrollLine | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [nonce, setNonce] = useState(0);
   const [search, setSearch] = useState("");
+  const [cut, setCut] = useState<Cut>("ALL");
 
   const reload = useCallback(() => setNonce((value) => value + 1), []);
+
+  // The accounts a payroll can be funded from. Only the admin can pay, so only
+  // the admin opens this listener.
+  const ledger = useLedger(isAdmin);
 
   /**
    * Salary profiles, loaded **once** the first time the tab is opened and kept
@@ -126,16 +180,129 @@ export function PayrollView() {
 
   const status = period?.status ?? "DRAFT";
   const editable = isEditable(status);
-  const next = allowedTransitions(status).find((value) => NEXT_LABEL[value] !== "");
-  const back = status === "REVIEWED" ? "DRAFT" : status === "APPROVED" ? "REVIEWED" : null;
+  const next = allowedTransitions(status, isAdmin).find((value) => nextLabel(value, isAdmin) !== "");
+  // Only ever backwards, and only for somebody allowed to make the move.
+  const back = allowedTransitions(status, isAdmin).includes("DRAFT")
+    ? ("DRAFT" as PayrollStatus)
+    : isAdmin && status === "APPROVED"
+      ? ("REVIEWED" as PayrollStatus)
+      : null;
+
+  const totals = useMemo(() => payrollTotals(period?.lines ?? []), [period]);
+
+  /*
+    **What the month owes against what has actually gone out.** `amount` is the
+    figure frozen when the payroll was generated; `totals.net` recomputes it. A
+    period generated before the field existed has no `amount`, so the net stands
+    in — the same fallback the server applies.
+  */
+  const payable = period?.amount || totals.net;
+  const paid = period?.paidAmount ?? 0;
+  const outstanding = Math.max(0, Math.round((payable - paid) * 100) / 100);
+
+  /**
+   * What one person is owed and what they have been paid.
+   *
+   * Empty until the month is approved, because the payslip each figure comes
+   * from does not exist until then — which is exactly when paying becomes
+   * allowed, so the Pay from control appears at the right moment without
+   * needing a rule of its own.
+   */
+  const paymentFor = useCallback(
+    (line: PayrollLine) =>
+      period?.payments?.[line.uid] ?? { amount: line.net, paidAmount: 0, status: "UNPAID" },
+    [period]
+  );
+  const approved = status === "APPROVED" || status === "PAID";
+  const canPay = isAdmin && approved;
+
+  /**
+   * Who has no basic salary recorded.
+   *
+   * The one figure payroll cannot derive from anything else, and the reason a
+   * generated month can come out full of zeroes.
+   */
+  const unsalaried = (period?.lines ?? []).filter((line) => line.basic <= 0).map((line) => line.name);
+
+  /** How many people are still owed — the figure that says what is left to do. */
+  const unpaidPeople = (period?.lines ?? []).filter((line) => {
+    const payment = period?.payments?.[line.uid];
+    return !payment || payment.paidAmount < payment.amount;
+  }).length;
 
   const lines = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    if (!needle) return period?.lines ?? [];
-    return (period?.lines ?? []).filter((line) => line.name.toLowerCase().includes(needle));
-  }, [period, search]);
+    return (period?.lines ?? []).filter((line) => {
+      if (cut === "COMMISSION" && line.commission <= 0) return false;
+      if (cut === "DEDUCTIONS" && line.attendanceDeduction + line.otherDeductions <= 0) return false;
+      if (cut === "ADJUSTED" && !line.note && line.extraAdditions === 0) return false;
+      if (!needle) return true;
+      return (
+        line.name.toLowerCase().includes(needle) ||
+        (line.jobTitle ?? "").toLowerCase().includes(needle) ||
+        (line.email ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [period, search, cut]);
 
-  const totals = useMemo(() => payrollTotals(period?.lines ?? []), [period]);
+  const page = usePagination(lines, 12);
+
+  const statCards = useMemo<StatCard[]>(() => {
+    const pct = (n: number, of: number) => (of ? Math.max(0, Math.min(100, Math.round((n / of) * 100))) : 0);
+    return [
+      {
+        label: "On The Payroll", value: String(totals.people),
+        note: `${formatMoney(totals.additions)} gross this month`,
+        pill: monthLabel(monthKey), pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.user,
+      },
+      {
+        label: "Commission", value: formatMoney(totals.commission),
+        note: "from finalised deal splits", pill: `${pct(totals.commission, totals.additions)}%`,
+        tone: "good", pct: pct(totals.commission, totals.additions),
+        color: "#2f7d78", accent: "#4fa39c", icon: ICON.bars,
+      },
+      {
+        label: "Deductions", value: formatMoney(totals.deductions),
+        note: `${formatMoney(totals.attendanceDeduction)} from attendance`,
+        pill: `${pct(totals.deductions, totals.additions)}%`, tone: "warn",
+        pct: pct(totals.deductions, totals.additions),
+        color: "#a5762a", accent: "#c99a2e", icon: ICON.clock,
+      },
+      // **The figure that says whether anybody has actually been paid.**
+      // Approving a payroll moves no money; only a payment does.
+      {
+        label: !approved ? "Net Payable" : outstanding > 0 ? "Left To Pay" : "Net Paid",
+        value: formatMoney(outstanding > 0 ? outstanding : payable),
+        note: !approved
+          ? "approve the month to start paying people"
+          : paid > 0
+            ? `${formatMoney(paid)} of ${formatMoney(payable)} paid · ${unpaidPeople} still owed`
+            : `${unpaidPeople} ${unpaidPeople === 1 ? "person" : "people"} still to be paid`,
+        pill: !approved ? "Not yet" : outstanding > 0 ? "Owing" : "Settled",
+        tone: outstanding > 0 ? "warn" : "good",
+        pct: payable > 0 ? pct(paid, payable) : 0,
+        color: outstanding > 0 ? "#a5762a" : "#2f7d78", accent: "#4fa39c", icon: ICON.wallet,
+      },
+    ];
+  }, [totals, monthKey, payable, paid, outstanding, approved, unpaidPeople]);
+
+  /** Which accounts one person's salary actually came out of. */
+  const legsFor = useCallback(
+    (uid: string): FundingLeg[] => {
+      const names = new Map(ledger.accounts.map((entry) => [entry.id, entry.name]));
+      return ledger.transactions
+        .filter((txn) => txn.sourceModule === "PAYROLL" && txn.sourceId === `${uid}_${monthKey}`)
+        .map((txn) => ({
+          id: txn.id,
+          accountName: names.get(txn.accountId) ?? "A deleted account",
+          amount: txn.amount,
+          dayKey: txn.dayKey,
+          note: txn.note ?? null,
+          by: txn.createdByName ?? null,
+        }));
+    },
+    [ledger.transactions, ledger.accounts, monthKey]
+  );
 
   const run = async (work: (token: string) => Promise<{ ok: boolean; text: string }>) => {
     setBusy(true);
@@ -153,9 +320,7 @@ export function PayrollView() {
       return result.ok
         ? {
             ok: true,
-            text: `${monthLabel(monthKey)} generated — ${result.data.people} people, ${rupees(
-              result.data.net
-            )} net.`,
+            text: `${monthLabel(monthKey)} generated — ${result.data.people} people, ${formatMoney(result.data.net)} net.`,
           }
         : { ok: false, text: result.error };
     });
@@ -167,101 +332,251 @@ export function PayrollView() {
         ? {
             ok: true,
             text:
-              to === "PAID"
-                ? `${monthLabel(monthKey)} marked paid. Everybody has been notified.`
-                : to === "APPROVED"
-                  ? `${monthLabel(monthKey)} approved. Payslips are now visible to each employee and the figures are fixed.`
-                  : `${monthLabel(monthKey)} is now ${PAYROLL_STATUS_LABELS[to].toLowerCase()}.`,
+              to === "APPROVED"
+                ? `${monthLabel(monthKey)} approved. Everybody can now see their payslip, the figures are fixed, and you can pay each person from an account.`
+                : to === "REVIEWED"
+                  ? `${monthLabel(monthKey)} sent to the admin for approval.`
+                  : `${monthLabel(monthKey)} reopened — the figures can be edited again.`,
           }
         : { ok: false, text: result.error };
     });
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* ---------------------------------------------------------------- */}
-      {/* The month, its state, and the one thing that happens next          */}
-      {/* ---------------------------------------------------------------- */}
-      <section
-        style={{
-          borderRadius: 18,
-          padding: "18px 20px",
-          background: `linear-gradient(135deg, ${F.teal} 0%, ${F.tealMid} 100%)`,
-          color: "#fff",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 14,
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <p style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.7px", opacity: 0.82 }}>
-            SALARY &amp; PAYROLL
-          </p>
-          <h2 style={{ fontSize: 23, fontWeight: 800 }}>{monthLabel(monthKey)}</h2>
-          <p style={{ fontSize: 12.5, opacity: 0.9 }}>
-            {period?.exists
-              ? `${totals.people} on the payroll · ${rupees(totals.net)} net`
-              : "Not generated yet"}
-          </p>
-        </div>
+  /** The five figures behind every net, in the order a payslip reads them. */
+  const figuresFor = useCallback((line: PayrollLine): Figure[] => {
+    const figures: Figure[] = [
+      { label: "Basic", value: formatMoney(line.basic), tone: "muted" },
+    ];
+    if (line.allowances) figures.push({ label: "Allowances", value: formatMoney(line.allowances), tone: "muted" });
+    if (line.bonus + line.extraAdditions) {
+      figures.push({
+        label: "Bonus", value: formatMoney(line.bonus + line.extraAdditions), tone: "muted",
+        hint: line.extraAdditions ? `${formatMoney(line.extraAdditions)} one-off` : null,
+      });
+    }
+    if (line.commission) figures.push({ label: "Commission", value: formatMoney(line.commission), tone: "good" });
+    if (line.attendanceDeduction) {
+      figures.push({
+        label: "Attendance", value: `− ${formatMoney(line.attendanceDeduction)}`, tone: "warn",
+        hint: [line.lateCount ? `${line.lateCount} late` : null, line.absentCount ? `${line.absentCount} absent` : null]
+          .filter(Boolean).join(" · ") || null,
+      });
+    }
+    if (line.otherDeductions) {
+      figures.push({ label: "Other deductions", value: `− ${formatMoney(line.otherDeductions)}`, tone: "warn" });
+    }
+    figures.push({ label: "Net pay", value: formatMoney(line.net), tone: "good", strong: true });
+    return figures;
+  }, []);
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-          <span
-            style={{
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.45)",
-              background: "rgba(255,255,255,0.18)",
-              padding: "5px 14px",
-              fontSize: 12.5,
-              fontWeight: 700,
-            }}
-          >
-            {PAYROLL_STATUS_LABELS[status]}
-          </span>
-          <div style={{ background: "rgba(255,255,255,0.9)", borderRadius: 999, padding: "3px 6px" }}>
+  const buildActions = useCallback((line: PayrollLine): RowAction[] => {
+    const actions: RowAction[] = [
+      { key: "slip", label: "Payslip", d: ICON.receipt, tone: "quiet", onClick: () => setSlipFor(line) },
+    ];
+    // Absent rather than disabled once the month is finalised: a button whose
+    // only outcome is a refusal reads as something having gone wrong.
+    if (editable) {
+      actions.push({ key: "edit", label: "Adjust", d: ICON.edit, tone: "quiet", onClick: () => setEditing(line) });
+    }
+    /*
+      **Pay from… on every person, once the month is approved.** A settled
+      salary offers no button at all rather than one that could only be
+      refused — the same rule an office expense follows.
+    */
+    const payment = paymentFor(line);
+    if (canPay && payment.paidAmount < payment.amount) {
+      actions.push({ key: "pay", label: "Pay from…", d: ICON.wallet, tone: "good", onClick: () => setPaying(line) });
+    }
+    return actions;
+  }, [editable, canPay, paymentFor]);
+
+  const rowModels = useMemo<ExpenseRowModel[]>(
+    () =>
+      page.items.map((line) => ({
+        id: line.uid,
+        title: line.name,
+        meta: [line.jobTitle ?? line.email ?? "", `${line.presentCount} present`]
+          .concat(line.lateCount ? [`${line.lateCount} late`] : [])
+          .concat(line.absentCount ? [`${line.absentCount} absent`] : [])
+          .concat(line.leaveCount ? [`${line.leaveCount} leave`] : [])
+          .filter(Boolean)
+          .join(" · "),
+        amount: line.net,
+        category: "Salary",
+        status: { label: PAYROLL_STATUS_LABELS[status], tone: TONE[STATUS_TONE[status]] },
+        /*
+          **The payment pill names the balance, not the fact.** An approved but
+          unpaid salary is the normal state and gets a plain "Rs 35,000 due";
+          a pill appearing at all means the month has been approved, and a paid
+          one says so. Before approval there is no payslip and so no payment to
+          report — which is the truth, not an omission.
+        */
+        payment: !approved
+          ? null
+          : paymentFor(line).paidAmount >= paymentFor(line).amount
+            ? { label: "Paid", tone: TONE.good }
+            : paymentFor(line).paidAmount > 0
+              ? { label: `${formatMoney(paymentFor(line).amount - paymentFor(line).paidAmount)} left`, tone: TONE.warn }
+              : { label: `${formatMoney(paymentFor(line).amount)} due`, tone: TONE.warn },
+        notes: line.note
+          ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{line.note}</span></div>
+          : null,
+        detail: <FigureStrip figures={figuresFor(line)} isMobile={isMobile} />,
+        actions: buildActions(line),
+        onOpen: () => setOpened(line.uid),
+      })),
+    [page.items, status, buildActions, figuresFor, isMobile, approved, paymentFor]
+  );
+
+  const openedLine = useMemo(
+    () => (opened ? (period?.lines ?? []).find((line) => line.uid === opened) ?? null : null),
+    [opened, period]
+  );
+
+  const download = () => {
+    const header = ["Month", "Name", "Role", "Basic", "Allowances", "Bonus", "One-off",
+      "Commission", "Attendance deduction", "Other deductions", "Present", "Late", "Absent", "Leave", "Note", "Net"];
+    const rows = lines.map((line) => [
+      monthKey, line.name, line.jobTitle ?? "", String(line.basic), String(line.allowances),
+      String(line.bonus), String(line.extraAdditions), String(line.commission),
+      String(line.attendanceDeduction), String(line.otherDeductions),
+      String(line.presentCount), String(line.lateCount), String(line.absentCount), String(line.leaveCount),
+      line.note ?? "", String(line.net),
+    ]);
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `payroll-${monthKey}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /*
+    **"Still to pay" is only true once the month is approved.** Before that
+    nothing is payable — there are no payslips and every Pay from is absent — so
+    saying it on a draft describes an obligation that does not exist yet.
+  */
+  const heroCaption = !period?.exists
+    ? "Not generated yet — generating pulls every salary profile, commission and attendance deduction for the month."
+    : !approved
+      ? `${PAYROLL_STATUS_LABELS[status]} · ${totals.people} people · ${formatMoney(payable)} net, not payable until approved`
+      : outstanding > 0
+        ? `${PAYROLL_STATUS_LABELS[status]} · ${totals.people} people · ${formatMoney(outstanding)} still to pay to ${unpaidPeople}`
+        : `${PAYROLL_STATUS_LABELS[status]} · ${totals.people} people · paid in full`;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: "var(--font-directory), system-ui, sans-serif" }}>
+      <ExpenseHero
+        eyebrow="Salary & Payroll"
+        figure={formatMoney(totals.net)}
+        caption={heroCaption}
+        isMobile={isMobile}
+        tileIcon={ICON.wallet}
+        stats={[
+          { label: "PEOPLE", value: totals.people },
+          { label: "GROSS", value: totals.additions },
+          { label: "NET", value: totals.net },
+        ]}
+        mobileAction={
+          editable
+            ? <HeroTile onClick={generate} label="Generate payroll" d="M12 5v14M5 12h14" />
+            : undefined
+        }
+        actions={
+          <>
+            {editable && (
+              <HeroButton onClick={generate} disabled={busy}
+                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden><path d="M20 11A8 8 0 1 0 12 20M20 4v7h-7" /></svg>}>
+                {period?.exists ? "Regenerate" : "Generate payroll"}
+              </HeroButton>
+            )}
+            {back && status !== "DRAFT" && (
+              <HeroButton onClick={() => void move(back)} disabled={busy}
+                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden><path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4" /></svg>}>
+                Send back
+              </HeroButton>
+            )}
+            {period?.exists && next && (
+              <HeroButton solid onClick={() => void move(next)} disabled={busy}
+                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden><path d="M5 12h14M13 6l6 6-6 6" /></svg>}>
+                {nextLabel(next, isAdmin)}
+              </HeroButton>
+            )}
+            {/* **Deleting a payroll is the admin's alone.** HR prepares one and
+                does not throw one away. Refused on the server once anything
+                has been paid, and the message says who. */}
+            {isAdmin && period?.exists && (
+              <HeroButton onClick={() => setConfirmDelete(true)} disabled={busy}
+                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={ICON.trash} /></svg>}>
+                Delete payroll
+              </HeroButton>
+            )}
+          </>
+        }
+      >
+        {/* The month is this screen's period control, so it sits where every
+            other money screen puts its period pill. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+          <div style={{ background: "rgba(255,255,255,0.92)", borderRadius: 999, padding: "3px 6px" }}>
             <MonthStepper monthKey={monthKey} onChange={setMonthKey} />
           </div>
+          <span style={{ borderRadius: 999, border: "1px solid rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.18)", padding: "5px 14px", fontSize: 12, fontWeight: 700 }}>
+            {PAYROLL_STATUS_LABELS[status]}
+          </span>
+          {paid > 0 && (
+            <span style={{ borderRadius: 999, border: "1px solid rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.18)", padding: "5px 14px", fontSize: 12, fontWeight: 700 }}>
+              {outstanding > 0 ? `${formatMoney(outstanding)} due` : "Paid in full"}
+            </span>
+          )}
         </div>
-      </section>
+      </ExpenseHero>
 
-      {banner && <Banner ok={banner.ok}>{banner.text}</Banner>}
+      {banner && (
+        <p role="status" style={{ borderRadius: 12, background: banner.ok ? "#e8f5f3" : "#fdeeec", border: `1px solid ${banner.ok ? "#bfe0dc" : "#f0c4bd"}`, padding: "11px 14px", fontSize: 12.5, fontWeight: 600, color: banner.ok ? X.deep : "#a33a29" }}>
+          {banner.text}
+        </p>
+      )}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Tabs                                                              */}
-      {/* ---------------------------------------------------------------- */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {(
-          [
-            { key: "PAYROLL", label: "Monthly payroll", icon: Wallet },
-            { key: "PROFILES", label: "Salary profiles", icon: Settings2 },
-          ] as const
-        ).map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => {
-              setTab(key);
-              if (key === "PROFILES") setProfilesWanted(true);
-            }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 7,
-              borderRadius: 999,
-              border: `1px solid ${tab === key ? F.teal : F.line}`,
-              background: tab === key ? F.tealSoft : F.surface,
-              color: tab === key ? F.teal : F.muted,
-              padding: "7px 15px",
-              fontSize: 12.5,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            <Icon size={14} /> {label}
+      {/* Two screens, one month: the payroll itself and the recurring pay
+          behind it. Chips rather than the old tab row, so the control reads the
+          same as every other filter on this screen. */}
+      <ChipRow
+        chips={[
+          { label: "Monthly payroll", active: tab === "PAYROLL", pick: () => setTab("PAYROLL") },
+          {
+            // **Named for what it does, not for what it is.** "Salary profiles"
+            // is where you set what somebody earns, and calling it that left the
+            // owner asking where the option to add salaries was.
+            label: "Set employee salaries",
+            active: tab === "PROFILES",
+            pick: () => { setTab("PROFILES"); setProfilesWanted(true); },
+          },
+        ]}
+      />
+
+      {/*
+        **The one thing that stops a payroll being right, said on the payroll
+        itself.** Everything else is derived — commission comes off finalised
+        deal splits, deductions off attendance — so a basic salary of zero is
+        the only input a person has to type, and somebody who has not typed it
+        gets a month of zeroes with nothing on screen explaining why.
+      */}
+      {tab === "PAYROLL" && period?.exists && unsalaried.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", borderRadius: 12, background: "#fdf5e6", border: "1px solid #ecdcae", padding: "12px 15px" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#8a6321", lineHeight: 1.6 }}>
+            <strong>{unsalaried.length} {unsalaried.length === 1 ? "person has" : "people have"} no salary set</strong>
+            {" — "}{unsalaried.slice(0, 4).join(", ")}{unsalaried.length > 4 ? "…" : ""}. They will be
+            paid nothing until a basic salary is entered.
+          </span>
+          <button type="button"
+            onClick={() => { setTab("PROFILES"); setProfilesWanted(true); }}
+            style={{ flexShrink: 0, borderRadius: 999, border: "none", background: X.teal, color: "#fff", padding: "9px 18px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            Set their salaries
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
       {tab === "PROFILES" ? (
         <SalaryProfilesPanel
@@ -273,375 +588,173 @@ export function PayrollView() {
         />
       ) : (
         <>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-              gap: 12,
-            }}
-          >
-            <Figure label="Employees" value={totals.people} tone="TEAL" />
-            <Figure label="Gross" value={rupees(totals.additions)} />
-            <Figure label="Commission" value={rupees(totals.commission)} note="from closed deals" />
-            <Figure
-              label="Deductions"
-              value={rupees(totals.deductions)}
-              tone="ABSENT"
-              note={`${rupees(totals.attendanceDeduction)} from attendance`}
-            />
-            <Figure label="Net payable" value={rupees(totals.net)} tone="PRESENT" />
-          </div>
+          <StatCards isMobile={isMobile} cards={statCards} />
 
-          <FinanceCard
-            title="Payroll"
-            hint={
-              period?.exists
-                ? editable
-                  ? "Figures can still be adjusted"
-                  : "Finalised — figures are fixed"
-                : undefined
+          <MobileSearch value={search} onChange={setSearch} placeholder="Name, role or email" />
+          <ChipRow
+            chips={CUTS.map((value) => ({
+              label: CUT_LABELS[value],
+              active: cut === value,
+              pick: () => setCut(value),
+            }))}
+          />
+
+          <ExpenseList
+            heading={`Payroll · ${monthLabel(monthKey)}`}
+            count={`${lines.length} of ${period?.lines.length ?? 0}`}
+            total={lines.reduce((sum, line) => sum + line.net, 0)}
+            rows={rowModels}
+            isMobile={isMobile}
+            loading={false}
+            empty={
+              !period?.exists
+                ? `Nothing generated for ${monthLabel(monthKey)} yet. Generating pulls each employee's salary profile, their commission from finalised deal splits, and their attendance deductions for the month.`
+                : "Nobody matches these filters."
             }
-            action={
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                {period?.exists && (
-                  <input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Search employee"
-                    style={{
-                      borderRadius: 999,
-                      border: `1px solid ${F.line}`,
-                      background: "#fff",
-                      color: F.ink,
-                      padding: "6px 13px",
-                      fontSize: 13,
-                      outline: "none",
-                      minWidth: 150,
-                    }}
-                  />
-                )}
+            formatMoney={formatMoney}
+            pager={<Pager pagination={page} variant={isMobile ? "mobile" : "web"} noun="people" />}
+          />
 
-                {editable && (
-                  <PrimaryButton onClick={generate} disabled={busy} tone="quiet">
-                    <RefreshCw size={14} />
-                    {period?.exists ? "Regenerate" : "Generate payroll"}
-                  </PrimaryButton>
-                )}
-
-                {back && (
-                  <PrimaryButton onClick={() => void move(back)} disabled={busy} tone="quiet">
-                    <Undo2 size={14} /> Send back
-                  </PrimaryButton>
-                )}
-
-                {period?.exists && next && (
-                  <PrimaryButton
-                    onClick={() => void move(next)}
-                    disabled={busy || (next === "PAID" && !isAdmin)}
-                  >
-                    {next === "PAID" ? <Check size={14} /> : <ArrowRight size={14} />}
-                    {NEXT_LABEL[status]}
-                  </PrimaryButton>
-                )}
-              </div>
-            }
-          >
-            {!period?.exists ? (
-              <EmptyState>
-                Nothing generated for {monthLabel(monthKey)} yet. Generating pulls each
-                employee&apos;s salary profile, their commission from finalised deal splits, and
-                their attendance deductions for the month.
-              </EmptyState>
-            ) : lines.length === 0 ? (
-              <EmptyState>Nobody matches that search.</EmptyState>
-            ) : isMobile ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                {lines.map((line) => (
-                  <article
-                    key={line.uid}
-                    style={{
-                      borderRadius: 14,
-                      border: `1px solid ${F.line}`,
-                      background: F.surface,
-                      padding: "12px 14px",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        justifyContent: "space-between",
-                        gap: 10,
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setSlipFor(line)}
-                        style={{
-                          border: "none",
-                          background: "none",
-                          padding: 0,
-                          textAlign: "left",
-                          cursor: "pointer",
-                          minWidth: 0,
-                        }}
-                      >
-                        <p style={{ fontSize: 14, fontWeight: 800, color: F.ink }}>{line.name}</p>
-                        <p style={{ fontSize: 11.5, color: F.faint }}>
-                          {line.jobTitle ?? line.email ?? ""}
-                          {line.lateCount > 0 ? ` · ${line.lateCount} late` : ""}
-                          {line.absentCount > 0 ? ` · ${line.absentCount} absent` : ""}
-                        </p>
-                      </button>
-                      <span
-                        style={{
-                          fontSize: 16,
-                          fontWeight: 800,
-                          color: F.ink,
-                          fontVariantNumeric: "tabular-nums",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {rupees(line.net)}
-                      </span>
-                    </div>
-
-                    <div
-                      style={{
-                        marginTop: 10,
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
-                        gap: 8,
-                      }}
-                    >
-                      {[
-                        { label: "Basic", value: rupees(line.basic) },
-                        { label: "Allowances", value: rupees(line.allowances) },
-                        { label: "Bonus", value: rupees(line.bonus + line.extraAdditions) },
-                        {
-                          label: "Commission",
-                          value: line.commission > 0 ? rupees(line.commission) : "—",
-                          tone: line.commission > 0 ? "#1f7a52" : undefined,
-                        },
-                        {
-                          label: "Attendance",
-                          value:
-                            line.attendanceDeduction > 0
-                              ? `− ${rupees(line.attendanceDeduction)}`
-                              : "—",
-                          tone: line.attendanceDeduction > 0 ? "#a33a29" : undefined,
-                        },
-                        {
-                          label: "Other",
-                          value: line.otherDeductions > 0 ? `− ${rupees(line.otherDeductions)}` : "—",
-                          tone: line.otherDeductions > 0 ? "#a33a29" : undefined,
-                        },
-                      ].map((item) => (
-                        <div key={item.label} style={{ minWidth: 0 }}>
-                          <p
-                            style={{
-                              fontSize: 9.5,
-                              fontWeight: 700,
-                              letterSpacing: "0.5px",
-                              textTransform: "uppercase",
-                              color: F.faint,
-                            }}
-                          >
-                            {item.label}
-                          </p>
-                          <p
-                            style={{
-                              fontSize: 12.5,
-                              fontWeight: 700,
-                              color: item.tone ?? F.muted,
-                              fontVariantNumeric: "tabular-nums",
-                            }}
-                          >
-                            {item.value}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-
-                    {editable && (
-                      <button
-                        type="button"
-                        onClick={() => setEditing(line)}
-                        style={{
-                          marginTop: 11,
-                          width: "100%",
-                          borderRadius: 999,
-                          border: `1px solid ${F.line}`,
-                          background: F.surface,
-                          color: F.muted,
-                          padding: "9px 11px",
-                          fontSize: 12.5,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: 6,
-                        }}
-                      >
-                        <Pencil size={13} /> Adjust this line
-                      </button>
-                    )}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
-                  <thead>
-                    <tr>
-                      {[
-                        "Employee",
-                        "Basic",
-                        "Allowances",
-                        "Bonus",
-                        "Commission",
-                        "Attendance",
-                        "Other",
-                        "Net",
-                        "",
-                      ].map((label, index) => (
-                        <th
-                          key={label || index}
-                          style={{
-                            textAlign: index === 0 || index === 8 ? "left" : "right",
-                            fontSize: 10.5,
-                            fontWeight: 700,
-                            letterSpacing: "0.6px",
-                            textTransform: "uppercase",
-                            color: F.faint,
-                            padding: "0 10px 8px",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lines.map((line) => (
-                      <tr key={line.uid} style={{ borderTop: `1px solid ${F.hair}` }}>
-                        <td style={{ padding: "10px" }}>
-                          <button
-                            type="button"
-                            onClick={() => setSlipFor(line)}
-                            style={{
-                              border: "none",
-                              background: "none",
-                              padding: 0,
-                              textAlign: "left",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <p style={{ fontSize: 13, fontWeight: 700, color: F.ink }}>{line.name}</p>
-                            <p style={{ fontSize: 11, color: F.faint }}>
-                              {line.jobTitle ?? line.email ?? ""}
-                              {line.lateCount > 0 ? ` · ${line.lateCount} late` : ""}
-                              {line.absentCount > 0 ? ` · ${line.absentCount} absent` : ""}
-                            </p>
-                          </button>
-                        </td>
-                        <td style={cell}>{rupees(line.basic)}</td>
-                        <td style={cell}>{rupees(line.allowances)}</td>
-                        <td style={cell}>{rupees(line.bonus + line.extraAdditions)}</td>
-                        <td style={{ ...cell, color: line.commission > 0 ? "#1f7a52" : F.faint }}>
-                          {line.commission > 0 ? rupees(line.commission) : "—"}
-                        </td>
-                        <td
-                          style={{
-                            ...cell,
-                            color: line.attendanceDeduction > 0 ? "#a33a29" : F.faint,
-                          }}
-                        >
-                          {line.attendanceDeduction > 0 ? `− ${rupees(line.attendanceDeduction)}` : "—"}
-                        </td>
-                        <td style={{ ...cell, color: line.otherDeductions > 0 ? "#a33a29" : F.faint }}>
-                          {line.otherDeductions > 0 ? `− ${rupees(line.otherDeductions)}` : "—"}
-                        </td>
-                        <td style={{ ...cell, fontWeight: 800, color: F.ink }}>{rupees(line.net)}</td>
-                        <td style={{ padding: "10px" }}>
-                          {editable && (
-                            <button
-                              type="button"
-                              onClick={() => setEditing(line)}
-                              aria-label={`Adjust ${line.name}`}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 5,
-                                borderRadius: 999,
-                                border: `1px solid ${F.line}`,
-                                background: F.surface,
-                                color: F.muted,
-                                padding: "4px 11px",
-                                fontSize: 11.5,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                            >
-                              <Pencil size={12} /> Adjust
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </FinanceCard>
-
-          {/* -------------------------------------------------------------- */}
-          {/* Who did what, and when                                          */}
-          {/* -------------------------------------------------------------- */}
-          {period?.history && period.history.length > 0 && (
-            <FinanceCard title="History" hint="Newest last">
-              <div style={{ display: "grid", gap: 7 }}>
-                {period.history.map((entry, index) => (
-                  <div
-                    key={index}
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 8,
-                      alignItems: "baseline",
-                      justifyContent: "space-between",
-                      borderRadius: 10,
-                      border: `1px solid ${F.line}`,
-                      padding: "8px 12px",
-                    }}
-                  >
-                    <span style={{ fontSize: 12.5, fontWeight: 700, color: F.ink }}>
-                      {entry.byName ?? "Somebody"} · {entry.action.replace(/_/g, " ").toLowerCase()}
-                    </span>
-                    <span style={{ fontSize: 11.5, color: F.muted }}>
-                      {entry.detail}
-                      {entry.at ? ` · ${new Date(entry.at).toLocaleString("en-GB")}` : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </FinanceCard>
+          {period?.exists && (
+            <button type="button" onClick={download}
+              style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 8, padding: "9px 16px", borderRadius: 999, border: `1px solid ${X.line}`, background: "#fff", color: X.deep, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M12 4v11m0 0 4-4m-4 4-4-4M4 19h16" /></svg>
+              Download this month
+            </button>
           )}
-
-          <p style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5, color: F.faint }}>
-            <Users size={13} /> Commission comes from finalised deal splits and attendance
-            deductions from the attendance module — neither is entered here, and neither changes
-            once the month is approved.
-          </p>
         </>
+      )}
+
+      {openedLine && (
+        <OverlayPanel
+          title={openedLine.name}
+          subtitle={`${monthLabel(monthKey)} · ${formatMoney(openedLine.net)} net`}
+          maxWidth={640}
+          onClose={() => setOpened(null)}
+        >
+          <ExpenseDetail
+            title={openedLine.name}
+            amountLabel={formatMoney(openedLine.net)}
+            formatMoney={formatMoney}
+            status={{ label: PAYROLL_STATUS_LABELS[status], tone: TONE[STATUS_TONE[status]] }}
+            payment={
+              approved
+                ? {
+                    paid: paymentFor(openedLine).paidAmount,
+                    outstanding: Math.max(0, paymentFor(openedLine).amount - paymentFor(openedLine).paidAmount),
+                    label:
+                      paymentFor(openedLine).paidAmount >= paymentFor(openedLine).amount ? "Paid" : "Part paid",
+                    tone:
+                      paymentFor(openedLine).paidAmount >= paymentFor(openedLine).amount ? TONE.good : TONE.warn,
+                  }
+                : null
+            }
+            legsHeading={`Where ${openedLine.name}'s salary was paid from`}
+            legs={legsFor(openedLine.uid)}
+            notFunded={
+              approved
+                ? "This salary has not been paid out of any account yet — use Pay from\u2026"
+                : "Salaries can be paid once the month is approved."
+            }
+            extra={
+              <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 16, padding: "13px 15px" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>
+                  How this net was reached
+                </div>
+                <FigureStrip figures={figuresFor(openedLine)} isMobile={isMobile} />
+              </section>
+            }
+            fields={[
+              { label: "Month", value: monthLabel(monthKey) },
+              { label: "Role", value: openedLine.jobTitle ?? "—" },
+              { label: "Email", value: openedLine.email ?? "—" },
+              { label: "Attendance", value: `${openedLine.presentCount} present · ${openedLine.lateCount} late · ${openedLine.absentCount} absent · ${openedLine.leaveCount} leave` },
+              { label: "Note", value: openedLine.note ?? "—", wide: true },
+            ]}
+            history={(period?.history ?? [])
+              .filter((entry) => !entry.detail || entry.detail.includes(openedLine.name) || entry.action.startsWith("STATUS_") || entry.action.endsWith("GENERATED"))
+              .map((entry) => ({
+                at: stamp(entry.at ?? ""),
+                action: entry.action.replace(/_/g, " ").toLowerCase(),
+                by: entry.byName,
+                detail: entry.detail,
+                amount: null,
+              }))}
+            actions={buildActions(openedLine).map((action) => (
+              <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
+                onClick={() => { setOpened(null); action.onClick(); }} />
+            ))}
+          />
+        </OverlayPanel>
+      )}
+
+      {/*
+        **One person, any accounts.** Sundus's salary can come out of the
+        Committee and Rafia's out of Car Sale, on different days — the same
+        split control, the same arithmetic and the same duplicate-payment guard
+        every other module uses. `submit` routes it through payroll's own
+        action, which is what enforces "approved first, admin only, and the
+        month turns Paid when the last person is settled".
+      */}
+      {paying && period?.exists && (
+        <PayFromAccounts
+          open
+          onClose={() => setPaying(null)}
+          onPaid={(text) => { setBanner({ ok: true, text }); setPaying(null); reload(); }}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
+          getIdToken={getIdToken}
+          submit={async ({ allocations, dayKey, note }) => {
+            const result = await payPayrollLine(await getIdToken(), monthKey, paying.uid, { allocations, dayKey, note });
+            return result.ok
+              ? { ok: true as const, fullyPaid: result.data.fullyPaid, posted: result.data.posted }
+              : { ok: false as const, error: result.error };
+          }}
+          source={{
+            module: "PAYROLL",
+            collection: "payslips",
+            id: `${paying.uid}_${monthKey}`,
+            label: `${paying.name} — salary ${monthLabel(monthKey)}`,
+            amount: paymentFor(paying).amount,
+            alreadyPaid: paymentFor(paying).paidAmount,
+          }}
+        />
+      )}
+
+      {confirmDelete && (
+        <OverlayPanel title="Delete this payroll?" maxWidth={440} onClose={() => setConfirmDelete(false)}
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button type="button" onClick={() => setConfirmDelete(false)}
+                style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Keep it</button>
+              <button type="button" disabled={busy}
+                onClick={() => void run(async (token) => {
+                  const result = await deletePayroll(token, monthKey);
+                  setConfirmDelete(false);
+                  return result.ok
+                    ? { ok: true, text: `${monthLabel(monthKey)} deleted, along with ${result.data.slipsRemoved} payslip${result.data.slipsRemoved === 1 ? "" : "s"}. Generate it again whenever you like.` }
+                    : { ok: false, text: result.error };
+                })}
+                style={{ borderRadius: 10, border: "none", background: "#a8483c", color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy ? 0.5 : 1 }}>
+                {busy ? "Deleting…" : "Delete payroll"}
+              </button>
+            </div>
+          }>
+          <p style={{ fontSize: 13.5, color: X.body, lineHeight: 1.6 }}>
+            <strong style={{ color: X.ink }}>{monthLabel(monthKey)}</strong> · {totals.people} people · {formatMoney(totals.net)} net
+          </p>
+          <p style={{ marginTop: 10, borderRadius: 10, background: "#fdf5e6", border: "1px solid #ecdcae", padding: "11px 13px", fontSize: 12.5, fontWeight: 600, color: "#8a6321", lineHeight: 1.6 }}>
+            The generated payroll and every payslip it produced are removed. Nothing that has
+            already been paid is touched — if any salary has gone out, the delete is refused and
+            names who was paid. You can generate the month again afterwards.
+          </p>
+        </OverlayPanel>
       )}
 
       {editing && (
         <PayrollLineModal
-          monthKey={monthKey}
           line={editing}
+          monthKey={monthKey}
           onClose={() => setEditing(null)}
           onSaved={(text) => {
             setEditing(null);
@@ -654,8 +767,8 @@ export function PayrollView() {
 
       {slipFor && (
         <PayslipPanel
-          monthKey={monthKey}
           line={slipFor}
+          monthKey={monthKey}
           status={status}
           onClose={() => setSlipFor(null)}
         />
@@ -663,13 +776,3 @@ export function PayrollView() {
     </div>
   );
 }
-
-const cell: React.CSSProperties = {
-  padding: "10px",
-  textAlign: "right",
-  fontSize: 12.5,
-  fontWeight: 600,
-  color: F.muted,
-  fontVariantNumeric: "tabular-nums",
-  whiteSpace: "nowrap",
-};

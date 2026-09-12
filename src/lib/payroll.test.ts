@@ -184,22 +184,45 @@ test('a period totals every line', () => {
 /* The state machine                                                           */
 /* -------------------------------------------------------------------------- */
 
-test('payroll moves one step at a time, forward or back', () => {
-  assert.deepEqual(allowedTransitions('DRAFT'), ['REVIEWED']);
-  assert.deepEqual(allowedTransitions('REVIEWED'), ['APPROVED', 'DRAFT']);
-  assert.deepEqual(allowedTransitions('APPROVED'), ['PAID', 'REVIEWED']);
+/*
+  **These two tests asserted a single chain and have been rewritten**, because
+  the rule changed on the owner's instruction: *"for HR he sends approval to
+  admin; admin doesn't need approval."* The admin approving their own draft used
+  to be refused — three presses to say one thing, for one person.
+
+  What has *not* changed, and is still asserted below: PAID is terminal, and
+  nothing reaches PAID through a status change at all.
+*/
+test('the admin approves a draft directly — no review step for one person', () => {
+  assert.deepEqual(allowedTransitions('DRAFT', true), ['APPROVED']);
+  assert.equal(canTransition('DRAFT', 'APPROVED', true), true);
+  // And can still send an approved month back to be corrected.
+  assert.deepEqual(allowedTransitions('APPROVED', true), ['REVIEWED']);
+});
+
+test('HR prepares and sends up; HR never approves', () => {
+  assert.deepEqual(allowedTransitions('DRAFT', false), ['REVIEWED']);
+  assert.equal(canTransition('DRAFT', 'APPROVED', false), false);
+  assert.equal(canTransition('REVIEWED', 'APPROVED', false), false);
+  // They can take back something they sent, and nothing more.
+  assert.deepEqual(allowedTransitions('REVIEWED', false), ['DRAFT']);
+  assert.deepEqual(allowedTransitions('APPROVED', false), []);
 });
 
 test('paid is terminal — money has left the building', () => {
-  assert.deepEqual(allowedTransitions('PAID'), []);
-  assert.equal(canTransition('PAID', 'APPROVED'), false);
-  assert.equal(canTransition('PAID', 'DRAFT'), false);
+  assert.deepEqual(allowedTransitions('PAID', true), []);
+  assert.deepEqual(allowedTransitions('PAID', false), []);
+  assert.equal(canTransition('PAID', 'APPROVED', true), false);
+  assert.equal(canTransition('PAID', 'DRAFT', true), false);
 });
 
-test('a draft cannot jump straight to paid, skipping both reviews', () => {
-  assert.equal(canTransition('DRAFT', 'PAID'), false);
-  assert.equal(canTransition('DRAFT', 'APPROVED'), false);
-  assert.equal(canTransition('DRAFT', 'REVIEWED'), true);
+test('nothing reaches paid through a status change — the status follows the money', () => {
+  // A month becomes paid when the last salary is actually paid out of an
+  // account, so no role may declare it paid.
+  for (const from of ['DRAFT', 'REVIEWED', 'APPROVED'] as const) {
+    assert.equal(canTransition(from, 'PAID', true), false, from);
+    assert.equal(canTransition(from, 'PAID', false), false, from);
+  }
 });
 
 test('only a working period may be edited', () => {

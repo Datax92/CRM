@@ -55,6 +55,7 @@ export function PayFromAccounts({
   accounts,
   balances,
   getIdToken,
+  submit: submitOverride,
   source,
 }: {
   open: boolean;
@@ -63,6 +64,21 @@ export function PayFromAccounts({
   accounts: AccountDoc[];
   balances: Map<string, { balance: number }>;
   getIdToken: () => Promise<string>;
+  /**
+   * Posts the payment, when the generic ledger call is not the right one.
+   *
+   * Payroll is the case: a month may only be paid once it is approved, only by
+   * the admin, and paying the last rupee marks it paid and writes the payslips.
+   * Those are payroll's rules, not the ledger's, so that module wraps
+   * `payFromAccounts` and hands the wrapper in here — rather than this panel
+   * growing a branch per module, or payroll growing a second split control that
+   * could validate differently from this one.
+   */
+  submit?: (input: {
+    allocations: Array<{ accountId: string; amount: number }>;
+    dayKey: string;
+    note: string | null;
+  }) => Promise<{ ok: true; fullyPaid: boolean; posted: number } | { ok: false; error: string }>;
   source: {
     module: SourceModule;
     collection: string;
@@ -105,21 +121,24 @@ export function PayFromAccounts({
     setBusy(true);
     setError(null);
     try {
-      const result = await payFromAccounts(await getIdToken(), {
-        sourceModule: source.module,
-        sourceId: source.id,
-        sourceCollection: source.collection,
-        sourceLabel: source.label,
-        allocations,
-        direction: source.direction ?? "OUT",
-        type: source.type ?? (source.direction === "IN" ? "INCOME" : "EXPENSE"),
-        dayKey,
-        note: note.trim() || null,
-      });
+      const result = submitOverride
+        ? await submitOverride({ allocations, dayKey, note: note.trim() || null })
+        : await payFromAccounts(await getIdToken(), {
+            sourceModule: source.module,
+            sourceId: source.id,
+            sourceCollection: source.collection,
+            sourceLabel: source.label,
+            allocations,
+            direction: source.direction ?? "OUT",
+            type: source.type ?? (source.direction === "IN" ? "INCOME" : "EXPENSE"),
+            dayKey,
+            note: note.trim() || null,
+          });
       if (result.ok) {
+        const done = "data" in result ? result.data : result;
         onPaid(
-          result.data.fullyPaid
-            ? `${source.label} paid in full from ${result.data.posted} account${result.data.posted === 1 ? "" : "s"}.`
+          done.fullyPaid
+            ? `${source.label} paid in full from ${done.posted} account${done.posted === 1 ? "" : "s"}.`
             : `${formatMoney(check.allocated)} paid — ${formatMoney(check.unallocated)} still outstanding.`
         );
         onClose();
