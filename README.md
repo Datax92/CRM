@@ -1,4 +1,4 @@
-# CRM System
+# CRM System.
 
 Lead Management & CRM Platform. Ingests leads from Meta Lead Ads, distributes
 them to employees under a timed priority rotation, records every follow-up
