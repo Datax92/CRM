@@ -93,7 +93,7 @@ npm run check-auth -- you@company.com '<password>'   # diagnose sign-in problems
 npm run purge-demo-data # remove seeded demo records from the live project
 ```
 
-## Documentation
+## Documentation.
 
 | File | What it covers |
 | --- | --- |
