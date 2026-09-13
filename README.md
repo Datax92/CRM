@@ -6,7 +6,7 @@ immutably, and rolls up closed-deal financials against office expenses.
 
 Built for a Pakistan-based sales business: amounts in PKR, reporting periods in
 Asia/Karachi, phone numbers normalised to +92.
-
+....
 ## Features
 
 - **Lead intake** — Meta Lead Ads webhook, signature-verified, with the
