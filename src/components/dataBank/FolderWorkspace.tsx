@@ -58,6 +58,8 @@ import {
 } from "@/lib/assignTargets";
 import { ImportModal } from "./ImportModal";
 import { BulkPromoteBar } from "./BulkPromoteBar";
+import { ReassignBar } from "./ReassignBar";
+import { AssignModal } from "@/components/admin/AssignModal";
 import { RecordFormModal } from "./RecordFormModal";
 import {
   ArrowLeft,
@@ -130,6 +132,27 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   // manager handing rows sideways to another manager is the admin's call.
   const { subAdmins } = useSubAdmins(wantsData && role === "admin");
 
+  /*
+    **Who an assigned lead may be reassigned to** is a wider question than who a
+    record may be promoted to. An HR manager runs distribution for the company
+    (`canAssignLeadTo`), so their reassign list is every active employee and
+    manager — while their promotion list stays their own team, because
+    `resolveAssignee` refuses anything else. Two lists, from the two rules the
+    server actually applies.
+  */
+  const companyWide = role === "subadmin" && managerKind === "HR";
+  const canReassignSideways = role === "admin" || companyWide;
+  const { employees: reachable } = useEmployees(wantsData, { role, uid: user?.uid, companyWide });
+  const { subAdmins: reachableManagers } = useSubAdmins(wantsData && canReassignSideways);
+  const reassignOptions = useMemo(
+    () =>
+      buildAssignOptions(
+        [...reachable, ...(canReassignSideways ? reachableManagers : [])],
+        { uid: user?.uid ?? "", name: "Me", role: role ?? null }
+      ).filter((option) => option.group !== "MYSELF"),
+    [reachable, reachableManagers, canReassignSideways, user?.uid, role]
+  );
+
   /**
    * Who a record may go to: employees, managers, and the viewer themselves.
    * Built here so the row action and the bulk bar cannot offer different
@@ -153,6 +176,9 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedAssigned, setSelectedAssigned] = useState<string | null>(null);
+  /** The Assigned half's own selection, for bulk reassignment. */
+  const [pickedAssigned, setPickedAssigned] = useState<Set<string>>(new Set());
+  const [reassigningLead, setReassigningLead] = useState<string | null>(null);
   /**
    * The bulk selection (§9). Ids rather than indexes, so a row that scrolls
    * away or is filtered out stays selected — and so the payload sent to the
@@ -176,8 +202,14 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
 
   /** Everyone this viewer can put a name to, so an assigned row never reads as an id. */
   const names = useMemo(
-    () => new Map([...employees, ...subAdmins].map((person) => [person.uid, person.name])),
-    [employees, subAdmins]
+    () =>
+      new Map(
+        [...employees, ...reachable, ...subAdmins, ...reachableManagers].map((person) => [
+          person.uid,
+          person.name,
+        ])
+      ),
+    [employees, reachable, subAdmins, reachableManagers]
   );
   const managers = useMemo(
     () => subAdmins.map((manager) => ({ uid: manager.uid, name: manager.name })),
@@ -482,7 +514,10 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
           <div className="shrink-0 px-4 pb-2">
             {page.error && <Banner tone="error" text={page.error} />}
             {view === "ASSIGNED" && assigned.error && <Banner tone="error" text={assigned.error} />}
-            {banner && (
+            {banner?.tone === "error" && (
+              <Banner tone="error" text={banner.text} onDismiss={() => setBanner(null)} />
+            )}
+            {banner?.tone === "success" && (
               <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-medium text-emerald-800">
                 <div className="flex items-start justify-between gap-3">
                   <span>{banner.text}</span>
@@ -504,6 +539,29 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Reassign — one row or many, whatever each row is. */}
+        {view === "ASSIGNED" && (
+          <div className="px-3.5 pb-2.5">
+            <ReassignBar
+              selected={assigned.items.filter((item) => pickedAssigned.has(item.id))}
+              available={assignedPages.items.length}
+              options={reassignOptions}
+              getIdToken={getIdToken}
+              onSelectCount={(n) => {
+                // From the top of what is on screen, in the order shown.
+                const take = assignedPages.items.slice(0, n).map((item) => item.id);
+                setPickedAssigned(new Set(take));
+                return take.length;
+              }}
+              onClear={() => setPickedAssigned(new Set())}
+              onDone={(message) => {
+                setPickedAssigned(new Set());
+                afterWrite(message);
+              }}
+            />
           </div>
         )}
 
@@ -552,9 +610,23 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                   const active = item.id === selectedAssigned;
                   const seen = isOpened(item.id);
                   const shade = ROW_TONES[active ? "selected" : seen ? "opened" : "unopened"];
+                  const ticked = pickedAssigned.has(item.id);
                   return (
+                    <div key={item.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={ticked}
+                      aria-label={`Select ${item.name}`}
+                      onChange={() =>
+                        setPickedAssigned((current) => {
+                          const next = new Set(current);
+                          if (!next.delete(item.id)) next.add(item.id);
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 shrink-0 accent-[#2f7d78]"
+                    />
                     <button
-                      key={item.id}
                       onClick={() => {
                         setSelectedAssigned(item.id);
                         markOpened(item.id);
@@ -565,7 +637,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                         background: shade.background,
                         borderColor: shade.border,
                       }}
-                      className="animate-lead-row grid w-full min-w-0 grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
+                      className="animate-lead-row grid w-full min-w-0 flex-1 grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
                     >
                       <span
                         className="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white text-[13.5px] font-medium text-[#4a5c5a]"
@@ -607,6 +679,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                         </span>
                       </span>
                     </button>
+                    </div>
                   );
                 })
               )}
@@ -742,6 +815,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
               userRole={role === "subadmin" ? "subadmin" : "admin"}
               getIdToken={getIdToken}
               assigneeName={openAssigned.assigneeName}
+              onReassignRequest={() => setReassigningLead(openAssigned.id)}
             />
           ) : assigned.handoffsById.get(openAssigned.id) ? (
             <RecordPane
@@ -783,6 +857,27 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
           />
         )}
       </section>
+
+      {reassigningLead && assigned.leadsById.get(reassigningLead) && (
+        <AssignModal
+          lead={assigned.leadsById.get(reassigningLead)!}
+          employees={reachable}
+          managers={canReassignSideways ? reachableManagers : []}
+          onClose={() => setReassigningLead(null)}
+          getIdToken={getIdToken}
+          runAction={async (fn, success) => {
+            try {
+              const res = await fn();
+              if (res.ok) setBanner({ tone: "success", text: success });
+              else setBanner({ tone: "error", text: res.error || "Failed." });
+              return res.ok;
+            } catch {
+              setBanner({ tone: "error", text: "Network error." });
+              return false;
+            }
+          }}
+        />
+      )}
 
       {importOpen && (
         <ImportModal

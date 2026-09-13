@@ -57,6 +57,8 @@ import {
 } from "@/lib/assignTargets";
 import { FolderFormModal } from "@/components/dataBank/FolderFormModal";
 import { BulkPromoteBar } from "@/components/dataBank/BulkPromoteBar";
+import { ReassignBar } from "@/components/dataBank/ReassignBar";
+import { AssignModal } from "@/components/admin/AssignModal";
 import { ImportModal } from "@/components/dataBank/ImportModal";
 import { RecordFormModal } from "@/components/dataBank/RecordFormModal";
 import { M, HeaderCircle, MobileHeader } from "./mobileChrome";
@@ -465,6 +467,20 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   // "employee"`, so the Managers group was always empty without this.
   const { subAdmins } = useSubAdmins(isManager && role === "admin");
   const { isOpened, markOpened } = useOpenedLeads(user?.uid);
+  // Who an assigned lead may be reassigned to — wider for HR than who a record
+  // may be promoted to. Same two rules the desktop reads; see `FolderWorkspace`.
+  const companyWide = role === "subadmin" && managerKind === "HR";
+  const canReassignSideways = role === "admin" || companyWide;
+  const { employees: reachable } = useEmployees(isManager, { role, uid: user?.uid, companyWide });
+  const { subAdmins: reachableManagers } = useSubAdmins(isManager && canReassignSideways);
+  const reassignOptions = useMemo(
+    () =>
+      buildAssignOptions(
+        [...reachable, ...(canReassignSideways ? reachableManagers : [])],
+        { uid: user?.uid ?? "", name: "Me", role: role ?? null }
+      ).filter((option) => option.group !== "MYSELF"),
+    [reachable, reachableManagers, canReassignSideways, user?.uid, role]
+  );
 
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<DataBankStatus | "ALL">("ALL");
@@ -474,6 +490,8 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [openAssignedId, setOpenAssignedId] = useState<string | null>(null);
+  const [pickedAssigned, setPickedAssigned] = useState<Set<string>>(new Set());
+  const [reassigningLead, setReassigningLead] = useState<string | null>(null);
   const bankPath = role === "subadmin" ? "/subadmin/data-bank" : "/admin/data-bank";
   const [importOpen, setImportOpen] = useState(false);
   const [formFor, setFormFor] = useState<{ record: DataBankRecord | null } | null>(null);
@@ -489,8 +507,14 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
 
   const names = useMemo(
-    () => new Map([...employees, ...subAdmins].map((person) => [person.uid, person.name])),
-    [employees, subAdmins]
+    () =>
+      new Map(
+        [...employees, ...reachable, ...subAdmins, ...reachableManagers].map((person) => [
+          person.uid,
+          person.name,
+        ])
+      ),
+    [employees, reachable, subAdmins, reachableManagers]
   );
   const managers = useMemo(
     () => subAdmins.map((manager) => ({ uid: manager.uid, name: manager.name })),
@@ -880,6 +904,24 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
 
         {view === "ASSIGNED" ? (
           <>
+            {/* Reassign — the desktop's bar in its `compact` form. */}
+            <ReassignBar
+              compact
+              selected={assigned.items.filter((item) => pickedAssigned.has(item.id))}
+              available={assignedPages.items.length}
+              options={reassignOptions}
+              getIdToken={getIdToken}
+              onSelectCount={(n) => {
+                const take = assignedPages.items.slice(0, n).map((item) => item.id);
+                setPickedAssigned(new Set(take));
+                return take.length;
+              }}
+              onClear={() => setPickedAssigned(new Set())}
+              onDone={(message) => {
+                setPickedAssigned(new Set());
+                afterWrite(message);
+              }}
+            />
             {assigned.loading ? (
               <SkeletonCards />
             ) : assignedVisible.length === 0 ? (
@@ -896,8 +938,15 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
             ) : (
               assignedPages.items.map((item, index) => {
                 const seen = isOpened(item.id);
-                const shade = ROW_TONES[seen ? "opened" : "unopened"];
+                const tickedRow = pickedAssigned.has(item.id);
+                const shade = ROW_TONES[tickedRow ? "selected" : seen ? "opened" : "unopened"];
                 const lead = item.kind === "LEAD";
+                const toggleRow = () =>
+                  setPickedAssigned((current) => {
+                    const next = new Set(current);
+                    if (!next.delete(item.id)) next.add(item.id);
+                    return next;
+                  });
                 return (
                   <button
                     key={item.id}
@@ -923,24 +972,46 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
                         index < 8 ? `mob-rise 300ms cubic-bezier(0.22,0.61,0.36,1) ${index * 32}ms both` : undefined,
                     }}
                   >
+                    {/* The avatar is the tick target, as on the Unassigned half. */}
                     <span
+                      role="checkbox"
+                      aria-checked={tickedRow}
+                      aria-label={`Select ${item.name}`}
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleRow();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== " " && event.key !== "Enter") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleRow();
+                      }}
                       style={{
                         width: 48,
                         height: 48,
                         borderRadius: "50%",
-                        background: "#fff",
-                        border: `2px solid ${lead ? M.tealDeep : M.blue}`,
+                        background: tickedRow ? M.teal : "#fff",
+                        border: `2px solid ${tickedRow ? M.tealDeep : lead ? M.tealDeep : M.blue}`,
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
                         fontSize: 14,
                         fontWeight: 700,
-                        color: "#4a5c5a",
+                        color: tickedRow ? "#fff" : "#4a5c5a",
                         flexShrink: 0,
+                        cursor: "pointer",
+                        transition: "background-color 140ms ease, border-color 140ms ease",
                       }}
-                      aria-hidden
                     >
-                      {initialsOf(item.name)}
+                      {tickedRow ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="m5 13 4 4L19 7" />
+                        </svg>
+                      ) : (
+                        initialsOf(item.name)
+                      )}
                     </span>
                     <span style={{ minWidth: 0 }}>
                       <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
@@ -1199,6 +1270,27 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           userRole={role === "subadmin" ? "subadmin" : "admin"}
           getIdToken={getIdToken}
           assigneeName={openAssigned.assigneeName}
+          onReassign={() => setReassigningLead(openAssigned.id)}
+        />
+      )}
+
+      {reassigningLead && assigned.leadsById.get(reassigningLead) && (
+        <AssignModal
+          lead={assigned.leadsById.get(reassigningLead)!}
+          employees={reachable}
+          managers={canReassignSideways ? reachableManagers : []}
+          onClose={() => setReassigningLead(null)}
+          getIdToken={getIdToken}
+          runAction={async (fn, success) => {
+            try {
+              const res = await fn();
+              setBanner(res.ok ? { tone: "success", text: success } : { tone: "error", text: res.error || "Failed." });
+              return res.ok;
+            } catch {
+              setBanner({ tone: "error", text: "Network error." });
+              return false;
+            }
+          }}
         />
       )}
 

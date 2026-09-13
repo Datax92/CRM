@@ -126,6 +126,12 @@ export async function reassignLeadManual(
       if (isTerminal(lead.status)) {
         throw new UserFacingError("This lead is closed and cannot be reassigned.");
       }
+      // Whose lead it is *now*, not only who it is going to. A Sales manager
+      // reassigns their own team's leads; the screens only ever offered those,
+      // and this makes the server say the same.
+      if (!mayReassign(actor, lead)) {
+        throw new UserFacingError("That lead is not on your team.");
+      }
       if (lead.assignedUserId === newUserId) {
         throw new UserFacingError("This lead is already assigned to that employee.");
       }
@@ -494,9 +500,10 @@ export async function assignLeadsBulk(
           continue;
         }
         const lead = snap.data()!;
-        // A closed lead is history (BR-22) and a lead already with this person
-        // needs no write.
-        if (isTerminal(lead.status) || lead.assignedUserId === userId) {
+        // A closed lead is history (BR-22), a lead already with this person
+        // needs no write, and a lead on another manager's team is not this
+        // caller's to move (see `mayReassign`).
+        if (isTerminal(lead.status) || lead.assignedUserId === userId || !mayReassign(actor, lead)) {
           skipped += 1;
           continue;
         }
@@ -553,6 +560,18 @@ export async function assignLeadsBulk(
 
     return { assigned, skipped };
   });
+}
+
+/**
+ * Whether this caller may take a lead off whoever holds it now.
+ *
+ * The admin and HR run the whole pipeline; a Sales manager their own team's.
+ * `canWorkLead` would refuse HR on another team's lead, which is the one thing
+ * HR is for.
+ */
+function mayReassign(actor: DecodedAuth, lead: Record<string, unknown>): boolean {
+  if (actor.role === "admin" || actor.isHr) return true;
+  return actor.role === "subadmin" && lead.subAdminUid === actor.uid;
 }
 
 /**

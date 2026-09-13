@@ -270,10 +270,12 @@ export function DossierFilterBar({
           <option value="ALL">All time</option>
         </select>
 
-        {/* Source — which sheet or campaign these leads came from. Kept even
-            when the picked source has no leads in the list any more, so the
-            control never silently drops a filter that is still in force. */}
-        {sources && (sources.length > 0 || filters.source) && (
+        {/* Source — which sheet or campaign these leads came from, counted in
+            the chosen period. Always shown on the Leads tab, even on a day with
+            nothing in it: a control that vanishes when the date changes reads
+            as a filter that stopped working. A picked source with no leads that
+            day stays selected, at (0), rather than being silently dropped. */}
+        {sources && (
           <select
             value={filters.source ?? ""}
             onChange={(e) => onChange({ ...filters, source: e.target.value || null })}
@@ -295,7 +297,7 @@ export function DossierFilterBar({
               minWidth: 0,
             }}
           >
-            <option value="">All sources</option>
+            <option value="">All sources ({sources.reduce((sum, option) => sum + option.count, 0)})</option>
             {filters.source && !sources.some((option) => option.key === filters.source) && (
               <option value={filters.source}>{filters.source} (0)</option>
             )}

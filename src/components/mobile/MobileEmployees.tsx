@@ -1137,8 +1137,20 @@ function ProfileOverlay({
    * numbers on the chips are the numbers the chips will produce. `countByFilter`
    * is the same function the leads workspace counts with.
    */
-  /** Every origin this person's leads came from, for the source filter. */
-  const leadSources = useMemo(() => sourceOptions(ownLeads, describeLeadSource), [ownLeads]);
+  /**
+   * Every origin this person's leads came from, **counted inside the chosen
+   * period** — the same leads the list would show for that day with no cut and
+   * no source picked. Counting all-time put a lifetime total beside a control
+   * that says "Today".
+   */
+  const leadSources = useMemo(
+    () =>
+      sourceOptions(
+        applyLeadFilters(ownLeads, { ...filters, cut: "ALL", source: null }, entryActivity.tallies),
+        describeLeadSource
+      ),
+    [ownLeads, filters, entryActivity.tallies]
+  );
 
   const cutCounts = useMemo(
     () =>

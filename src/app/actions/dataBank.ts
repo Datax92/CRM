@@ -1669,7 +1669,9 @@ export async function assignRecordsToManager(
         batch.update(snap.ref, {
           folderId: mirror.id,
           // Where it came from and who sent it, so the trail survives the move.
-          handedOffFromFolderId: sourceId,
+          // The **origin**, when the row is being moved on out of one manager's
+          // mirror into another's — it is still that folder's row.
+          handedOffFromFolderId: source.sourceFolderId ?? sourceId,
           handedOffToUid: managerUid,
           handedOffByUid: admin.uid,
           handedOffAt: now,
@@ -1681,10 +1683,25 @@ export async function assignRecordsToManager(
       }
 
       for (const [sourceId, count] of perSource) {
-        batch.update(adminDb.collection(FOLDERS).doc(sourceId), {
-          recordCount: FieldValue.increment(-count),
-          handedOffCount: FieldValue.increment(count),
-        });
+        const from = folders.get(sourceId);
+        batch.update(
+          adminDb.collection(FOLDERS).doc(sourceId),
+          from?.sourceFolderId
+            ? {
+                // **Reassigned from one manager to another.** The rows were
+                // already counted as handed off on the origin, and they still
+                // are; what changes is which mirror holds them. Taking them off
+                // this mirror's `handedInCount` is what stops
+                // `cleanupEmptyMirror` returning them to the origin twice —
+                // once from each mirror — when both eventually empty.
+                recordCount: FieldValue.increment(-count),
+                handedInCount: FieldValue.increment(-count),
+              }
+            : {
+                recordCount: FieldValue.increment(-count),
+                handedOffCount: FieldValue.increment(count),
+              }
+        );
       }
       for (const [mirrorId, count] of mirrorAdds) {
         batch.update(adminDb.collection(FOLDERS).doc(mirrorId), {
@@ -1715,6 +1732,14 @@ export async function assignRecordsToManager(
         createdAt: FieldValue.serverTimestamp(),
         readAt: null,
       });
+    }
+
+    // A mirror this emptied — every row moved on to another manager — is an
+    // empty copy of its source now. Same best-effort cleanup as promotion.
+    if (moved > 0) {
+      for (const [folderId, folder] of folders) {
+        if (folder.sourceFolderId) await cleanupEmptyMirror(folderId);
+      }
     }
 
     return { moved, skipped, folderIds: [...mirrors.values()].map((ref) => ref.id) };
