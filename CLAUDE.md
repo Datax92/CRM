@@ -269,7 +269,7 @@ and an element rule beats a family inherited from a container.
 `/employee/{workspace/leads,performance/stats,earnings,money,attendance,salary}`
 
 ---
-
+FOR CHANGES IN THE CODE
 # Lessons (paid for in production — do not relearn)
 
 **Firestore rules & queries**
