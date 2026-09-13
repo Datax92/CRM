@@ -75,30 +75,3 @@ banner marks every screen so it can never be mistaken for live data.
 7. `npm run check-auth -- you@yourcompany.com '<password>'` to confirm it worked
    before opening a browser.
 
-Full detail, in dependency order, in
-[`docs/deployment-runbook.md`](docs/deployment-runbook.md). The order matters —
-deploying the rules before the service account exists takes the app offline.
-
-Meta Lead Ads intake and the SLA timers need credentials and a cron schedule;
-see [`SETUP_STATUS.md`](SETUP_STATUS.md) for exactly what is still outstanding.
-
-### Commands
-.
-```bash
-npm run check           # typecheck + unit tests + lint
-npm run test            # unit tests only
-npm run deploy:rules    # Firestore rules, indexes and Storage rules
-npm run set-admin-role -- you@company.com
-npm run check-auth -- you@company.com '<password>'   # diagnose sign-in problems
-npm run purge-demo-data # remove seeded demo records from the live project
-```
-
-## Documentation.
-
-| File | What it covers |
-| --- | --- |
-| [`PRD.md`](PRD.md) | Functional requirements and the 22 numbered business rules |
-| [`architecture.md`](architecture.md) | Original technical design |
-| [`docs/implementation-notes.md`](docs/implementation-notes.md) | Where the build diverges from that design, and the assumptions still awaiting client sign-off |
-| [`docs/deployment-runbook.md`](docs/deployment-runbook.md) | Step-by-step deployment, in dependency order |
-| [`docs/integrations/whatsapp-placeholder.md`](docs/integrations/whatsapp-placeholder.md) | The switched-off WhatsApp send seam (Phase 2) |
