@@ -58,6 +58,20 @@ export interface DataBankFolder {
    */
   sourceFolderId?: string | null;
   sourceFolderName?: string | null;
+  /**
+   * Set on a folder the Meta intake created — which ad its leads came from.
+   * Absent on every hand-made folder, which is how the Meta Ads screen tells
+   * them apart.
+   */
+  metaSource?: {
+    key?: string;
+    basis?: "CAMPAIGN" | "FORM" | "AD" | "NONE";
+    campaignId?: string | null;
+    formId?: string | null;
+    adId?: string | null;
+  } | null;
+  /** When this folder last received a lead. */
+  lastLeadAt?: FirestoreTimestamp | null;
   createdAt?: FirestoreTimestamp;
 }
 
@@ -407,6 +421,18 @@ function folderFrom(id: string, raw: DocumentData): DataBankFolder {
     // never mapped here.
     sourceFolderId: typeof raw.sourceFolderId === "string" ? raw.sourceFolderId : null,
     sourceFolderName: typeof raw.sourceFolderName === "string" ? raw.sourceFolderName : null,
+    /*
+      **Read here, not merely typed above.** Adding these two to the interface
+      and forgetting this line is the exact mistake the comment above warns
+      about — and it was made again the day the Meta Ads screen was written:
+      every card read "Unattributed" and "No leads yet" because the fields were
+      declared and never mapped. Ninth outing of this bug class.
+    */
+    metaSource:
+      raw.metaSource && typeof raw.metaSource === "object"
+        ? (raw.metaSource as DataBankFolder["metaSource"])
+        : null,
+    lastLeadAt: raw.lastLeadAt ?? null,
     createdAt: raw.createdAt,
   };
 }

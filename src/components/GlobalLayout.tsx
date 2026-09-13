@@ -139,7 +139,10 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
       {
         title: "Data Bank", short: "Data", icon: Database,
         subItems: [
-          { title: "Sources", path: "/admin/data-bank", icon: FolderOpen }
+          { title: "Sources", path: "/admin/data-bank", icon: FolderOpen },
+          // Facebook lead ads land in their own folders, one per campaign. This
+          // screen is the way into them — see `MetaAdsView`.
+          { title: "Meta Ads", path: "/admin/meta-ads", icon: Megaphone }
         ]
       },
       {

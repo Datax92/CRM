@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
-import { adminDb } from '@/lib/firebase/server';
-import { ADMIN_ASSIGN_WINDOW_MS } from '@/lib/constants/distribution';
-import { FieldValue } from 'firebase-admin/firestore';
 import {
   verifyMetaSignature,
   fetchLeadDetails,
   resolveCampaign,
   isMetaConfigured,
 } from '@/lib/meta';
+import { fileMetaLead, notifyMetaLead } from '@/lib/server/metaFiling';
+import { karachiDayKey } from '@/lib/dates';
 
 // firebase-admin and node:crypto both require the Node runtime.
 export const runtime = 'nodejs';
@@ -110,84 +109,53 @@ export async function POST(request: Request) {
   return NextResponse.json({ ingested, duplicates });
 }
 
+/**
+ * Files a Meta lead into the Data Bank.
+ *
+ * **It used to create a lead in the pipeline directly.** The owner's
+ * instruction is that Facebook leads land in the admin's Data Bank, grouped one
+ * folder per ad, and are distributed from there — so both this route and the
+ * Make.com bridge now call `fileMetaLead` and a lead is filed identically
+ * whichever door it came through.
+ */
 async function ingestLead(leadgenId: string, value: Record<string, unknown>): Promise<boolean> {
-  const leadRef = adminDb.collection('leads').doc(leadgenId);
-
-  const existing = await leadRef.get();
-  if (existing.exists) return false;
-
   const adId = value.ad_id ? String(value.ad_id) : null;
   const formId = value.form_id ? String(value.form_id) : null;
   const pageId = value.page_id ? String(value.page_id) : null;
 
-  // Without a page access token we cannot retrieve the customer's details.
-  // Record the lead anyway — losing it entirely would be worse — but mark it
-  // clearly so the admin knows why it looks empty.
-  let details = null;
-  let intakeWarning: string | null = null;
-
-  if (isMetaConfigured()) {
-    details = await fetchLeadDetails(leadgenId);
-  } else {
-    intakeWarning = 'META_PAGE_ACCESS_TOKEN is not configured, so contact details could not be retrieved from Meta.';
-    console.error(`[meta] ${intakeWarning}`);
+  /*
+    **Without a token there are no answers, and a lead with no phone number
+    cannot be filed.** Throwing rather than filing an empty shell is deliberate:
+    the route turns it into a non-2xx, Meta retries, and the lead survives a
+    transient token problem instead of being recorded as a nameless row.
+  */
+  if (!isMetaConfigured()) {
+    throw new Error('META_PAGE_ACCESS_TOKEN is not configured — cannot retrieve lead details.');
   }
 
+  const details = await fetchLeadDetails(leadgenId);
   const campaign = await resolveCampaign(adId);
-  const now = new Date();
 
-  await leadRef.create({
-    name: details?.name ?? `Meta lead ${leadgenId}`,
-    phone: details?.phone ?? null,
-    email: details?.email ?? null,
-    city: details?.city ?? null,
-    customFields: details?.customFields ?? {},
-
-    source: 'META_ADS',
-    status: 'NEW',
-    assignedUserId: null,
-    attemptedAssignees: [],
-
-    campaignId: campaign.campaignId ?? null,
-    campaignName: campaign.campaignName ?? null,
+  const result = await fileMetaLead({
+    leadgenId,
+    name: details.name,
+    phone: details.phone,
+    email: details.email,
+    city: details.city,
+    extras: details.customFields ?? {},
+    campaignId: campaign.campaignId,
+    campaignName: campaign.campaignName,
     adId,
-    adName: campaign.adName ?? null,
-    adsetName: campaign.adsetName ?? null,
+    adName: campaign.adName,
+    adsetName: campaign.adsetName,
     formId,
     pageId,
-
-    createdAt: FieldValue.serverTimestamp(),
-    metaCreatedTime: details?.metaCreatedTime ?? null,
-    adminAssignDeadlineAt: new Date(now.getTime() + ADMIN_ASSIGN_WINDOW_MS),
-    intakeWarning,
+    submittedAt: details.metaCreatedTime,
   });
 
-  // FR-29: the audit trail starts at intake.
-  await leadRef.collection('events').add({
-    type: 'LEAD_INGESTED',
-    actorUid: 'system:meta-webhook',
-    at: FieldValue.serverTimestamp(),
-    meta: {
-      leadgenId,
-      adId,
-      formId,
-      campaignId: campaign.campaignId,
-      campaignName: campaign.campaignName,
-      contactDetailsRetrieved: Boolean(details),
-    },
-  });
-
-  // FR-6 / FR-25: keep a campaign registry so reports can show names, not IDs.
-  if (campaign.campaignId) {
-    await adminDb.collection('campaigns').doc(campaign.campaignId).set(
-      {
-        name: campaign.campaignName ?? campaign.campaignId,
-        metaCampaignId: campaign.campaignId,
-        lastLeadAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+  if (result.outcome === 'CREATED') {
+    await notifyMetaLead(result.folderId, result.folderName, karachiDayKey());
+    return true;
   }
-
-  return true;
+  return false;
 }
