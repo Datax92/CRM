@@ -1,5 +1,5 @@
 # CRM System.
-
+newchanges
 Lead Management & CRM Platform. Ingests leads from Meta Lead Ads, distributes
 them to employees under a timed priority rotation, records every follow-up
 immutably, and rolls up closed-deal financials against office expenses.
