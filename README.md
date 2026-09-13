@@ -34,44 +34,6 @@ Asia/Karachi, phone numbers normalised to +92.
 - **Firebase Auth** — email/password, with a `role` custom claim.
 - **Vercel Cron** (or Google Cloud Scheduler) — drives the SLA deadline sweep.
 
-The original design in `architecture.md` called for Cloud Functions and Cloud
-Tasks. See [`docs/implementation-notes.md`](docs/implementation-notes.md) for
-what was built instead and why.
 
-## Getting started
 
-### See it working in two minutes, with no Firebase
-
-```bash
-npm install
-cp .env.example .env.local
-```
-
-Set `NEXT_PUBLIC_DEMO_MODE=true` in `.env.local`, then:
-
-```bash
-npm run dev
-```
-
-Sign in at http://localhost:3000 with **`admin@crm.com`** / **`Demo12345`**
-(or `ayesha@crm.com`, `bilal@crm.com`, `sana@crm.com` for the employee view).
-
-Everything is in memory and fully interactive — assign a lead, accept it, log a
-follow-up, record a deal. Nothing is saved and no backend is contacted. An amber
-banner marks every screen so it can never be mistaken for live data.
-
-### Connecting your own Firebase project
-
-1. Create a Firebase project, then **Authentication → Sign-in method → enable
-   Email/Password**. Skipping this is the single most common setup failure: no
-   account can sign in and the error looks like a wrong password.
-2. Put your project id in `.firebaserc` (it currently points at another project).
-3. Fill in the `NEXT_PUBLIC_FIREBASE_*` values from
-   `firebase apps:sdkconfig web`, and set `NEXT_PUBLIC_DEMO_MODE=false`.
-4. Add a service account key — `FIREBASE_CLIENT_EMAIL` and
-   `FIREBASE_PRIVATE_KEY`. Without it every privileged write fails.
-5. `npm run deploy:rules` to push the Security Rules and indexes.
-6. `npm run set-admin-role -- you@yourcompany.com` to create the first admin.
-7. `npm run check-auth -- you@yourcompany.com '<password>'` to confirm it worked
-   before opening a browser.
-
+CHANGES MADE AND PUSHING 
