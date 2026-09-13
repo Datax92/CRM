@@ -59,6 +59,7 @@ import { countByFilter } from "@/lib/leadBuckets";
 import { roleTitle } from "@/lib/constants/hierarchy";
 import { useDossierActivity } from "@/hooks/useDossierActivity";
 import { DossierFilterBar, Pager } from "./DossierControls";
+import { sourceOptions } from "@/lib/dataBankAssigned";
 
 /** Rows per page inside the dossier's tabs. */
 const PAGE_SIZE = 6;
@@ -212,6 +213,9 @@ export function EmployeeDetailModal({
    * entries, so the activity chips count leads *worked in these dates* rather
    * than leads that have ever been worked.
    */
+  /** Every origin this person's leads came from, for the source filter. */
+  const leadSources = useMemo(() => sourceOptions(ownLeads, describeLeadSource), [ownLeads]);
+
   const cutCounts = useMemo(
     () =>
       countByFilter(
@@ -608,6 +612,7 @@ export function EmployeeDetailModal({
                   variant="web"
                   counts={cutCounts}
                   activity={entryActivity}
+                  sources={leadSources}
                   countLine={describeDossierCount(shownLeads.length, ownLeads.length, filters, "web", entryActivity.loading)}
                 />
                 <AssignedLeads

@@ -7,7 +7,8 @@ import type { EmployeeData } from '@/hooks/useEmployees';
 import type { ReceivableRecord } from '@/hooks/useReceivables';
 import type { AccountRecord } from '@/hooks/useAccounts';
 import type { DataBankFolder, DataBankRecord } from '@/hooks/useDataBank';
-import { duplicatePhoneMessage, fieldKeyFor, phoneKey, type DataBankStatus } from '@/lib/dataBank';
+import { assignedPhoneMessage, duplicatePhoneMessage, fieldKeyFor, personalDuplicateMessage, phoneKey, type DataBankStatus } from '@/lib/dataBank';
+import { folderScopeIds } from '@/lib/dataBankAssigned';
 import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
@@ -996,6 +997,22 @@ function sortEmployees() {
 type Result<T = void> = { ok: true; data: T } | { ok: false; error: string };
 const ok = <T,>(data: T): Result<T> => ({ ok: true, data });
 const fail = (error: string): Result<never> => ({ ok: false, error });
+
+/**
+ * The lead a folder already handed a number out as, if any — the demo's
+ * `assignedPhoneHolders`. Same scope: the origin folder plus every manager's
+ * mirror of it.
+ */
+function demoHandedOut(folderId: string, key: string): Lead | undefined {
+  if (!key) return undefined;
+  const folder = state.dataBankFolders.find((f) => f.id === folderId);
+  const origin = folder?.sourceFolderId ?? folderId;
+  const managers = state.employees.filter((e) => e.accessRole === 'subadmin').map((e) => e.uid);
+  const scope = new Set(folderScopeIds(origin, managers));
+  return state.leads.find(
+    (lead) => scope.has(lead.dataBankFolderId ?? '') && phoneKey(lead.phone) === key
+  );
+}
 
 export const demo = {
   assignLead(leadId: string, userId: string, actorUid: string): Result {
@@ -3613,6 +3630,8 @@ export const demo = {
 
     const clash = state.dataBankRecords.find((r) => r.folderId === folderId && r.phoneKey === key);
     if (clash) return fail(duplicatePhoneMessage(phone, clash.name));
+    const out = demoHandedOut(folderId, key);
+    if (out) return fail(assignedPhoneMessage(phone, out.name, out.assigneeName));
 
     const id = nextId('dbr');
     state.dataBankRecords = [
@@ -3686,7 +3705,7 @@ export const demo = {
       const phone = (clean[folder.roles.phone] ?? '').trim();
       const key = phoneKey(phone);
       if (!name || !key) continue;
-      if (existing.has(key)) {
+      if (existing.has(key) || demoHandedOut(folderId, key)) {
         duplicates += 1;
         continue;
       }
@@ -3802,6 +3821,8 @@ export const demo = {
   promoteDataBankRecord: (recordId: string, assignedUserId: string, actorUid = 'demo-admin') => {
     const record = state.dataBankRecords.find((r) => r.id === recordId);
     if (!record) return fail('That record no longer exists.');
+    const out = demoHandedOut(record.folderId, record.phoneKey);
+    if (out) return fail(assignedPhoneMessage(record.phone, out.name, out.assigneeName));
     // Employee, manager or the admin themselves (§2). A manager or the admin
     // gets the lead in their **Client section** rather than the employee lead
     // area — the server does the same, and the demo has to demonstrate it.
@@ -3946,5 +3967,73 @@ export const demo = {
     }
     emit();
     return ok({ leadId, clientFolderId: goesToClients && folder ? `db_${assignedUserId}_${folder.id}` : null });
+  },
+
+  /** Mirrors `listPersonalLeadFolders` — the admin's own folders, names only. */
+  listPersonalLeadFolders: () =>
+    ok(
+      state.dataBankFolders
+        .filter((f) => !f.subAdminUid && !f.sourceFolderId)
+        .map((f) => ({ id: f.id, name: f.name, code: f.code ?? null }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    ),
+
+  /** Mirrors `addPersonalLead`: the employee's own lead, filed under an admin folder. */
+  addPersonalLead: (input: { folderId: string; name: string; phone: string }) => {
+    const session = getDemoSession();
+    if (session?.role !== 'employee') return fail("Personal leads are added from an employee's own account.");
+    const name = (input.name ?? '').trim();
+    const phone = (input.phone ?? '').trim();
+    const key = phoneKey(phone);
+    if (!name) return fail("Enter the lead's name.");
+    if (!key) return fail('Enter a usable phone number.');
+    const folder = state.dataBankFolders.find((f) => f.id === input.folderId);
+    if (!folder || folder.subAdminUid || folder.sourceFolderId) {
+      return fail('Choose one of the Data Bank folders offered.');
+    }
+    const heldAsRow = state.dataBankRecords.some(
+      (r) => r.phoneKey === key && (r.folderId === folder.id || r.folderId.endsWith(`_${folder.id}`))
+    );
+    if (heldAsRow || demoHandedOut(folder.id, key)) return fail(personalDuplicateMessage(folder.name));
+
+    const employee = state.employees.find((e) => e.uid === session.uid);
+    const leadId = nextId('lead');
+    const stamp = now();
+    state.leads = [
+      {
+        id: leadId,
+        name,
+        phone,
+        email: null,
+        city: null,
+        status: 'ACCEPTED',
+        source: 'DATA_BANK',
+        personalLead: true,
+        assignedUserId: session.uid,
+        assigneeName: employee?.name ?? session.name,
+        attemptedAssignees: [session.uid],
+        distributionMethod: 'MANUAL',
+        dataBankFolderId: folder.id,
+        dataBankFolderName: folder.name,
+        subAdminUid: employee?.subAdminUid ?? null,
+        campaignId: null,
+        campaignName: null,
+        followUpCount: 0,
+        callCount: 0,
+        customFields: {},
+        createdAt: stamp,
+        assignedAt: stamp,
+        acceptedAt: stamp,
+        lastActivityAt: stamp,
+      } as Lead,
+      ...state.leads,
+    ];
+    state.events[leadId] = [
+      { id: `${leadId}-e1`, type: 'PERSONAL_LEAD_ADDED', actorUid: session.uid, at: stamp, meta: { folderName: folder.name } },
+    ];
+    folder.promotedCount += 1;
+    state.dataBankFolders = [...state.dataBankFolders];
+    emit();
+    return ok({ leadId, folderName: folder.name });
   },
 };

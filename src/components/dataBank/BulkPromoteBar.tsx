@@ -23,6 +23,7 @@
 import { useState } from "react";
 import { Users, X, Check, ChevronDown } from "lucide-react";
 import { promoteDataBankRecords, assignRecordsToManager } from "@/lib/clientActions";
+import { promotionSkipNote } from "@/lib/dataBank";
 import {
   assignActionFor,
   describeAssignee,
@@ -106,7 +107,7 @@ export function BulkPromoteBar({
       if (result.ok) {
         onDone(
           `${result.data.promoted} lead${result.data.promoted === 1 ? "" : "s"} assigned to ${who}.` +
-            (result.data.skipped ? ` ${result.data.skipped} were skipped.` : ""),
+            promotionSkipNote(result.data.skipped, result.data.duplicates),
           "/admin/leads?filter=active"
         );
       } else {

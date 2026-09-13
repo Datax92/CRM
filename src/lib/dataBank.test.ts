@@ -12,6 +12,9 @@ import {
   estimateImportCost,
   IMPORT_KEYS_PER_LOOKUP,
   WRITE_BATCH_SIZE,
+  assignedPhoneMessage,
+  personalDuplicateMessage,
+  promotionSkipNote,
   type DataBankField,
 } from './dataBank.ts';
 
@@ -382,4 +385,38 @@ test('cost: a 40k import is cents, not dollars, on Blaze', () => {
 test('cost: nothing to import costs nothing', () => {
   assert.deepEqual(estimateImportCost(0), { writes: 0, reads: 0, usd: 0 });
   assert.deepEqual(estimateImportCost(-5), { writes: 0, reads: 0, usd: 0 });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Numbers the folder has already handed out                                   */
+/* -------------------------------------------------------------------------- */
+
+test('assigned duplicate: names the lead and who has it', () => {
+  assert.equal(
+    assignedPhoneMessage('0300 1234567', 'Aqeel Ahmed', 'Aroosa Abbasi'),
+    '0300 1234567 has already been assigned from this folder — it is Aqeel Ahmed, with Aroosa Abbasi.'
+  );
+});
+
+test('assigned duplicate: survives missing names', () => {
+  assert.equal(
+    assignedPhoneMessage('', '', null),
+    'That number has already been assigned from this folder — it is an unnamed lead.'
+  );
+});
+
+test("personal duplicate: an employee is never told whose number it is", () => {
+  const message = personalDuplicateMessage('GFS');
+  assert.equal(message, 'That number is already in GFS. Ask your manager before adding it again.');
+  assert.doesNotMatch(personalDuplicateMessage(''), /undefined|null/);
+});
+
+test('skip note: silent when nothing was skipped, and says why when it can', () => {
+  assert.equal(promotionSkipNote(0, 0), '');
+  assert.equal(promotionSkipNote(2, 2), ' 2 already assigned from this folder, so not assigned again.');
+  assert.equal(
+    promotionSkipNote(3, 1),
+    ' 1 already assigned from this folder, so not assigned again; 2 skipped — already promoted or removed.'
+  );
+  assert.equal(promotionSkipNote(1, 5), ' 1 already assigned from this folder, so not assigned again.');
 });

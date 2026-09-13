@@ -17,7 +17,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { useClientFolders, type ClientFolder } from "@/hooks/useClients";
+import { useClientFolders, useOwnClientLeads, type ClientFolder } from "@/hooks/useClients";
 import { createClientFolder, updateClientFolder, deleteClientFolder } from "@/lib/clientActions";
 import { MobileHeader, HeaderCircle, M } from "./mobileChrome";
 import { AccountButton } from "./MobileAccount";
@@ -36,11 +36,13 @@ import { ImportFromDataBankModal } from "@/components/clients/ImportFromDataBank
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 
 export function MobileClientFolders({ basePath }: { basePath: string }) {
-  const { role, user, getIdToken } = useAuth();
+  const { role, managerKind, user, getIdToken } = useAuth();
   const isManager = role === "admin" || role === "subadmin";
   const router = useRouter();
 
   const { folders, loading, error } = useClientFolders(isManager, { role, uid: user?.uid });
+  // What each folder actually shows — its leads still assigned to the viewer.
+  const { counts } = useOwnClientLeads(isManager, { role, uid: user?.uid, managerKind });
 
   const [formFor, setFormFor] = useState<{ folder: ClientFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<ClientFolder | null>(null);
@@ -50,10 +52,10 @@ export function MobileClientFolders({ basePath }: { basePath: string }) {
 
   const totals = useMemo(
     () => ({
-      leads: folders.reduce((sum, folder) => sum + folder.leadCount, 0),
+      leads: folders.reduce((sum, folder) => sum + (counts.get(folder.id) ?? 0), 0),
       imported: folders.filter((folder) => folder.dataBankFolderId).length,
     }),
-    [folders]
+    [folders, counts]
   );
 
   const remove = async (folder: ClientFolder) => {
@@ -238,7 +240,7 @@ export function MobileClientFolders({ basePath }: { basePath: string }) {
                 )}
 
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 22, marginTop: 12 }}>
-                  <Figure value={folder.leadCount.toLocaleString()} label="Leads" />
+                  <Figure value={(counts.get(folder.id) ?? 0).toLocaleString()} label="Leads" />
                   {folder.dataBankFolderName && (
                     <Figure value={folder.dataBankFolderName} label="Source" tone={M.tealDeep} />
                   )}

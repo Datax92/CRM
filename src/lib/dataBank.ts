@@ -276,6 +276,61 @@ export function duplicatePhoneMessage(
     : `${number} is already in this folder — it belongs to ${name}.`;
 }
 
+/**
+ * What the reader is told when the folder has **already handed that number
+ * out** — it is a lead now, so it is no longer a row in the folder to find.
+ *
+ * Before this was checked, a promoted row left the folder, the folder forgot
+ * the number, and re-importing the same sheet recreated it: measured
+ * 2026-09-13, "FAISAL TOWN 2 LEADS" had put eight numbers into the pipeline
+ * twice, several of them to the same person.
+ */
+export function assignedPhoneMessage(
+  written: string | null | undefined,
+  holder: string | null | undefined,
+  assignee: string | null | undefined
+): string {
+  const number = (written ?? "").trim() || "That number";
+  const name = (holder ?? "").trim() || "an unnamed lead";
+  const who = (assignee ?? "").trim();
+  return who
+    ? `${number} has already been assigned from this folder — it is ${name}, with ${who}.`
+    : `${number} has already been assigned from this folder — it is ${name}.`;
+}
+
+/**
+ * The same refusal, for an **employee** adding a personal lead.
+ *
+ * Deliberately names nobody. An employee cannot read the Data Bank or anybody
+ * else's leads, and a refusal that said whose client the number is would be a
+ * way to look that up one number at a time.
+ */
+export function personalDuplicateMessage(folderName: string | null | undefined): string {
+  const folder = (folderName ?? "").trim();
+  return folder
+    ? `That number is already in ${folder}. Ask your manager before adding it again.`
+    : "That number is already in this Data Bank folder. Ask your manager before adding it again.";
+}
+
+/**
+ * The tail of a bulk promotion's confirmation: how many rows did not become
+ * leads, and — when that is why — that they had already been handed out.
+ * Empty when nothing was skipped.
+ */
+export function promotionSkipNote(skipped: number, duplicates = 0): string {
+  if (skipped <= 0) return "";
+  const dupes = Math.min(Math.max(0, duplicates), skipped);
+  const other = skipped - dupes;
+  const parts: string[] = [];
+  if (dupes > 0) {
+    parts.push(`${dupes} already assigned from this folder, so not assigned again`);
+  }
+  if (other > 0) {
+    parts.push(`${other} skipped — already promoted or removed`);
+  }
+  return ` ${parts.join("; ")}.`;
+}
+
 /** True when two written numbers are the same line. */
 export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = phoneKey(a);

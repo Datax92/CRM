@@ -13,6 +13,7 @@ import { STAGE_TONES } from "@/components/leads/StageChrome";
 
 import type { Pagination } from "@/hooks/usePagination";
 import type { DossierActivity } from "@/hooks/useDossierActivity";
+import type { SourceOption } from "@/lib/dataBankAssigned";
 import { karachiDayKey, offsetDayKey, formatDayKeyDisplay } from "@/lib/dates";
 import {
   E,
@@ -45,6 +46,7 @@ export function DossierFilterBar({
   countLine,
   counts,
   activity,
+  sources,
 }: {
   filters: DossierFilters;
   onChange: (next: DossierFilters) => void;
@@ -53,6 +55,12 @@ export function DossierFilterBar({
   countLine?: string;
   counts?: Partial<Record<LeadFilterKey, number>>;
   activity?: DossierActivity;
+  /**
+   * The origins this person's leads came from, with counts. Given only on the
+   * Leads tab — the source is a fact about a lead, so a deal list or an
+   * activity feed offering it would be a control that does nothing.
+   */
+  sources?: SourceOption[];
 }) {
   const web = variant === "web";
   const dateInputRef = useRef<HTMLInputElement>(null);
@@ -261,6 +269,43 @@ export function DossierFilterBar({
           <option value="MONTH">This month</option>
           <option value="ALL">All time</option>
         </select>
+
+        {/* Source — which sheet or campaign these leads came from. Kept even
+            when the picked source has no leads in the list any more, so the
+            control never silently drops a filter that is still in force. */}
+        {sources && (sources.length > 0 || filters.source) && (
+          <select
+            value={filters.source ?? ""}
+            onChange={(e) => onChange({ ...filters, source: e.target.value || null })}
+            aria-label="Filter leads by source"
+            style={{
+              border: `1px solid ${filters.source ? E.teal : E.border}`,
+              background: filters.source ? E.tint : E.surface,
+              borderRadius: web ? 8 : 999,
+              height: web ? 32 : 34,
+              padding: web ? "0 10px" : "0 12px",
+              maxWidth: web ? 240 : "100%",
+              fontSize: web ? 12 : 16,
+              fontWeight: 700,
+              color: filters.source ? E.tealInk : E.muted,
+              outline: "none",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              flexShrink: 1,
+              minWidth: 0,
+            }}
+          >
+            <option value="">All sources</option>
+            {filters.source && !sources.some((option) => option.key === filters.source) && (
+              <option value={filters.source}>{filters.source} (0)</option>
+            )}
+            {sources.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.key} ({option.count})
+              </option>
+            ))}
+          </select>
+        )}
 
         {showCut && (
           <div

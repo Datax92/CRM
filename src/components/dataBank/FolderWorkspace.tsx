@@ -37,9 +37,18 @@ import { watchGone } from "@/lib/watchGone";
 import { initialsOf } from "@/lib/leadDisplay";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
 import { RECORDS_PER_PAGE } from "@/hooks/useDataBank";
+import { useFolderAssigned } from "@/hooks/useFolderAssigned";
+import { usePagination } from "@/hooks/usePagination";
+import {
+  filterByAssignee,
+  groupByAssignee,
+  matchesAssignedSearch,
+  type AssignedItem,
+} from "@/lib/dataBankAssigned";
+import { LeadDetailPane } from "@/components/leads/LeadDetailPane";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { WorkspaceEmpty } from "@/components/leads/WorkspaceEmpty";
-import { CursorPager } from "@/components/employees/DossierControls";
+import { CursorPager, Pager } from "@/components/employees/DossierControls";
 import {
   assignActionFor,
   buildAssignOptions,
@@ -61,6 +70,9 @@ import {
   Trash2,
   Pencil,
   ArrowUpRight,
+  ChevronDown,
+  Check,
+  UserCheck,
 } from "lucide-react";
 
 const STATUS_TONE: Record<DataBankStatus, { bg: string; text: string; dot: string }> = {
@@ -84,8 +96,16 @@ const ROW_TONES = {
   opened: { background: "#fbfdfd", border: "#e6f1ef" },
 } as const;
 
+/**
+ * The two halves of a folder. **Unassigned** is the rows still in it, paged
+ * from Firestore. **Assigned** is everything it has handed out — leads, and rows
+ * sitting in a manager's Data Bank — so a record promoted or handed on no longer
+ * simply vanishes from the folder it came from. See `useFolderAssigned`.
+ */
+type FolderView = "UNASSIGNED" | "ASSIGNED";
+
 export function FolderWorkspace({ folderId }: { folderId: string }) {
-  const { role, user, loading: authLoading, getIdToken } = useAuth();
+  const { role, managerKind, user, loading: authLoading, getIdToken } = useAuth();
   // **Both managing roles.** This was `role === "admin"` and gated every read
   // below, so a sub admin opening a folder assigned to them subscribed to
   // nothing, `folder` stayed null, and the screen reported "That folder no
@@ -128,6 +148,11 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<DataBankStatus | "ALL">("ALL");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<FolderView>("UNASSIGNED");
+  /** Whose assigned rows are shown; null is everyone. */
+  const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedAssigned, setSelectedAssigned] = useState<string | null>(null);
   /**
    * The bulk selection (§9). Ids rather than indexes, so a row that scrolls
    * away or is filtered out stays selected — and so the payload sent to the
@@ -148,6 +173,36 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
 
   const page = useDataBankRecords(folderId, { search: query, status, enabled: wantsData });
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
+
+  /** Everyone this viewer can put a name to, so an assigned row never reads as an id. */
+  const names = useMemo(
+    () => new Map([...employees, ...subAdmins].map((person) => [person.uid, person.name])),
+    [employees, subAdmins]
+  );
+  const managers = useMemo(
+    () => subAdmins.map((manager) => ({ uid: manager.uid, name: manager.name })),
+    [subAdmins]
+  );
+  const assigned = useFolderAssigned(folderId, wantsData, {
+    role,
+    uid: user?.uid,
+    managerKind,
+    managers,
+    names,
+  });
+  const assignees = useMemo(() => groupByAssignee(assigned.items), [assigned.items]);
+  const assignedVisible = useMemo(
+    () =>
+      filterByAssignee(assigned.items, assigneeFilter).filter((item) =>
+        matchesAssignedSearch(item, query)
+      ),
+    [assigned.items, assigneeFilter, query]
+  );
+  const assignedPages = usePagination(assignedVisible, RECORDS_PER_PAGE);
+  const pickedAssignee = assignees.find((entry) => entry.uid === assigneeFilter) ?? null;
+  const openAssigned: AssignedItem | null = selectedAssigned
+    ? (assigned.items.find((item) => item.id === selectedAssigned) ?? null)
+    : null;
 
   const afterWrite = (message: string, href?: string) => {
     setBanner({ tone: "success", text: message, href });
@@ -183,7 +238,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
     );
   }
 
-  const showDetailOnMobile = selected !== null;
+  const showDetailOnMobile = view === "ASSIGNED" ? openAssigned !== null : selected !== null;
 
   return (
     <div className="leads-shell -m-6 grid grid-cols-1 overflow-hidden bg-[#e9f1f0] text-[#2b3a39] md:-m-8 lg:grid-cols-[372px_1fr]">
@@ -235,7 +290,8 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                 {folder.name}
               </h1>
               <div className="text-[11.5px] tabular-nums text-white/80">
-                {folder.recordCount.toLocaleString()} records
+                {folder.recordCount.toLocaleString()} unassigned ·{" "}
+                {assigned.items.length.toLocaleString()} assigned
               </div>
             </div>
           </div>
@@ -278,33 +334,138 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
           </div>
         </div>
 
-        {/* Filter chips */}
+        {/* Unassigned / Assigned — the two halves of the folder. */}
         <div
-          className="flex shrink-0 flex-wrap items-center gap-2 px-[18px] pt-1.5 pb-3.5"
+          className="flex shrink-0 items-center gap-2 px-[18px] pt-1.5"
           role="tablist"
-          aria-label="Filter records"
+          aria-label="Assigned or unassigned records"
         >
-          {(["ALL", ...RECORD_STATUSES] as const).map((key) => {
-            const active = status === key;
+          {(
+            [
+              ["UNASSIGNED", "Unassigned", folder.recordCount],
+              ["ASSIGNED", "Assigned", assigned.items.length],
+            ] as const
+          ).map(([key, label, count]) => {
+            const active = view === key;
             return (
               <button
                 key={key}
                 role="tab"
                 aria-selected={active}
-                onClick={() => setStatus(key)}
-                className={`relative inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-2 text-[12.5px] transition-colors ${
+                onClick={() => {
+                  setView(key);
+                  setPickerOpen(false);
+                }}
+                className={`inline-flex flex-1 items-center justify-center gap-2 rounded-full border px-3 py-2 text-[12.5px] transition-colors ${
                   active
-                    ? "border-[#4f9c99] bg-[#4f9c99] text-white"
+                    ? "border-[#2f7d78] bg-[#2f7d78] text-white"
                     : "border-[#cfe2e0] bg-white text-[#5b6d6b] hover:border-[#8cc3bf]"
                 }`}
               >
-                <span>{key === "ALL" ? "All" : RECORD_STATUS_LABELS[key]}</span>
+                <span>{label}</span>
+                <span
+                  className={`rounded-full px-1.5 text-[11px] tabular-nums ${
+                    active ? "bg-white/20 text-white" : "bg-[#eef5f4] text-[#5b6d6b]"
+                  }`}
+                >
+                  {count.toLocaleString()}
+                </span>
               </button>
             );
           })}
         </div>
 
-        {query.trim() && (
+        {view === "UNASSIGNED" ? (
+          /* Filter chips */
+          <div
+            className="flex shrink-0 flex-wrap items-center gap-2 px-[18px] pt-2.5 pb-3.5"
+            role="tablist"
+            aria-label="Filter records"
+          >
+            {(["ALL", ...RECORD_STATUSES] as const).map((key) => {
+              const active = status === key;
+              return (
+                <button
+                  key={key}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setStatus(key)}
+                  className={`relative inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-2 text-[12.5px] transition-colors ${
+                    active
+                      ? "border-[#4f9c99] bg-[#4f9c99] text-white"
+                      : "border-[#cfe2e0] bg-white text-[#5b6d6b] hover:border-[#8cc3bf]"
+                  }`}
+                >
+                  <span>{key === "ALL" ? "All" : RECORD_STATUS_LABELS[key]}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          /*
+            Who these went to. A disclosure rather than a floating menu: it
+            pushes the list down instead of hovering over it, so it can never be
+            clipped by the panel and reads the same on every width.
+          */
+          <div className="shrink-0 px-[18px] pt-2.5 pb-3.5">
+            <button
+              onClick={() => setPickerOpen((open) => !open)}
+              aria-expanded={pickerOpen}
+              className="flex w-full items-center gap-2 rounded-md border border-[#dceae8] bg-white px-3 py-2 text-left text-[13px] text-[#2b3a39] transition-colors hover:border-[#8cc3bf]"
+            >
+              <UserCheck size={15} className="shrink-0 text-[#4f9c99]" />
+              <span className="text-[#7e918f]">Assigned to</span>
+              <span className="min-w-0 flex-1 truncate">
+                {pickedAssignee ? pickedAssignee.name : "Everyone"}
+              </span>
+              <span className="rounded-full bg-[#eef5f4] px-1.5 text-[11px] tabular-nums text-[#5b6d6b]">
+                {(pickedAssignee?.count ?? assigned.items.length).toLocaleString()}
+              </span>
+              <ChevronDown
+                size={15}
+                className={`shrink-0 text-[#7e918f] transition-transform ${pickerOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            {pickerOpen && (
+              <ul
+                className="teal-scrollbar mt-1.5 max-h-[260px] overflow-y-auto rounded-md border border-[#dceae8] bg-white py-1"
+                aria-label="People these records are assigned to"
+              >
+                {[{ uid: null as string | null, name: "Everyone", count: assigned.items.length }, ...assignees].map(
+                  (entry) => {
+                    const active = assigneeFilter === entry.uid;
+                    return (
+                      <li key={entry.uid ?? "all"}>
+                        <button
+                          onClick={() => {
+                            setAssigneeFilter(entry.uid);
+                            setPickerOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors ${
+                            active ? "bg-[#e8f5f3] text-[#1f5c58]" : "text-[#2b3a39] hover:bg-[#f3faf9]"
+                          }`}
+                        >
+                          <span className="flex w-4 shrink-0 justify-center">
+                            {active && <Check size={14} className="text-[#2f7d78]" />}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                          <span className="rounded-full bg-[#eef5f4] px-2 py-px text-[11.5px] tabular-nums text-[#2f7d78]">
+                            {entry.count.toLocaleString()}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  }
+                )}
+                {assignees.length === 0 && (
+                  <li className="px-3 py-2 text-[12.5px] text-[#9aacaa]">Nothing assigned yet.</li>
+                )}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {query.trim() && view === "UNASSIGNED" && (
           <p className="shrink-0 px-[18px] pb-2 text-[12px] text-[#9aacaa]">
             Searching by {query.replace(/\D/g, "").length >= 7 ? "phone number" : "name (from the start)"}.
           </p>
@@ -317,9 +478,10 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
           being destroyed in the same tick it was created, and the admin saw
           the row silently vanish with no sign anything had happened.
         */}
-        {(page.error || banner) && (
+        {(page.error || banner || (view === "ASSIGNED" && assigned.error)) && (
           <div className="shrink-0 px-4 pb-2">
             {page.error && <Banner tone="error" text={page.error} />}
+            {view === "ASSIGNED" && assigned.error && <Banner tone="error" text={assigned.error} />}
             {banner && (
               <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-medium text-emerald-800">
                 <div className="flex items-start justify-between gap-3">
@@ -346,7 +508,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
         )}
 
         {/* §9 — bulk selection and assignment, above the rows it acts on. */}
-        <div className="px-3.5 pb-2.5">
+        <div className="px-3.5 pb-2.5" hidden={view === "ASSIGNED"}>
           <BulkPromoteBar
             selected={[...picked]}
             available={page.records.length}
@@ -373,7 +535,86 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
 
         {/* Rows */}
         <div className="teal-scrollbar flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 pb-5">
-          {page.loading ? (
+          {view === "ASSIGNED" ? (
+            <>
+              {assigned.loading ? (
+                <p className="px-3 py-10 text-center text-[13px] text-[#8fa2a0]">Loading…</p>
+              ) : assignedVisible.length === 0 ? (
+                <p className="px-3 py-10 text-center text-[13px] text-[#8fa2a0]">
+                  {query.trim()
+                    ? `Nothing assigned matches “${query.trim()}”.`
+                    : assigned.items.length === 0
+                      ? "Nothing from this folder has been assigned yet."
+                      : "Nobody in this filter."}
+                </p>
+              ) : (
+                assignedPages.items.map((item, index) => {
+                  const active = item.id === selectedAssigned;
+                  const seen = isOpened(item.id);
+                  const shade = ROW_TONES[active ? "selected" : seen ? "opened" : "unopened"];
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setSelectedAssigned(item.id);
+                        markOpened(item.id);
+                      }}
+                      aria-current={active ? "true" : undefined}
+                      style={{
+                        animationDelay: `${Math.min(index, 12) * 35}ms`,
+                        background: shade.background,
+                        borderColor: shade.border,
+                      }}
+                      className="animate-lead-row grid w-full min-w-0 grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
+                    >
+                      <span
+                        className="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white text-[13.5px] font-medium text-[#4a5c5a]"
+                        style={{ borderColor: item.kind === "LEAD" ? "#2f7d78" : "#4d7590" }}
+                        aria-hidden
+                      >
+                        {initialsOf(item.name)}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {!seen && !active && (
+                            <span
+                              className="h-[7px] w-[7px] shrink-0 rounded-full"
+                              style={{ background: "#3f8f8a" }}
+                              aria-hidden
+                            />
+                          )}
+                          <span className="truncate text-sm font-medium text-[#2b3a39]">{item.name}</span>
+                          {!seen && !active && <span className="sr-only">(not opened yet)</span>}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[11.5px] tabular-nums text-[#7e918f]">
+                          {item.phone || "No number"}
+                        </span>
+                      </span>
+                      <span className="flex max-w-[132px] flex-col items-end gap-1.5">
+                        <span className="text-right text-[11px] leading-tight text-[#9aacaa]">
+                          {item.kind === "LEAD" ? "Lead" : "In their Data Bank"}
+                        </span>
+                        <span
+                          className="max-w-full truncate rounded-full px-2.5 py-1 text-[11px]"
+                          style={
+                            item.kind === "LEAD"
+                              ? { background: "#e8f5f3", color: "#2f7d78" }
+                              : { background: "#eaf1f6", color: "#4d7590" }
+                          }
+                          title={`Assigned to ${item.assigneeName}`}
+                        >
+                          {item.assigneeName || "Unassigned"}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+              <div className="px-1">
+                <Pager pagination={assignedPages} variant="web" noun="records" />
+              </div>
+            </>
+          ) : page.loading ? (
             <p className="px-3 py-10 text-center text-[13px] text-[#8fa2a0]">Loading…</p>
           ) : page.records.length === 0 ? (
             <p className="px-3 py-10 text-center text-[13px] text-[#8fa2a0]">
@@ -464,6 +705,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
             })
           )}
 
+          {view === "UNASSIGNED" && (
           <div className="px-1">
             <CursorPager
               page={page.page}
@@ -477,6 +719,7 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
               variant="web"
             />
           </div>
+          )}
         </div>
       </section>
 
@@ -487,7 +730,38 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
         className={`min-h-0 min-w-0 overflow-hidden ${showDetailOnMobile ? "block" : "hidden lg:block"}`}
         aria-label="Record detail"
       >
-        {selected ? (
+        {view === "ASSIGNED" && openAssigned ? (
+          openAssigned.kind === "LEAD" && assigned.leadsById.get(openAssigned.id) ? (
+            // The lead itself — the same pane the pipeline opens, so a lead
+            // reached from its folder can be read and worked exactly as it can
+            // from the leads screen.
+            <LeadDetailPane
+              key={openAssigned.id}
+              lead={assigned.leadsById.get(openAssigned.id)!}
+              onClose={() => setSelectedAssigned(null)}
+              userRole={role === "subadmin" ? "subadmin" : "admin"}
+              getIdToken={getIdToken}
+              assigneeName={openAssigned.assigneeName}
+            />
+          ) : assigned.handoffsById.get(openAssigned.id) ? (
+            <RecordPane
+              key={openAssigned.id}
+              record={assigned.handoffsById.get(openAssigned.id)!}
+              folder={folder}
+              assignOptions={assignOptions}
+              getIdToken={getIdToken}
+              onBack={() => setSelectedAssigned(null)}
+              onEdit={() => setFormFor({ record: assigned.handoffsById.get(openAssigned.id)! })}
+              onChanged={afterWrite}
+              onRemoved={(message, href) => {
+                setSelectedAssigned(null);
+                afterWrite(message, href);
+              }}
+            />
+          ) : (
+            <WorkspaceEmpty label="Select a Record from the List" />
+          )
+        ) : view === "UNASSIGNED" && selected ? (
           <RecordPane
             key={selected.id}
             record={selected}
@@ -861,7 +1135,8 @@ function RecordPane({
             <span>Hand this record on</span>
           </div>
           <p className="mt-1 text-[12.5px] text-[#3c4d4b]">
-            Either way the row leaves this folder and every field above travels with it.
+            Either way it moves to this folder&rsquo;s <strong className="font-medium">Assigned</strong> list,
+            under that person&rsquo;s name, and every field above travels with it.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2.5">
             <select

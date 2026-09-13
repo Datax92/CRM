@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
-import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
+import { describeFirestoreError, useLeads, type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
+import { countOwnClientLeads, isOwnClientFolder } from '@/lib/clientFolderScope';
 
 /**
  * Client folders — a curated view over leads that already exist (§15–§20).
@@ -62,10 +63,14 @@ function millisOf(value: FirestoreTimestamp | undefined): number {
 }
 
 /**
- * The folders this person may see.
+ * The folders this person owns.
  *
- * An admin reads every folder, including the ones managers made — §20 says so
- * in as many words. A manager reads their own.
+ * **Personal, for every role.** A manager reads their own by the query their
+ * rule checks. The admin's query is unscoped — the rule lets an admin read
+ * every folder — and is narrowed to the admin's own here, because showing the
+ * managers' folders in the admin's Clients is what put an HR manager's
+ * self-assigned leads on the admin's screen and listed one source three times.
+ * See `lib/clientFolderScope`.
  */
 export function useClientFolders(
   enabled = true,
@@ -99,15 +104,15 @@ export function useClientFolders(
     return () => unsubscribe();
   }, [ready, ownerOf]);
 
+  const viewer = { role: scope?.role ?? null, uid: scope?.uid ?? null };
+
   if (IS_DEMO) {
-    const folders = ownerOf
-      ? (demoState.clientFolders ?? []).filter((folder) => folder.subAdminUid === ownerOf)
-      : (demoState.clientFolders ?? []);
+    const folders = (demoState.clientFolders ?? []).filter((folder) => isOwnClientFolder(folder, viewer));
     return { folders: enabled ? folders : [], loading: false, error: null };
   }
 
   return {
-    folders: ready ? (state?.folders ?? []) : [],
+    folders: ready ? (state?.folders ?? []).filter((folder) => isOwnClientFolder(folder, viewer)) : [],
     loading: ready && state === null,
     error: ready ? (state?.error ?? null) : null,
   };
@@ -189,5 +194,106 @@ export function useClientFolderMembers(
     members: current?.members ?? [],
     loading: key !== 'idle' && current === null,
     error: current?.error ?? null,
+  };
+}
+
+/**
+ * Every membership row across this person's own Client folders — what the
+ * folder list needs to say how many leads each folder really shows.
+ *
+ * A manager's rows carry their uid; the admin's are written with
+ * `subAdminUid: null`, which is an equality Firestore can match. Either way one
+ * equality clause, served by the automatic index, and exactly the clause the
+ * `clientFolderLeads` rule checks for a manager.
+ */
+export function useOwnClientMembers(
+  enabled = true,
+  scope?: { role?: string | null; uid?: string }
+) {
+  const [state, setState] = useState<{
+    key: string;
+    members: ClientFolderMember[];
+    error: string | null;
+  } | null>(null);
+  const demoState = useDemoState();
+
+  const role = scope?.role ?? null;
+  const uid = scope?.uid ?? null;
+  const key =
+    enabled && uid && (role === 'admin' || role === 'subadmin') ? `${role}:${uid}` : 'idle';
+
+  useEffect(() => {
+    if (IS_DEMO || key === 'idle') return;
+
+    const unsubscribe = onSnapshot(
+      query(
+        collection(db, 'clientFolderLeads'),
+        where('subAdminUid', '==', role === 'subadmin' ? uid : null),
+        limit(2000)
+      ),
+      (snap) => {
+        setState({
+          key,
+          members: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolderMember[],
+          error: null,
+        });
+      },
+      (err) => {
+        console.error('[useOwnClientMembers]', err);
+        setState({ key, members: [], error: describeFirestoreError(err) });
+      }
+    );
+
+    return () => unsubscribe();
+  }, [key, role, uid]);
+
+  if (IS_DEMO) {
+    return { members: key === 'idle' ? [] : (demoState.clientFolderLeads ?? []), loading: false, error: null };
+  }
+
+  const current = state?.key === key ? state : null;
+  return {
+    members: current?.members ?? [],
+    loading: key !== 'idle' && current === null,
+    error: current?.error ?? null,
+  };
+}
+
+/**
+ * The leads visible to this viewer's own Client section: how many each folder
+ * shows, and — given a folder's members — which ones.
+ *
+ * Reads the shared `useLeads` subscription the leads screens already hold, so
+ * asking "is this lead still assigned to me" costs nothing extra.
+ */
+export function useOwnClientLeads(
+  enabled: boolean,
+  scope: { role?: string | null; uid?: string; managerKind?: string | null },
+  /** False when only `assignee` is wanted — one folder's view needs no counts. */
+  withCounts = true
+) {
+  const role = scope.role === 'admin' || scope.role === 'subadmin' ? scope.role : null;
+  const uid = scope.uid ?? '';
+  const { leads, loading: leadsLoading } = useLeads(
+    enabled ? role : null,
+    uid || undefined,
+    role === 'subadmin' && scope.managerKind === 'HR'
+  );
+  const { members, loading: membersLoading } = useOwnClientMembers(enabled && withCounts, { role, uid });
+
+  const assignee = useMemo(
+    () => new Map(leads.map((lead) => [lead.id, lead.assignedUserId ?? null])),
+    [leads]
+  );
+  const counts = useMemo(
+    () => countOwnClientLeads(members, uid, (leadId) => assignee.get(leadId)),
+    [members, uid, assignee]
+  );
+
+  return {
+    counts,
+    /** Lead id → current assignee, for `ownClientLeadIds`. */
+    assignee,
+    loading: enabled && (leadsLoading || membersLoading),
   };
 }

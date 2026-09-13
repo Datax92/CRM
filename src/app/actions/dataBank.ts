@@ -3,8 +3,10 @@
 /**
  * Data Bank writes — folders, records, imports and promotion.
  *
- * Admin-only throughout. Cold lists are a company asset: an employee gets a
- * lead when an admin promotes one to them, never by browsing the source data.
+ * Managing roles throughout, with one exception: an employee may file a
+ * **personal lead** under one of the admin's folders (`addPersonalLead`). Cold
+ * lists are a company asset, so even then they see folder names and nothing
+ * else — never a row.
  *
  * Imports are the one operation here that is genuinely large. They are written
  * in batches of 500 (Firestore's hard cap) and the client sends one chunk at a
@@ -17,13 +19,16 @@ import { adminDb } from "@/lib/firebase/server";
 import {
   requireAdmin,
   requireManager,
+  verifyAuth,
   assertManagesFolder,
   type DecodedAuth,
 } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { FieldValue } from "firebase-admin/firestore";
 import {
+  assignedPhoneMessage,
   duplicatePhoneMessage,
+  personalDuplicateMessage,
   fieldKeyFor,
   phoneKey,
   MAX_FIELDS_PER_FOLDER,
@@ -37,6 +42,7 @@ import {
   type FieldRoles,
 } from "@/lib/dataBank";
 import { applyFieldMapping, normalizeMapsTo } from "@/lib/fieldMapping";
+import { folderScopeIds } from "@/lib/dataBankAssigned";
 
 const FOLDERS = "dataBankFolders";
 const RECORDS = "dataBankRecords";
@@ -377,6 +383,7 @@ async function loadFolder(folderId: string) {
     sourceFolderId?: string | null;
     sourceFolderName?: string | null;
     handedOffCount?: number;
+    deletionPending?: boolean;
   };
   // `name` comes back here so callers never re-read the document for it —
   // promotion used to fetch this same folder a second time just for the name.
@@ -394,6 +401,7 @@ async function loadFolder(folderId: string) {
     // How many rows have left for a manager's mirror. Read here so the import
     // can skip the mirror lookup entirely when the answer is none.
     handedOffCount: data.handedOffCount ?? 0,
+    deletionPending: data.deletionPending === true,
   };
 }
 
@@ -491,7 +499,7 @@ async function cleanupEmptyMirror(mirrorId: string): Promise<void> {
  * its number must not report the record as its own duplicate.
  */
 async function refuseDuplicatePhone(
-  folder: { ref: { id: string }; handedOffCount: number },
+  folder: { ref: { id: string }; handedOffCount: number; sourceFolderId: string | null },
   key: string,
   written: string | null,
   ignoreRecordId?: string
@@ -519,6 +527,70 @@ async function refuseDuplicatePhone(
       duplicatePhoneMessage(written || key, other.data().name as string, id !== folderId)
     );
   }
+
+  // **And the numbers it has already handed out.** A promoted row leaves the
+  // folder, so the check above cannot see it — which is exactly how re-importing
+  // a sheet put the same client into the pipeline twice.
+  const held = (await assignedPhoneHolders(folder, [key])).get(key);
+  if (held) throw new UserFacingError(assignedPhoneMessage(written || key, held.name, held.assignee));
+}
+
+/**
+ * The folder's scope for "already handed out": the origin folder plus every
+ * manager's mirror of it, whether or not that mirror still exists.
+ *
+ * A mirror answers for its origin, because a mirror's rows *are* the origin's
+ * rows — a number the admin promoted out of Faisal Town 2 is already handed out
+ * as far as the manager holding the rest of Faisal Town 2 is concerned.
+ */
+async function leadScopeFor(folder: { ref: { id: string }; sourceFolderId: string | null }) {
+  const managers = await adminDb.collection("users").where("role", "==", "subadmin").select().get();
+  return folderScopeIds(
+    folder.sourceFolderId ?? folder.ref.id,
+    managers.docs.map((doc) => doc.id)
+  );
+}
+
+/**
+ * Which of these numbers this folder has already turned into leads, and who
+ * holds each.
+ *
+ * Queried on `phoneKey` alone and narrowed to the folder in memory: one `in`
+ * query per 30 numbers, served by the automatic single-field index, and the
+ * handful of leads a number matches in other folders cost a read each. Scoping
+ * the query by folder instead would multiply the lookups by the number of
+ * managers, since Firestore caps a query at 30 disjunctions.
+ *
+ * Reads `leads.phoneKey`, which promotion writes and
+ * `scripts/backfill-lead-phone-keys.mts` fills in on older leads. A lead
+ * without it is simply not found — the check is no worse than before for it.
+ */
+async function assignedPhoneHolders(
+  folder: { ref: { id: string }; sourceFolderId: string | null },
+  keys: string[]
+): Promise<Map<string, { name: string; assignee: string | null }>> {
+  const wanted = [...new Set(keys.filter(Boolean))];
+  const found = new Map<string, { name: string; assignee: string | null }>();
+  if (wanted.length === 0) return found;
+
+  const scope = new Set(await leadScopeFor(folder));
+  for (let i = 0; i < wanted.length; i += 30) {
+    const snap = await adminDb
+      .collection("leads")
+      .where("phoneKey", "in", wanted.slice(i, i + 30))
+      .select("phoneKey", "name", "assigneeName", "dataBankFolderId")
+      .get();
+    for (const doc of snap.docs) {
+      const lead = doc.data();
+      if (!scope.has(lead.dataBankFolderId as string)) continue;
+      if (found.has(lead.phoneKey as string)) continue;
+      found.set(lead.phoneKey as string, {
+        name: (lead.name as string) ?? "",
+        assignee: (lead.assigneeName as string | undefined) ?? null,
+      });
+    }
+  }
+  return found;
 }
 
 /**
@@ -727,6 +799,16 @@ export async function importDataBankRows(
       }
     }
 
+    // Numbers this folder has already handed out count as held too. A promoted
+    // row is no longer in the folder, so without this re-importing a sheet
+    // recreated every row that had been worked and the same client went into
+    // the pipeline a second time.
+    const handedOut = await assignedPhoneHolders(
+      folder,
+      keys.filter((key) => !existing.has(key))
+    );
+    for (const key of handedOut.keys()) existing.add(key);
+
     const batch = adminDb.batch();
     let written = 0;
     let duplicates = 0;
@@ -816,6 +898,17 @@ export async function promoteDataBankRecord(
 
     const folder = await loadFolder(record.folderId as string);
     assertFolderAccess(admin, folder);
+
+    // One number, one lead per folder. The row being promoted is still in the
+    // folder, so this can only find a *second* row for a number that was
+    // already worked — the re-imported duplicates this check exists to stop.
+    const key = (record.phoneKey as string | undefined) || phoneKey(record.phone as string);
+    const alreadyOut = key ? (await assignedPhoneHolders(folder, [key])).get(key) : undefined;
+    if (alreadyOut) {
+      throw new UserFacingError(
+        assignedPhoneMessage(record.phone as string, alreadyOut.name, alreadyOut.assignee)
+      );
+    }
     const folderMs = mark();
     const labels = new Map(folder.fields.map((field) => [field.key, field.label]));
 
@@ -852,6 +945,9 @@ export async function promoteDataBankRecord(
     batch.set(leadRef, {
       name: record.name,
       phone: record.phone ?? null,
+      // The folder's dedupe key, carried onto the lead so the folder can still
+      // recognise the number after the row itself is gone.
+      phoneKey: key || null,
       email: mapped.lead.email ?? null,
       city: mapped.lead.city ?? null,
       status: "ACCEPTED",
@@ -1141,7 +1237,7 @@ export async function promoteDataBankRecords(
   token: string,
   recordIds: string[],
   assignedUserId: string
-): Promise<ActionResult<{ promoted: number; skipped: number; leadIds: string[] }>> {
+): Promise<ActionResult<{ promoted: number; skipped: number; duplicates: number; leadIds: string[] }>> {
   return runAction("promoteDataBankRecords", async () => {
     const ids = [...new Set((recordIds ?? []).filter(Boolean))];
     if (ids.length === 0) throw new UserFacingError("Select at least one record.");
@@ -1168,9 +1264,37 @@ export async function promoteDataBankRecords(
     // one folder, and re-reading it 50 times would be 50 wasted reads.
     const folders = new Map<string, Awaited<ReturnType<typeof loadFolder>>>();
 
+    /** The rows that actually became leads — only these tombstones are removed. */
+    const promotedRecordIds: string[] = [];
+    /** Numbers already handed out, per origin folder, including by this run. */
+    const handedOut = new Map<string, Set<string>>();
+    let duplicates = 0;
+
     for (let i = 0; i < ids.length; i += 100) {
       const slice = ids.slice(i, i + 100);
       const snaps = await adminDb.getAll(...slice.map((id) => adminDb.collection(RECORDS).doc(id)));
+
+      // Folders first, then one "already handed out" lookup per folder for the
+      // whole slice, rather than a query per record.
+      const keysByFolder = new Map<string, string[]>();
+      for (const snap of snaps) {
+        if (!snap.exists || snap.data()!.promotedLeadId) continue;
+        const folderId = snap.data()!.folderId as string;
+        if (!folders.has(folderId)) {
+          const loaded = await loadFolder(folderId);
+          assertFolderAccess(admin, loaded);
+          folders.set(folderId, loaded);
+        }
+        const key = (snap.data()!.phoneKey as string | undefined) || phoneKey(snap.data()!.phone as string);
+        if (key) keysByFolder.set(folderId, [...(keysByFolder.get(folderId) ?? []), key]);
+      }
+      for (const [folderId, keys] of keysByFolder) {
+        const folder = folders.get(folderId)!;
+        const origin = folder.sourceFolderId ?? folderId;
+        const held = handedOut.get(origin) ?? new Set<string>();
+        for (const key of (await assignedPhoneHolders(folder, keys)).keys()) held.add(key);
+        handedOut.set(origin, held);
+      }
 
       const batch = adminDb.batch();
       const now = FieldValue.serverTimestamp();
@@ -1189,12 +1313,18 @@ export async function promoteDataBankRecords(
         }
 
         const folderId = record.folderId as string;
-        let folder = folders.get(folderId);
-        if (!folder) {
-          folder = await loadFolder(folderId);
-          assertFolderAccess(admin, folder);
-          folders.set(folderId, folder);
+        const folder = folders.get(folderId)!;
+
+        // One number, one lead per folder — see the single-record path. The
+        // set also catches the same number twice inside this selection.
+        const key = (record.phoneKey as string | undefined) || phoneKey(record.phone as string);
+        const held = handedOut.get(folder.sourceFolderId ?? folderId)!;
+        if (key && held?.has(key)) {
+          skipped += 1;
+          duplicates += 1;
+          continue;
         }
+        if (key) held?.add(key);
 
         const labels = new Map(folder.fields.map((field) => [field.key, field.label]));
         const customFields: Record<string, string> = {};
@@ -1206,10 +1336,12 @@ export async function promoteDataBankRecords(
 
         const leadRef = adminDb.collection("leads").doc();
         leadIds.push(leadRef.id);
+        promotedRecordIds.push(snap.id);
 
         batch.set(leadRef, {
           name: record.name,
           phone: record.phone ?? null,
+          phoneKey: key || null,
           email: null,
           city: null,
           status: "ACCEPTED",
@@ -1333,8 +1465,13 @@ export async function promoteDataBankRecords(
 
       // Best-effort cleanup of the tombstones, exactly as the single path does.
       // Failing here changes nothing the user can see.
+      //
+      // **Only the rows that were promoted.** This used to delete the first
+      // `promoted` ids of the selection, which is the same set only when nothing
+      // was skipped — a skipped row near the top would have been deleted while
+      // still a live, unworked record.
       await Promise.all(
-        ids.slice(0, promoted).map((id) => adminDb.collection(RECORDS).doc(id).delete().catch(() => {}))
+        promotedRecordIds.map((id) => adminDb.collection(RECORDS).doc(id).delete().catch(() => {}))
       );
 
       // Any manager's mirror this selection emptied. `folders` already holds
@@ -1345,7 +1482,7 @@ export async function promoteDataBankRecords(
       }
     }
 
-    return { promoted, skipped, leadIds };
+    return { promoted, skipped, duplicates, leadIds };
   });
 }
 
@@ -1581,5 +1718,188 @@ export async function assignRecordsToManager(
     }
 
     return { moved, skipped, folderIds: [...mirrors.values()].map((ref) => ref.id) };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* An employee's personal lead                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** What an employee is shown when choosing where a personal lead is filed: a name, nothing more. */
+export interface PersonalLeadFolder {
+  id: string;
+  name: string;
+  code: string | null;
+}
+
+/**
+ * The folders an employee may file a personal lead under.
+ *
+ * **The admin's own folders only** — not a manager's list, not a manager's
+ * mirror, not one being deleted. An employee cannot create a folder and cannot
+ * read the Data Bank at all (the Security Rules refuse both collections), so
+ * this action is the only view they get of it, and it returns names and ids and
+ * nothing else: no counts, no fields, no rows.
+ */
+export async function listPersonalLeadFolders(
+  token: string
+): Promise<ActionResult<PersonalLeadFolder[]>> {
+  return runAction("listPersonalLeadFolders", async () => {
+    const auth = await verifyAuth(token);
+    if (auth.role !== "employee") {
+      throw new UserFacingError("Personal leads are added from an employee's own account.");
+    }
+
+    const snap = await adminDb.collection(FOLDERS).orderBy("name").get();
+    return snap.docs
+      .filter((doc) => {
+        const data = doc.data();
+        return !data.subAdminUid && !data.sourceFolderId && data.deletionPending !== true;
+      })
+      .map((doc) => ({
+        id: doc.id,
+        name: (doc.data().name as string) ?? "Untitled",
+        code: (doc.data().code as string | null | undefined) ?? null,
+      }));
+  });
+}
+
+/**
+ * Adds a lead an employee found themselves, filed under a Data Bank folder.
+ *
+ * **It is their lead from the first second**: written straight to ACCEPTED,
+ * assigned to them, on their manager's team — the same shape a promotion
+ * writes, so every screen that reads a promoted lead reads this one. And it is
+ * the folder's: `dataBankFolderId` is what puts it in that folder's Assigned
+ * list under the employee's name, and what makes its source read
+ * `Data Bank (GFS)` everywhere.
+ *
+ * **No record row is written.** A folder's assigned rows are derived from the
+ * leads that name it (`lib/dataBankAssigned`), so a row would only be a second
+ * copy of a number that is already a lead — the thing this module refuses.
+ *
+ * **One number, one lead per folder**, the same rule an import and a promotion
+ * follow: refused if the folder still holds it as a row or has already handed
+ * it out. The refusal names nobody (`personalDuplicateMessage`).
+ */
+export async function addPersonalLead(
+  token: string,
+  input: { folderId: string; name: string; phone: string }
+): Promise<ActionResult<{ leadId: string; folderName: string }>> {
+  return runAction("addPersonalLead", async () => {
+    const auth = await verifyAuth(token);
+    if (auth.role !== "employee") {
+      throw new UserFacingError("Personal leads are added from an employee's own account.");
+    }
+
+    const name = (input.name ?? "").trim();
+    const phone = (input.phone ?? "").trim();
+    const key = phoneKey(phone);
+    if (!name) throw new UserFacingError("Enter the lead's name.");
+    if (name.length > 120) throw new UserFacingError("Keep the name under 120 characters.");
+    if (!key) throw new UserFacingError("Enter a usable phone number.");
+    if (!input.folderId) throw new UserFacingError("Choose the Data Bank folder this lead belongs to.");
+
+    const folder = await loadFolder(input.folderId);
+    // The same set `listPersonalLeadFolders` offers, re-checked rather than
+    // trusted: a crafted request must not file a lead under a manager's list.
+    if (folder.subAdminUid || folder.sourceFolderId || folder.deletionPending) {
+      throw new UserFacingError("Choose one of the Data Bank folders offered.");
+    }
+
+    const duplicate = personalDuplicateMessage(folder.name);
+    const scope = [
+      folder.ref.id,
+      ...(folder.handedOffCount > 0 ? await mirrorFolderIds(folder.ref.id) : []),
+    ];
+    for (const id of scope) {
+      const clash = await adminDb
+        .collection(RECORDS)
+        .where("folderId", "==", id)
+        .where("phoneKey", "==", key)
+        .limit(1)
+        .get();
+      if (!clash.empty) throw new UserFacingError(duplicate);
+    }
+    if ((await assignedPhoneHolders(folder, [key])).has(key)) {
+      throw new UserFacingError(duplicate);
+    }
+
+    const profileSnap = await adminDb.collection("users").doc(auth.uid).get();
+    const profile = profileSnap.data() ?? {};
+    const employeeName = (profile.name as string) ?? auth.email ?? "An employee";
+    const subAdminUid = (profile.subAdminUid as string | undefined) ?? null;
+
+    const now = FieldValue.serverTimestamp();
+    const leadRef = adminDb.collection("leads").doc();
+    const batch = adminDb.batch();
+
+    batch.set(leadRef, {
+      name,
+      phone,
+      phoneKey: key,
+      email: null,
+      city: null,
+      status: "ACCEPTED",
+      source: "DATA_BANK",
+      dataBankFolderId: folder.ref.id,
+      dataBankFolderName: folder.name,
+      // Marks the lead as one the employee brought in, rather than one handed
+      // to them. Nothing gates on it; it is the answer to "where did this come
+      // from" when somebody asks.
+      personalLead: true,
+      assignedUserId: auth.uid,
+      assigneeName: employeeName,
+      attemptedAssignees: [auth.uid],
+      distributionMethod: "MANUAL",
+      assignedByUid: auth.uid,
+      assignedByRole: "employee",
+      assignedByName: employeeName,
+      subAdminUid,
+      campaignId: null,
+      campaignName: null,
+      followUpCount: 0,
+      callCount: 0,
+      customFields: {},
+      createdAt: now,
+      assignedAt: now,
+      acceptedAt: now,
+      lastActivityAt: now,
+    });
+
+    batch.set(leadRef.collection("events").doc(), {
+      type: "PERSONAL_LEAD_ADDED",
+      actorUid: auth.uid,
+      at: now,
+      meta: { folderId: folder.ref.id, folderName: folder.name, addedByName: employeeName },
+    });
+
+    // The folder's own figure moves with it, so its card still adds up.
+    batch.update(folder.ref, { promotedCount: FieldValue.increment(1) });
+
+    const message = `${employeeName} added a personal lead, ${name}, to ${folder.name ?? "the Data Bank"}.`;
+    batch.set(adminDb.collection("notifications").doc(), {
+      type: "PERSONAL_LEAD_ADDED",
+      leadId: leadRef.id,
+      targetRole: "admin",
+      targetUid: null,
+      payload: { message },
+      createdAt: now,
+      readAt: null,
+    });
+    if (subAdminUid) {
+      batch.set(adminDb.collection("notifications").doc(), {
+        type: "PERSONAL_LEAD_ADDED",
+        leadId: leadRef.id,
+        targetRole: "subadmin",
+        targetUid: subAdminUid,
+        payload: { message },
+        createdAt: now,
+        readAt: null,
+      });
+    }
+
+    await batch.commit();
+    return { leadId: leadRef.id, folderName: folder.name ?? "the Data Bank" };
   });
 }

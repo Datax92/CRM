@@ -45,6 +45,8 @@ export interface Lead {
    */
   dataBankFolderId?: string | null;
   dataBankFolderName?: string | null;
+  /** True on a lead an employee brought in themselves (`addPersonalLead`). */
+  personalLead?: boolean;
   assignedUserId: string | null;
   assigneeName?: string | null;
   /** Assignment provenance (§9) — who handed this out, and under which team. */

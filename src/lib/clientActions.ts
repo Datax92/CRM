@@ -42,6 +42,9 @@ import {
   promoteDataBankRecord as _promoteDataBankRecord,
   promoteDataBankRecords as _promoteDataBankRecords,
   assignRecordsToManager as _assignRecordsToManager,
+  listPersonalLeadFolders as _listPersonalLeadFolders,
+  addPersonalLead as _addPersonalLead,
+  type PersonalLeadFolder,
   type FolderInput,
   type ImportChunkResult,
   type HandoffResult,
@@ -645,7 +648,7 @@ export async function promoteDataBankRecords(
   token: string,
   recordIds: string[],
   assignedUserId: string
-): Promise<ActionResult<{ promoted: number; skipped: number; leadIds: string[] }>> {
+): Promise<ActionResult<{ promoted: number; skipped: number; duplicates?: number; leadIds: string[] }>> {
   if (IS_DEMO) return demo.promoteDataBankRecords(recordIds, assignedUserId, actor().uid);
   return _promoteDataBankRecords(token, recordIds, assignedUserId);
 }
@@ -667,6 +670,22 @@ export async function assignRecordsToManager(
 }
 
 export type { HandoffResult } from '@/app/actions/dataBank';
+export type { PersonalLeadFolder } from '@/app/actions/dataBank';
+
+/** The admin's Data Bank folders an employee may file a personal lead under — names only. */
+export async function listPersonalLeadFolders(token: string): Promise<ActionResult<PersonalLeadFolder[]>> {
+  if (IS_DEMO) return demo.listPersonalLeadFolders();
+  return _listPersonalLeadFolders(token);
+}
+
+/** An employee's own lead, assigned to them and filed under a Data Bank folder. */
+export async function addPersonalLead(
+  token: string,
+  input: { folderId: string; name: string; phone: string }
+): Promise<ActionResult<{ leadId: string; folderName: string }>> {
+  if (IS_DEMO) return demo.addPersonalLead(input);
+  return _addPersonalLead(token, input);
+}
 
 /** Re-exported so existing client imports from '@/lib/clientActions' keep working. */
 export { EXPENSE_CATEGORIES, PAYMENT_METHODS, RECEIVABLE_SIZES } from '@/lib/constants';

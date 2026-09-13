@@ -49,6 +49,9 @@ import { useMobileCentre } from "./MobileShell";
 import { MobileLeadDetail } from "./MobileLeadDetail";
 import type { CentreAction } from "./MobileTabBar";
 import type { LeadScope } from "@/components/leads/LeadsWorkspace";
+import { PersonalLeadModal } from "@/components/leads/PersonalLeadModal";
+import { describeLeadSource } from "@/lib/leadSource";
+import { filterBySource, sourceOptions } from "@/lib/dataBankAssigned";
 
 /**
  * `30 Aug, 4:30 pm` — and the year only when it is not the current one.
@@ -152,6 +155,21 @@ export function MobileLeads({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [assigning, setAssigning] = useState<Lead | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [personalOpen, setPersonalOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+
+  // The origin filter, in the URL beside `filter` — the desktop's, same key.
+  const source = searchParams.get("source");
+  const selectSource = (next: string | null) => {
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    if (next) params.set("source", next);
+    else params.delete("source");
+    const qs = params.toString();
+    router.replace(qs ? `${basePath}?${qs}` : basePath, { scroll: false });
+    setSourcesOpen(false);
+  };
+  const sources = useMemo(() => sourceOptions(leads, describeLeadSource), [leads]);
+  const fromSource = useMemo(() => filterBySource(leads, source, describeLeadSource), [leads, source]);
 
   const filter: LeadFilterKey = parseFilterParam(searchParams.get("filter"), workspaceRole);
   const chips = filterOrderFor(workspaceRole);
@@ -171,11 +189,11 @@ export function MobileLeads({
 
   const searched = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return leads;
-    return leads.filter((lead) =>
+    if (!q) return fromSource;
+    return fromSource.filter((lead) =>
       [lead.name, lead.phone, lead.email, lead.city, lead.id].filter(Boolean).join(" ").toLowerCase().includes(q)
     );
-  }, [leads, query]);
+  }, [fromSource, query]);
 
   const counts = useMemo(
     () => countByFilter(searched, todayRange, workspaceRole),
@@ -233,8 +251,20 @@ export function MobileLeads({
             </h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            <HeaderCircle label="Filters" onClick={() => selectFilter("ALL")}>
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+            {/* An employee's own lead, filed under a Data Bank folder. */}
+            {!scope && workspaceRole === "employee" && (
+              <HeaderCircle label="Add a personal lead" onClick={() => setPersonalOpen(true)}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </HeaderCircle>
+            )}
+            {/* Filter by source — every origin on this list, with counts. */}
+            <HeaderCircle
+              label={source ? `Source: ${source}. Change source` : "Filter by source"}
+              onClick={() => setSourcesOpen((open) => !open)}
+            >
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={source ? 2.6 : 1.8} strokeLinecap="round" aria-hidden>
                 <path d="M4 7h16M7 12h10M10 17h4" />
               </svg>
             </HeaderCircle>
@@ -343,6 +373,98 @@ export function MobileLeads({
           );
         })}
       </div>
+
+      {sourcesOpen && (
+        <div style={{ padding: "0 18px 10px", flexShrink: 0 }}>
+          <div
+            role="list"
+            aria-label="Filter by source"
+            style={{
+              maxHeight: 300,
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+              borderRadius: 14,
+              border: `1px solid ${M.cardBorder}`,
+              background: M.cardBg,
+              padding: "4px 0",
+            }}
+          >
+            {[{ key: null as string | null, count: leads.length }, ...sources].map((option) => {
+              const active = source === option.key;
+              return (
+                <button
+                  key={option.key ?? "all"}
+                  role="listitem"
+                  className="mob-press"
+                  onClick={() => selectSource(option.key)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "12px 14px",
+                    border: "none",
+                    background: active ? M.tealTint : "transparent",
+                    color: active ? M.tealDeep : M.ink,
+                    fontSize: 14,
+                    fontWeight: active ? 700 : 600,
+                    textAlign: "left",
+                    cursor: "pointer",
+                    WebkitTapHighlightColor: "transparent",
+                  }}
+                >
+                  <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {option.key ?? "All sources"}
+                  </span>
+                  <span
+                    style={{
+                      borderRadius: 999,
+                      padding: "1px 9px",
+                      fontSize: 12,
+                      fontVariantNumeric: "tabular-nums",
+                      background: active ? "#fff" : M.tealTint,
+                      color: M.tealDeep,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {option.count.toLocaleString()}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* The source in force, named, with a way out. */}
+      {source && !sourcesOpen && (
+        <div style={{ padding: "0 18px 8px", flexShrink: 0, display: "flex" }}>
+          <button
+            className="mob-press"
+            onClick={() => selectSource(null)}
+            aria-label={`Clear source filter ${source}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              maxWidth: "100%",
+              borderRadius: 999,
+              border: "none",
+              background: M.tealTint,
+              color: M.tealDeep,
+              padding: "6px 10px 6px 13px",
+              fontSize: 12.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{source}</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={M.tealDeep} strokeWidth="2.6" strokeLinecap="round" aria-hidden>
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Rows */}
       <div
@@ -607,6 +729,17 @@ export function MobileLeads({
             } catch {
               return false;
             }
+          }}
+        />
+      )}
+
+      {personalOpen && (
+        <PersonalLeadModal
+          getIdToken={getIdToken}
+          onClose={() => setPersonalOpen(false)}
+          onAdded={(message) => {
+            setPersonalOpen(false);
+            setBanner(message);
           }}
         />
       )}

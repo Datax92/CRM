@@ -22,6 +22,7 @@ import { useAuth } from "@/context/AuthContext";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { useDataBankFolders, useDataBankRecords } from "@/hooks/useDataBank";
 import { promoteDataBankRecords } from "@/lib/clientActions";
+import { promotionSkipNote } from "@/lib/dataBank";
 import { A } from "@/components/attendance/attendanceChrome";
 
 export function ImportFromDataBankModal({
@@ -86,7 +87,7 @@ export function ImportFromDataBankModal({
 
     onImported(
       `${result.data.promoted} lead${result.data.promoted === 1 ? "" : "s"} imported into ${folder.name}.` +
-        (result.data.skipped ? ` ${result.data.skipped} were skipped.` : "")
+        promotionSkipNote(result.data.skipped, result.data.duplicates)
     );
   };
 

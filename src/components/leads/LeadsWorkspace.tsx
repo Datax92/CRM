@@ -37,6 +37,7 @@ import {
 import { initialsOf, avatarRingColor } from "@/lib/leadDisplay";
 import { pipelineStage } from "@/lib/pipelineStage";
 import { describeLeadSource } from "@/lib/leadSource";
+import { filterBySource, sourceOptions } from "@/lib/dataBankAssigned";
 import { isStageFilter } from "@/lib/leadBuckets";
 import { STAGE_TONES, StageIcon, StagePill } from "./StageChrome";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
@@ -44,9 +45,10 @@ import { LEAD_STATUS_LABELS } from "@/lib/leadStatus";
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
 import { AssignModal } from "@/components/admin/AssignModal";
 import { LeadDetailPane } from "./LeadDetailPane";
+import { PersonalLeadModal } from "./PersonalLeadModal";
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { Pager } from "@/components/employees/DossierControls";
-import { Search, SlidersHorizontal, Database, ChevronLeft } from "lucide-react";
+import { Search, SlidersHorizontal, Database, ChevronLeft, Check, X, UserPlus } from "lucide-react";
 
 /**
  * What each role may do from this screen.
@@ -171,6 +173,7 @@ export function LeadsWorkspace({
   // a field on the lead.
   const { isOpened, markOpened } = useOpenedLeads(user?.uid);
   const [assigningLead, setAssigningLead] = useState<Lead | null>(null);
+  const [personalOpen, setPersonalOpen] = useState(false);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
 
   // The URL is the single source of truth for the chip — derived, never mirrored
@@ -179,6 +182,22 @@ export function LeadsWorkspace({
   const filter: LeadFilterKey = parseFilterParam(searchParams.get("filter"), workspaceRole);
   const chips = filterOrderFor(workspaceRole);
   const urgentChip = urgentFilterFor(workspaceRole);
+
+  /**
+   * Which origin the list is narrowed to — `Data Bank (GFS)`, `Meta Ads (…)` —
+   * as the exact string each row prints. In the URL beside `filter`, so it
+   * survives a refresh and the back button like the chip does.
+   */
+  const source = searchParams.get("source");
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const selectSource = (next: string | null) => {
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    if (next) params.set("source", next);
+    else params.delete("source");
+    const qs = params.toString();
+    router.replace(qs ? `${basePath}?${qs}` : basePath, { scroll: false });
+    setSourcesOpen(false);
+  };
 
   const selectFilter = (next: LeadFilterKey) => {
     const params = new URLSearchParams(Array.from(searchParams.entries()));
@@ -218,18 +237,27 @@ export function LeadsWorkspace({
     [leads, scope]
   );
 
+  /** Every origin present, with counts, for the source picker. */
+  const sources = useMemo(() => sourceOptions(inScope, describeLeadSource), [inScope]);
+
+  /** Narrowed to one source before search, so the chips count that source. */
+  const fromSource = useMemo(
+    () => filterBySource(inScope, source, describeLeadSource),
+    [inScope, source]
+  );
+
   /** Search first; the chip counts describe what the current search matched. */
   const searched = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return inScope;
-    return inScope.filter((lead) =>
+    if (!q) return fromSource;
+    return fromSource.filter((lead) =>
       [lead.name, lead.phone, lead.email, lead.city, lead.id]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
         .includes(q)
     );
-  }, [inScope, query]);
+  }, [fromSource, query]);
 
   const counts = useMemo(
     () => countByFilter(searched, todayRange, workspaceRole),
@@ -325,6 +353,16 @@ export function LeadsWorkspace({
               <span>Folders</span>
             </Link>
           )}
+          {/* An employee's own lead, filed under a Data Bank folder. */}
+          {!scope && workspaceRole === "employee" && (
+            <button
+              onClick={() => setPersonalOpen(true)}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white py-1.5 pr-3.5 pl-3 text-[12.5px] text-[#2f7d78] transition-colors hover:bg-[#eafaf8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            >
+              <UserPlus size={13} />
+              <span>Personal lead</span>
+            </button>
+          )}
           {!scope && CAPABILITIES[workspaceRole].canCreateLead && (
             <Link
               href="/admin/data-bank"
@@ -349,13 +387,67 @@ export function LeadsWorkspace({
               className="min-w-0 flex-1 bg-transparent text-[13.5px] text-[#2b3a39] outline-none placeholder:text-[#7e918f]"
             />
           </div>
-          <div
-            className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-md border border-[#dceae8] bg-[#eef5f4] text-[#5b6d6b]"
-            aria-hidden
+          {/* The source picker — every origin on this list, with counts. */}
+          <button
+            onClick={() => setSourcesOpen((open) => !open)}
+            aria-expanded={sourcesOpen}
+            aria-label={source ? `Source: ${source}. Change source` : "Filter by source"}
+            title="Filter by source"
+            className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-md border transition-colors ${
+              source || sourcesOpen
+                ? "border-[#4f9c99] bg-[#4f9c99] text-white"
+                : "border-[#dceae8] bg-[#eef5f4] text-[#5b6d6b] hover:border-[#8cc3bf]"
+            }`}
           >
             <SlidersHorizontal size={17} />
-          </div>
+          </button>
         </div>
+
+        {sourcesOpen && (
+          <div className="shrink-0 px-[18px] pb-2.5">
+            <ul
+              className="teal-scrollbar max-h-[260px] overflow-y-auto rounded-md border border-[#dceae8] bg-white py-1"
+              aria-label="Filter by source"
+            >
+              {[{ key: null as string | null, count: inScope.length }, ...sources].map((option) => {
+                const active = source === option.key;
+                return (
+                  <li key={option.key ?? "all"}>
+                    <button
+                      onClick={() => selectSource(option.key)}
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors ${
+                        active ? "bg-[#e8f5f3] text-[#1f5c58]" : "text-[#2b3a39] hover:bg-[#f3faf9]"
+                      }`}
+                    >
+                      <span className="flex w-4 shrink-0 justify-center">
+                        {active && <Check size={14} className="text-[#2f7d78]" />}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{option.key ?? "All sources"}</span>
+                      <span className="rounded-full bg-[#eef5f4] px-2 py-px text-[11.5px] tabular-nums text-[#2f7d78]">
+                        {option.count.toLocaleString()}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
+        {/* The source in force, named, with a way out — a filter nobody can
+            see is one people assume is not there. */}
+        {source && !sourcesOpen && (
+          <div className="flex shrink-0 px-[18px] pb-1">
+            <button
+              onClick={() => selectSource(null)}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-[#e8f5f3] py-1 pr-2 pl-3 text-[12px] text-[#1f5c58] transition-colors hover:bg-[#d7ede9]"
+              aria-label={`Clear source filter ${source}`}
+            >
+              <span className="truncate">{source}</span>
+              <X size={13} className="shrink-0" />
+            </button>
+          </div>
+        )}
 
         {/* Filter chips */}
         {/*
@@ -557,6 +649,20 @@ export function LeadsWorkspace({
       {/* ================================================================= */}
       {/* Overlays                                                          */}
       {/* ================================================================= */}
+      {personalOpen && (
+        <PersonalLeadModal
+          getIdToken={getIdToken}
+          onClose={() => setPersonalOpen(false)}
+          onAdded={(message, leadId) => {
+            setPersonalOpen(false);
+            setBanner({ tone: "success", text: message });
+            // Opens as soon as the live list carries it.
+            setSelectedId(leadId);
+            markOpened(leadId);
+          }}
+        />
+      )}
+
       {assigningLead && CAPABILITIES[workspaceRole].canReassign && (
         <AssignModal
           lead={assigningLead}

@@ -28,14 +28,14 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import { useClientFolders, type ClientFolder } from "@/hooks/useClients";
+import { useClientFolders, useOwnClientLeads, type ClientFolder } from "@/hooks/useClients";
 import { createClientFolder, updateClientFolder, deleteClientFolder } from "@/lib/clientActions";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { ImportFromDataBankModal } from "./ImportFromDataBankModal";
 import { MobileClientFolders } from "@/components/mobile/MobileClients";
 
 export function ClientFoldersView({ basePath }: { basePath: string }) {
-  const { role, user, loading: authLoading, getIdToken } = useAuth();
+  const { role, managerKind, user, loading: authLoading, getIdToken } = useAuth();
   const isManager = role === "admin" || role === "subadmin";
   // Phones get their own screen — the same split the Data Bank makes. The
   // listener is gated on the surface actually rendering, so the two never both
@@ -46,6 +46,15 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
     role,
     uid: user?.uid,
   });
+  // What each folder actually shows: its leads still assigned to the viewer.
+  // The stored `leadCount` also counts leads since reassigned to somebody else,
+  // which is why a card read 43 over a folder showing 4.
+  const { counts } = useOwnClientLeads(isManager && !isMobile, {
+    role,
+    uid: user?.uid,
+    managerKind,
+  });
+  const shownCount = (folder: ClientFolder) => counts.get(folder.id) ?? 0;
 
   const [formFor, setFormFor] = useState<{ folder: ClientFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<ClientFolder | null>(null);
@@ -55,10 +64,10 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
 
   const totals = useMemo(
     () => ({
-      leads: folders.reduce((sum, folder) => sum + folder.leadCount, 0),
+      leads: folders.reduce((sum, folder) => sum + (counts.get(folder.id) ?? 0), 0),
       imported: folders.filter((folder) => folder.dataBankFolderId).length,
     }),
-    [folders]
+    [folders, counts]
   );
 
   const remove = async (folder: ClientFolder) => {
@@ -149,6 +158,7 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
             <FolderCard
               key={folder.id}
               folder={folder}
+              count={shownCount(folder)}
               href={`${basePath}/${folder.id}`}
               onEdit={() => setFormFor({ folder })}
               onDelete={() => setConfirming(folder)}
@@ -209,11 +219,14 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
 
 function FolderCard({
   folder,
+  count,
   href,
   onEdit,
   onDelete,
 }: {
   folder: ClientFolder;
+  /** The leads this folder shows — see `useOwnClientLeads`. */
+  count: number;
   href: string;
   onEdit: () => void;
   onDelete: () => void;
@@ -241,7 +254,7 @@ function FolderCard({
         <div className="mt-4 flex items-end gap-6">
           <div>
             <div className="text-[24px] tabular-nums text-[#2b3a39]">
-              {folder.leadCount.toLocaleString()}
+              {count.toLocaleString()}
             </div>
             <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">Leads</div>
           </div>

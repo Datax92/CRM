@@ -57,6 +57,7 @@ import { AnalyticsPanels, ActivityFeed, EmptyPanel } from "@/components/employee
 import { countByFilter } from "@/lib/leadBuckets";
 import { useDossierActivity } from "@/hooks/useDossierActivity";
 import { DossierFilterBar, Pager } from "@/components/employees/DossierControls";
+import { sourceOptions } from "@/lib/dataBankAssigned";
 
 /** Roster cards, and rows inside a profile tab, per page. */
 const ROSTER_PAGE_SIZE = 8;
@@ -1136,6 +1137,9 @@ function ProfileOverlay({
    * numbers on the chips are the numbers the chips will produce. `countByFilter`
    * is the same function the leads workspace counts with.
    */
+  /** Every origin this person's leads came from, for the source filter. */
+  const leadSources = useMemo(() => sourceOptions(ownLeads, describeLeadSource), [ownLeads]);
+
   const cutCounts = useMemo(
     () =>
       countByFilter(
@@ -1395,6 +1399,7 @@ function ProfileOverlay({
                 variant="mobile"
                 counts={cutCounts}
                 activity={entryActivity}
+                sources={leadSources}
                 countLine={describeDossierCount(shownLeads.length, ownLeads.length, filters, "mobile", entryActivity.loading)}
               />
               <MobileAssignedLeads

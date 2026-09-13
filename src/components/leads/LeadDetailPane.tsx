@@ -96,6 +96,7 @@ const STAGE_INDEX: Partial<Record<LeadStatus, number>> = {
 const EVENT_LABELS: Record<string, string> = {
   LEAD_INGESTED: "Lead received from Meta",
   MANUALLY_CREATED: "Historical lead created by Admin",
+  PERSONAL_LEAD_ADDED: "Personal lead added by the employee",
   MANUALLY_ASSIGNED: "Assigned by Admin",
   AUTO_ASSIGNED: "Auto-assigned by rotation",
   MANUALLY_REASSIGNED: "Reassigned by Admin",

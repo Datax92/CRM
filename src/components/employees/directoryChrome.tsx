@@ -49,6 +49,7 @@ export {
 } from "@/lib/dossierPeriod";
 import { resolveDossierRange, type DossierFilters, type DossierPeriod } from "@/lib/dossierPeriod";
 import { roleTitle } from "@/lib/constants/hierarchy";
+import { describeLeadSource } from "@/lib/leadSource";
 
 export { LEAD_FILTER_LABELS, ACTIVITY_FILTER_HINTS, isActivityFilter };
 export type { LeadFilterKey, RangeKey, EntryTally };
@@ -393,6 +394,9 @@ export function applyLeadFilters(
   const range = resolveDossierRange(filters);
   const activity = isActivityFilter(filters.cut);
   return leads.filter((lead) => {
+    // One source, when one is picked — before everything else, so the chip
+    // counts describe that source's leads.
+    if (filters.source && describeLeadSource(lead) !== filters.source) return false;
     const tally = tallyFor(lead.id, tallies);
     const hasActivityInRange = Boolean(
       tally && (tally.remarks > 0 || tally.followUps > 0 || tally.newConnects > 0 || tally.followUpConnects > 0)

@@ -43,7 +43,11 @@ import { withTimeout, ActionTimeout } from "@/lib/withTimeout";
 import { watchGone } from "@/lib/watchGone";
 import { initialsOf } from "@/lib/leadDisplay";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
-import { CursorPager } from "@/components/employees/DossierControls";
+import { CursorPager, Pager } from "@/components/employees/DossierControls";
+import { useFolderAssigned } from "@/hooks/useFolderAssigned";
+import { usePagination } from "@/hooks/usePagination";
+import { filterByAssignee, groupByAssignee, matchesAssignedSearch } from "@/lib/dataBankAssigned";
+import { MobileLeadDetail } from "./MobileLeadDetail";
 import {
   buildAssignOptions,
   assignActionFor,
@@ -448,7 +452,7 @@ export function MobileDataBankFolders() {
 /* ========================================================================== */
 
 export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
-  const { role, user, getIdToken } = useAuth();
+  const { role, managerKind, user, getIdToken } = useAuth();
   // A sub admin works the records inside their own folders exactly as an admin
   // does — adding, editing and promoting are all allowed. Only the folder
   // itself is admin-owned, and that lives on the previous screen.
@@ -465,6 +469,12 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<DataBankStatus | "ALL">("ALL");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Unassigned / Assigned, and whose assigned rows — the desktop's two halves.
+  const [view, setView] = useState<"UNASSIGNED" | "ASSIGNED">("UNASSIGNED");
+  const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [openAssignedId, setOpenAssignedId] = useState<string | null>(null);
+  const bankPath = role === "subadmin" ? "/subadmin/data-bank" : "/admin/data-bank";
   const [importOpen, setImportOpen] = useState(false);
   const [formFor, setFormFor] = useState<{ record: DataBankRecord | null } | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
@@ -477,6 +487,35 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
 
   const page = useDataBankRecords(folderId, { search: query, status, enabled: isManager });
   const selected = page.records.find((record) => record.id === selectedId) ?? null;
+
+  const names = useMemo(
+    () => new Map([...employees, ...subAdmins].map((person) => [person.uid, person.name])),
+    [employees, subAdmins]
+  );
+  const managers = useMemo(
+    () => subAdmins.map((manager) => ({ uid: manager.uid, name: manager.name })),
+    [subAdmins]
+  );
+  const assigned = useFolderAssigned(folderId, isManager, {
+    role,
+    uid: user?.uid,
+    managerKind,
+    managers,
+    names,
+  });
+  const assignees = useMemo(() => groupByAssignee(assigned.items), [assigned.items]);
+  const assignedVisible = useMemo(
+    () =>
+      filterByAssignee(assigned.items, assigneeFilter).filter((item) =>
+        matchesAssignedSearch(item, query)
+      ),
+    [assigned.items, assigneeFilter, query]
+  );
+  const assignedPages = usePagination(assignedVisible, RECORDS_PER_PAGE);
+  const pickedAssignee = assignees.find((entry) => entry.uid === assigneeFilter) ?? null;
+  const openAssigned = openAssignedId
+    ? (assigned.items.find((item) => item.id === openAssignedId) ?? null)
+    : null;
 
   /**
    * Employees, managers and "Admin / Myself" (§2) — the same list the desktop
@@ -515,7 +554,7 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           <Note tone="error">{folderError ?? "That folder no longer exists."}</Note>
           <button
             className="mob-press"
-            onClick={() => router.push("/admin/data-bank")}
+            onClick={() => router.push(bankPath)}
             style={{ ...PRIMARY_BUTTON, marginTop: 4 }}
           >
             Back to the Data Bank
@@ -530,7 +569,7 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
       <MobileHeader>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
-            <HeaderCircle label="Back to the Data Bank" onClick={() => router.push("/admin/data-bank")} size={34}>
+            <HeaderCircle label="Back to the Data Bank" onClick={() => router.push(bankPath)} size={34}>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                 <path d="M15 5l-7 7 7 7" />
               </svg>
@@ -539,7 +578,8 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
               <div style={EYEBROW}>{folder?.code || "Source"}</div>
               <h1 style={{ ...TITLE, fontSize: 21 }}>{folder?.name ?? "…"}</h1>
               <div style={{ fontSize: 11.5, fontWeight: 600, opacity: 0.8, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
-                {(folder?.recordCount ?? 0).toLocaleString()} records
+                {(folder?.recordCount ?? 0).toLocaleString()} unassigned ·{" "}
+                {assigned.items.length.toLocaleString()} assigned
               </div>
             </div>
           </div>
@@ -603,7 +643,67 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
         </div>
       </MobileHeader>
 
-      {/* Chips — the same cuts as the desktop workspace. */}
+      {/* Unassigned / Assigned — the desktop's two halves. */}
+      <div
+        role="tablist"
+        aria-label="Assigned or unassigned records"
+        style={{ display: "flex", gap: 8, padding: "14px 18px 0", flexShrink: 0 }}
+      >
+        {(
+          [
+            ["UNASSIGNED", "Unassigned", folder?.recordCount ?? 0],
+            ["ASSIGNED", "Assigned", assigned.items.length],
+          ] as const
+        ).map(([key, label, count]) => {
+          const active = view === key;
+          return (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={active}
+              onClick={() => {
+                setView(key);
+                setPickerOpen(false);
+              }}
+              className="mob-press"
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 7,
+                padding: "10px 12px",
+                borderRadius: 999,
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+                WebkitTapHighlightColor: "transparent",
+                border: `1px solid ${active ? M.tealDeep : M.cardBorder}`,
+                background: active ? M.tealDeep : M.cardBg,
+                color: active ? "#fff" : M.muted,
+                transition: "background-color 160ms ease, color 160ms ease, border-color 160ms ease",
+              }}
+            >
+              <span>{label}</span>
+              <span
+                style={{
+                  borderRadius: 999,
+                  padding: "1px 7px",
+                  fontSize: 11,
+                  fontVariantNumeric: "tabular-nums",
+                  background: active ? "rgba(255,255,255,0.22)" : M.tealTint,
+                  color: active ? "#fff" : M.tealDeep,
+                }}
+              >
+                {count.toLocaleString()}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {view === "UNASSIGNED" ? (
+      /* Chips — the same cuts as the desktop workspace. */
       <div
         role="tablist"
         aria-label="Filter records"
@@ -611,7 +711,7 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "14px 18px 10px",
+          padding: "10px 18px 10px",
           overflowX: "auto",
           overscrollBehavior: "contain",
           flexShrink: 0,
@@ -646,11 +746,265 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           );
         })}
       </div>
+      ) : (
+        /* Who these went to — a disclosure that pushes the list down, never a
+           floating menu the tab bar could cover. */
+        <div style={{ padding: "10px 18px 10px", flexShrink: 0 }}>
+          <button
+            className="mob-press"
+            onClick={() => setPickerOpen((open) => !open)}
+            aria-expanded={pickerOpen}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              padding: "11px 14px",
+              borderRadius: 14,
+              border: `1px solid ${M.cardBorder}`,
+              background: M.cardBg,
+              color: M.ink,
+              fontSize: 14,
+              fontWeight: 600,
+              textAlign: "left",
+              cursor: "pointer",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <span style={{ color: M.faint, fontWeight: 500, flexShrink: 0 }}>Assigned to</span>
+            <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {pickedAssignee ? pickedAssignee.name : "Everyone"}
+            </span>
+            <span
+              style={{
+                borderRadius: 999,
+                padding: "1px 8px",
+                fontSize: 11.5,
+                fontVariantNumeric: "tabular-nums",
+                background: M.tealTint,
+                color: M.tealDeep,
+                flexShrink: 0,
+              }}
+            >
+              {(pickedAssignee?.count ?? assigned.items.length).toLocaleString()}
+            </span>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={M.faint}
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              aria-hidden
+              style={{ flexShrink: 0, transform: pickerOpen ? "rotate(180deg)" : undefined, transition: "transform 200ms ease" }}
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          {pickerOpen && (
+            <div
+              role="list"
+              aria-label="People these records are assigned to"
+              style={{
+                marginTop: 6,
+                maxHeight: 280,
+                overflowY: "auto",
+                overscrollBehavior: "contain",
+                borderRadius: 14,
+                border: `1px solid ${M.cardBorder}`,
+                background: M.cardBg,
+                padding: "4px 0",
+              }}
+            >
+              {[{ uid: null as string | null, name: "Everyone", count: assigned.items.length }, ...assignees].map(
+                (entry) => {
+                  const active = assigneeFilter === entry.uid;
+                  return (
+                    <button
+                      key={entry.uid ?? "all"}
+                      role="listitem"
+                      className="mob-press"
+                      onClick={() => {
+                        setAssigneeFilter(entry.uid);
+                        setPickerOpen(false);
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "12px 14px",
+                        border: "none",
+                        background: active ? M.tealTint : "transparent",
+                        color: active ? M.tealDeep : M.ink,
+                        fontSize: 14,
+                        fontWeight: active ? 700 : 600,
+                        textAlign: "left",
+                        cursor: "pointer",
+                        WebkitTapHighlightColor: "transparent",
+                      }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {entry.name}
+                      </span>
+                      <span
+                        style={{
+                          borderRadius: 999,
+                          padding: "1px 9px",
+                          fontSize: 12,
+                          fontVariantNumeric: "tabular-nums",
+                          background: active ? "#fff" : M.tealTint,
+                          color: M.tealDeep,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {entry.count.toLocaleString()}
+                      </span>
+                    </button>
+                  );
+                }
+              )}
+              {assignees.length === 0 && (
+                <div style={{ padding: "10px 14px", fontSize: 13, color: M.faint }}>Nothing assigned yet.</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={LIST_BODY}>
         {banner && <Note tone={banner.tone}>{banner.text}</Note>}
-        {page.error && <Note tone="error">{page.error}</Note>}
+        {page.error && view === "UNASSIGNED" && <Note tone="error">{page.error}</Note>}
+        {assigned.error && view === "ASSIGNED" && <Note tone="error">{assigned.error}</Note>}
 
+        {view === "ASSIGNED" ? (
+          <>
+            {assigned.loading ? (
+              <SkeletonCards />
+            ) : assignedVisible.length === 0 ? (
+              <Empty
+                title={
+                  query.trim()
+                    ? `Nothing assigned matches “${query.trim()}”.`
+                    : assigned.items.length === 0
+                      ? "Nothing assigned yet."
+                      : "Nobody in this filter."
+                }
+                body="Records promoted to a lead, or handed to a manager, are listed here under the person who has them."
+              />
+            ) : (
+              assignedPages.items.map((item, index) => {
+                const seen = isOpened(item.id);
+                const shade = ROW_TONES[seen ? "opened" : "unopened"];
+                const lead = item.kind === "LEAD";
+                return (
+                  <button
+                    key={item.id}
+                    className="mob-press"
+                    onClick={() => {
+                      setOpenAssignedId(item.id);
+                      markOpened(item.id);
+                    }}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "48px minmax(0,1fr) auto",
+                      alignItems: "center",
+                      gap: 13,
+                      background: shade.background,
+                      border: `1px solid ${shade.border}`,
+                      borderRadius: M.cardRadius,
+                      padding: "14px 16px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      WebkitTapHighlightColor: "transparent",
+                      flexShrink: 0,
+                      animation:
+                        index < 8 ? `mob-rise 300ms cubic-bezier(0.22,0.61,0.36,1) ${index * 32}ms both` : undefined,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        border: `2px solid ${lead ? M.tealDeep : M.blue}`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 14,
+                        fontWeight: 700,
+                        color: "#4a5c5a",
+                        flexShrink: 0,
+                      }}
+                      aria-hidden
+                    >
+                      {initialsOf(item.name)}
+                    </span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                        {!seen && (
+                          <span
+                            style={{ width: 7, height: 7, borderRadius: "50%", background: M.teal, flexShrink: 0 }}
+                            aria-hidden
+                          />
+                        )}
+                        <span
+                          style={{
+                            fontSize: 15.5,
+                            fontWeight: 700,
+                            letterSpacing: "-0.35px",
+                            color: M.ink,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {item.name}
+                        </span>
+                        {!seen && <span className="sr-only">(not opened yet)</span>}
+                      </span>
+                      <span
+                        style={{
+                          display: "block",
+                          marginTop: 4,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: M.faint,
+                          fontVariantNumeric: "tabular-nums",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {item.phone || "No number"} · {lead ? "Lead" : "In their Data Bank"}
+                      </span>
+                    </span>
+                    <span
+                      style={{
+                        maxWidth: 118,
+                        borderRadius: 999,
+                        background: lead ? M.tealTint : M.blueBg,
+                        color: lead ? M.tealDeep : M.blue,
+                        padding: "3px 9px",
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.assigneeName || "Unassigned"}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+            <Pager pagination={assignedPages} variant="mobile" noun="records" />
+          </>
+        ) : (
+        <>
         {/* Bulk selection, the desktop's bar in its `compact` form — one
             implementation, so the phone cannot offer different quantities or a
             different set of recipients. */}
@@ -833,7 +1187,37 @@ export function MobileFolderWorkspace({ folderId }: { folderId: string }) {
           onPrevious={page.previous}
           variant="mobile"
         />
+        </>
+        )}
       </div>
+
+      {openAssigned?.kind === "LEAD" && assigned.leadsById.get(openAssigned.id) && (
+        <MobileLeadDetail
+          key={openAssigned.id}
+          lead={assigned.leadsById.get(openAssigned.id)!}
+          onClose={() => setOpenAssignedId(null)}
+          userRole={role === "subadmin" ? "subadmin" : "admin"}
+          getIdToken={getIdToken}
+          assigneeName={openAssigned.assigneeName}
+        />
+      )}
+
+      {openAssigned?.kind === "HANDOFF" && folder && assigned.handoffsById.get(openAssigned.id) && (
+        <MobileRecordDetail
+          key={openAssigned.id}
+          record={assigned.handoffsById.get(openAssigned.id)!}
+          folder={folder}
+          assignOptions={assignOptions}
+          getIdToken={getIdToken}
+          onClose={() => setOpenAssignedId(null)}
+          onEdit={() => setFormFor({ record: assigned.handoffsById.get(openAssigned.id)! })}
+          onChanged={afterWrite}
+          onRemoved={(message) => {
+            setOpenAssignedId(null);
+            afterWrite(message);
+          }}
+        />
+      )}
 
       {selected && folder && (
         <MobileRecordDetail
@@ -1273,7 +1657,7 @@ function MobileRecordDetail({
             <span>Hand this record on</span>
           </div>
           <p style={{ marginTop: 5, fontSize: 12.5, fontWeight: 500, color: M.body, lineHeight: 1.5 }}>
-            Either way the row leaves this folder and every field above travels with it.
+            Either way it moves to this folder&rsquo;s Assigned list, under that person&rsquo;s name, and every field above travels with it.
           </p>
           <select
             value={assignee}

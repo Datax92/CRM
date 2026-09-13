@@ -57,6 +57,12 @@ export interface DossierFilters {
    */
   day?: string | null;
   cut: LeadFilterKey;
+  /**
+   * One origin — `Data Bank (GFS)` — as the exact string `describeLeadSource`
+   * prints, or null/absent for every source. Applied to leads only; a deal and
+   * an activity entry are not narrowed by it.
+   */
+  source?: string | null;
 }
 
 /** A well-formed Karachi day key, and nothing else. */

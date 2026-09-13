@@ -18,7 +18,8 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
-import { useClientFolders, useClientFolderMembers } from "@/hooks/useClients";
+import { useClientFolders, useClientFolderMembers, useOwnClientLeads } from "@/hooks/useClients";
+import { ownClientLeadIds } from "@/lib/clientFolderScope";
 import { LeadsWorkspace } from "@/components/leads/LeadsWorkspace";
 import { FullPageSpinner } from "@/components/admin/AdminShared";
 import { FolderHeart, ChevronLeft } from "lucide-react";
@@ -30,7 +31,7 @@ export function ClientFolderView({
   folderId: string;
   basePath: string;
 }) {
-  const { role, user, loading: authLoading } = useAuth();
+  const { role, managerKind, user, loading: authLoading } = useAuth();
   const isManager = role === "admin" || role === "subadmin";
 
   const { folders, loading: foldersLoading } = useClientFolders(isManager, {
@@ -45,28 +46,40 @@ export function ClientFolderView({
     uid: user?.uid,
   });
 
-  const folder = folders.find((entry) => entry.id === folderId) ?? null;
-
-  /**
-   * The membership rows are the folder's whole definition. A `Set` because the
-   * workspace asks "is this lead in the folder" once per lead per render.
-   */
-  const scope = useMemo(
-    () =>
-      folder
-        ? {
-            leadIds: new Set(members.map((member) => member.leadId)),
-            title: folder.name,
-            subtitle: `${members.length} lead${members.length === 1 ? "" : "s"}${
-              folder.dataBankFolderName ? ` · from ${folder.dataBankFolderName}` : ""
-            }`,
-            backHref: basePath,
-          }
-        : null,
-    [folder, members, basePath]
+  // Only the leads still assigned to the folder's owner — a Client folder is
+  // the leads somebody took for themselves. See `lib/clientFolderScope`.
+  const { assignee, loading: ownLoading } = useOwnClientLeads(
+    isManager,
+    { role, uid: user?.uid, managerKind },
+    false
   );
 
-  if (authLoading || foldersLoading || membersLoading) return <FullPageSpinner />;
+  const folder = folders.find((entry) => entry.id === folderId) ?? null;
+  const ownerUid = user?.uid ?? "";
+
+  /**
+   * The membership rows are the folder's whole definition, narrowed to the
+   * leads still assigned to the owner. A `Set` because the workspace asks "is
+   * this lead in the folder" once per lead per render.
+   */
+  const scope = useMemo(() => {
+    if (!folder) return null;
+    const leadIds = ownClientLeadIds(
+      members.map((member) => member.leadId),
+      ownerUid,
+      (leadId) => assignee.get(leadId)
+    );
+    return {
+      leadIds,
+      title: folder.name,
+      subtitle: `${leadIds.size} lead${leadIds.size === 1 ? "" : "s"}${
+        folder.dataBankFolderName ? ` · from ${folder.dataBankFolderName}` : ""
+      }`,
+      backHref: basePath,
+    };
+  }, [folder, members, ownerUid, assignee, basePath]);
+
+  if (authLoading || foldersLoading || membersLoading || ownLoading) return <FullPageSpinner />;
 
   if (!folder || !scope) {
     return (
