@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Credit Ammad Sajjad on every commit.
+#
+# **Why the author is somebody else.** Deployments are authored as the Vercel
+# project owner (datax.sol@gmail.com) because Vercel's Hobby plan only lets the
+# project owner's commits deploy a private repository — a commit authored by
+# anyone else is refused before it is ever built. That would otherwise leave
+# Ammad's own work attributed to a single account, so every commit carries a
+# Co-authored-by trailer: GitHub credits co-authors both in the contributors
+# list and on their contribution graph.
+#
+# Tracked in the repository rather than left in `.git/hooks`, which is not
+# cloned — a hook that only exists on one laptop stops working the first time
+# the repo is checked out anywhere else, silently. `core.hooksPath` points here;
+# see the setup line in the commit that added this file.
+#
+# Skipped when the trailer is already present, so an amend, a rebase or a
+# cherry-pick does not stack duplicates.
+
+TRAILER="Co-authored-by: Ammad Sajjad <ammadsajjad40@gmail.com>"
+MSG_FILE="$1"
+
+grep -qiF "ammadsajjad40@gmail.com" "$MSG_FILE" && exit 0
+
+# A blank line before the trailer, unless the message already ends with one.
+[ -n "$(tail -c 1 "$MSG_FILE")" ] && printf '\n' >> "$MSG_FILE"
+printf '\n%s\n' "$TRAILER" >> "$MSG_FILE"
