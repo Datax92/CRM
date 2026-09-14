@@ -31,8 +31,9 @@ follow-ups, attendance, payroll and financial reporting.
 ## Distribution & acceptance
 
 - New leads sit in the admin queue for a **5-min manual assign window**, then auto-distribute.
-- Auto-distribution sorts by **priority 1–10** (1 = front) with an **8-lead rotation** — after 8 consecutive leads the next employee starts the cycle. Rotation governs incoming volume only.
+- Auto-distribution sorts by **priority 1–10** (1 = front) with a **5-lead rotation** (`LEADS_PER_TURN`) — after 5 consecutive leads the next employee starts the cycle. It was 8 until 2026-09-14; the owner's instruction is 5. Rotation governs incoming volume only, and **no test hardcodes the number** — they are written against the constant, or they only prove what it used to be.
 - The assigned employee has a **5-min accept window**. On a miss the lead cascades strictly down the priority lane, skipping anyone who already let it expire (`resolveCascadeAssignee`), and a `RED_FLAG` notification + `missedLeadsCount` increment is recorded.
+- **Passing on is not missing.** `passLead` is the employee saying no, from the arrival popup or the lead pane: it cascades by the same `resolveCascadeAssignee` and force-accepts at the floor, but writes **no `RED_FLAG` and no `missedLeadsCount`** — a red flag is for silence, and punishing somebody for answering honestly would teach them to let the window lapse instead. The cost is on the lane, where it belongs: `passes` is incremented in `kpiMonths` and costs 2 points on the next ranking, and the popup says so before the button is pressed.
 - **The lane has a floor.** When one candidate remains — or everyone has had a turn — that employee is *force-accepted*: no window, no decline. A lead cannot reach `UNASSIGNED_NO_CAPACITY` while an active roster exists.
 - **Admin actions bypass the lane.** Assign, reassign and promote write `ACCEPTED` + `acceptedAt` immediately and delete `acceptDeadlineAt`. An admin handing out a lead is a decision, not an offer.
 - **The cascade never advances rotation counters.** Cleaning up a colleague's miss must not consume your turn.
@@ -153,7 +154,9 @@ follow-ups, attendance, payroll and financial reporting.
 - **The connect flag is computed server-side** from the typed duration, never read from the client payload.
 - Counters (`users/{uid}/kpiMonths/{YYYY-MM}`) are incremented **inside the same transaction as the work they count**, credited to `lead.assignedUserId` rather than the author, and dated by when the work happened — so a backfilled March deal lands in March.
 - **There is no backfill.** Counters only count work logged since the KPI module shipped; a real account starts near 0% and climbs. Writing one needs a decision on whether historical calls, whose duration was never recorded, may count as Connects. They cannot be verified after the fact.
-- `kpiScore` weights the three 40/40/20 with each **capped at 150% first**, or one runaway metric masks two failing ones. `recalculatePriorities` ranks the active roster and assigns 1..N, ties broken on uid; **an admin-pinned priority (`autoPriority: false`) is never moved**. Shared by the button and the 00:30 PKT cron.
+- `kpiScore` weights the three 40/40/20 with each **capped at 150% first**, or one runaway metric masks two failing ones. It is the measure of a salesperson and is used everywhere *except* the lane.
+- **The lane is not the KPI.** `recalculatePriorities` ranks on `leadScore` (`lib/leadPriority`): `connects × 2 + follow-ups − passes × 2` for the current month, floored at 0. The lane decides who gets the **next** lead, so it rewards working the leads you already hold; closing a deal matters everywhere else and does not buy a place at the front of the queue. A connect is worth two follow-ups deliberately — equal weights would put somebody writing twenty notes above somebody who had ten real conversations. Passing costs 2, the owner's figure: enough that cherry-picking is not free, small enough that somebody driving can hand a lead on honestly. The floor is 0 because a negative score would sort a passer *below* somebody who did nothing at all.
+- `assignPriorities` assigns 1..N, ties broken on uid; **an admin-pinned priority (`autoPriority: false`) is never moved**, and pinned people are passed in so their slots are reserved rather than handed to somebody else. Shared by the button, the nightly cron and the lane screen, which reads the same `kpiMonths` documents so it can always explain the order the job produced.
 - **The dossier's activity cuts count entries written in the period, not the lead's
   record.** Five cuts — Remarks · New connects · Follow-ups · Follow-up connects ·
   Connected — each asking whether an entry of that shape was written *inside the
@@ -360,8 +363,16 @@ movement in these numbers as caused by the current work).
     configure using single field index controls"* because it already indexes every field
     in both directions automatically. Both were removed from the file — left in, they
     would have reported as permanently "missing" and sent every future session hunting.
-- `/api/cron/mark-absentees` (12:05 PKT) and `/api/cron/recalculate-priorities` (00:30 PKT)
-  need `CRON_SECRET` — currently empty, so both cron routes refuse to run.
+- ~~`/api/cron/mark-absentees` and `/api/cron/recalculate-priorities` need
+  `CRON_SECRET` — currently empty, so both cron routes refuse to run.~~
+  **Stale as of 2026-09-14**: probed live, the deployment answers `401`, not the
+  `503` a missing secret produces, so `CRON_SECRET` **is** set on Vercel. Fail
+  closed is why the two are distinguishable — use that probe rather than reading
+  `.env.local`, which is a different environment.
+- **The 5-minute accept sweep runs from Railway**, not Vercel — see
+  `ops/lead-cron/`. Vercel's Hobby plan caps crons at one run a day, which is
+  useless for a 5-minute window. Vercel still runs `process-deadlines` nightly
+  as an idempotent backstop, plus the two genuinely daily jobs.
 
 **Environment traps:** `.firebaserc` is gitignored, so `deploy:rules` targets whatever
 `firebase use` selected; the runtime project is `leadway-crm` while
@@ -396,6 +407,198 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-14 (second round) — the 5-minute window actually fires, from Railway
+
+The owner has a paid Railway subscription and asked for the accept window alone
+to run there. `ops/lead-cron/` is a Railway **cron service** calling
+`/api/cron/process-deadlines` every five minutes. The app stays on Vercel.
+
+**Railway's cron minimum is five minutes**, which is exactly the interval this
+needs and the reason it is the right host for it. Vercel's Hobby plan allows one
+run a day, so the countdown reached 0:00 and the lead sat with the person who
+never answered until 01:00 UTC.
+
+**It holds no logic, deliberately.** One authenticated GET and a log line. Who
+is next in the lane, the force-accept floor, the transaction that re-checks each
+lead — all of it stays in the CRM. A second implementation of "who gets this
+lead" running on another host is how two systems begin disagreeing about the
+same lead, so there is not one.
+
+**The Vercel daily run is deliberately left in place** as a backstop. Every
+handler re-checks state inside a Firestore transaction, so the two schedules
+cannot conflict — if Railway is down, the nightly run still clears the backlog.
+
+**Measured before scheduling it, because `*/5` is where this project has been
+bitten before** (a `*/5` sweep × 165 stale leads was once ~47,500 writes/day
+against a 20k cap). At 288 runs a day: both expiry queries are bounded and
+return nothing when nothing is due, and the stale-lead alert is still gated to
+once per Karachi day by `config/cronState.staleSweepDayKey` — about **860 reads
+a day** against a 50,000 cap, with writes only when something has actually
+expired.
+
+**A wrong-secret probe against production answered a question the notes had
+wrong.** `CRON_SECRET` is **set on the Vercel deployment** — the route replied
+`401 Unauthorized`, where a missing secret fails closed with `503 "Scheduler is
+not configured"`. *Operational state* above still says both cron routes refuse
+to run for want of it; that is stale for the deployment, whatever `.env.local`
+holds. The probe proved reachability, the header shape and the deployment's
+configuration **without running a sweep**.
+
+- `CRM_URL` must be **https** — the secret travels in a header, and anyone
+  holding it can trigger reassignment across the whole pipeline.
+- A timeout says plainly that the sweep **may still have run**; every handler is
+  idempotent and the next run finishes what this one started.
+- Failures exit non-zero, so a broken run shows as failed in Railway rather than
+  a green tick with the error buried in the output.
+
+- **Validation**: `typecheck` 0 errors, `test` 689/689, `eslint src` unchanged at
+  7 errors / 33 warnings, `node --check` clean. The three configuration guards
+  (no URL, plain http, no secret) were each exercised and exit 1 with the
+  message naming the fix.
+
+  **Run end to end against production, and it was made safe by measuring
+  first.** A read-only probe counted the backlog before anything was fired: **0
+  NEW leads past the admin window, 0 ASSIGNED past the accept window, 0 ASSIGNED
+  at all**, and the stale marker already on today's Karachi key — so the sweep
+  was a proven no-op before it was called, not merely assumed to be one. It then
+  returned `200 {"ok":true,"autoAssigned":0,"reassigned":0,"noFollowUpAlerts":0,
+  "durationMs":277}`. That proves the URL, the header shape and the secret, and
+  confirms `.env.local`'s `CRON_SECRET` matches the deployment's. The probe
+  script was deleted; nothing was written.
+
+  **Worth keeping as a habit:** "is this destructive" was answered by counting
+  the rows it would touch, which took one read-only query and turned a
+  confirm-first action into a demonstrably free one.
+
+  **Deployed and running.** Project `crm-lead-cron` on the Datax Railway
+  account, service `lead-cron`, registered by Railway as a **cron job** (not a
+  long-running service). Its first scheduled run:
+
+  ```
+  [sweep] /api/cron/process-deadlines → 200 in 1516ms:
+          {"ok":true,"autoAssigned":0,"reassigned":0,"noFollowUpAlerts":0,"durationMs":333}
+  [sweep] done — 1 target(s) swept.   [exited with code 0]
+  ```
+
+  That is the test that matters — it proves the Railway service's own
+  environment variables, not this machine's.
+
+  **Two config formats were rejected, both on how they fail.** `railway.json`
+  stops being honoured on **2026-12-01**; a schedule that quietly reverted would
+  stop leads cascading with nothing to say so, which is the exact silent failure
+  this service exists to fix. `.railway/railway.ts` needs the `railway` npm
+  package installed to compile — a `node_modules` in a service whose whole job
+  is one `fetch` — and `railway config migrate` emits `cronSchedule` as a
+  **comment** rather than a field, so migrating silently drops the one setting
+  that matters. `cronSchedule`, `restartPolicyType` and `startCommand` are
+  stored on the service instead: no expiry, no dependency. The README carries
+  the GraphQL call to restore them.
+
+  `restartPolicyType: NEVER` is deliberate — a cron run is meant to exit, and
+  restarting it would turn a five-minute schedule into a hot loop against the
+  CRM.
+
+  **Deployed by directory upload (`railway up` from `ops/lead-cron`), not from
+  GitHub**, so there is no root-directory setting to get wrong. Stated cost: it
+  does **not** redeploy on `git push`.
+
+  **`CRON_SECRET` was echoed to the terminal** by the Railway CLI when the
+  service was created with `--variables`, so it is in that session's scrollback.
+  Low severity — the secret only triggers the sweep, it reads no data — but the
+  realistic abuse is burning the free tier's daily Firestore quota. **Pass the
+  variable some other way than `--variables` next time**, and rotate it in
+  Vercel and Railway together.
+
+### 2026-09-14 — the lead lane: a screen that explains itself, and an offer you can answer
+
+The priority page was a slate-and-indigo table from an earlier era of the app,
+showing a dropdown per employee and nothing about why anybody held the place
+they held. Four things now, all from one instruction.
+
+**1 · It is the directory's screen.** `PriorityLaneView` is built on
+`directoryChrome` — `E` tokens, `Card`, `Bar`, `HeroRings` — because this page
+and the Team page describe the same people, and two design languages for one
+roster read as two products. Desktop grid, phone cards via `useIsMobile`; 16px
+on every phone input.
+
+**2 · The order is earned, and the card shows the arithmetic.** Each row carries
+connects, follow-ups and passes with what each contributed (`+10`, `+3`, `−2`)
+and the total beside them. **Sorted by score, not by the priority they currently
+hold** — stored-priority order would hide the one disagreement an admin opens
+this screen to find: somebody sitting at priority 1 having done nothing this
+month.
+
+**3 · Managers are ranked and badged "Not in the lane".** The owner's call: they
+appear with their numbers so everyone can be compared, and automatic
+distribution still only reaches employees. A manager in a ranked list with no
+badge would read as somebody about to be handed leads. Three separate ways out
+of the lane are each named on the card — a manager, a paused account, and
+`autoAssign: false` ("Manual only"), which is somebody deliberately taken out of
+distribution while still able to be handed a lead by hand.
+
+**4 · The offer, with Accept and Pass on.** `IncomingLeadPopup` slides in
+wherever the employee is in the app, carrying the lead, its source, a draining
+{ACCEPT_WINDOW_MINUTES}-minute clock that turns red under a minute, and both
+buttons.
+
+- **Driven by the lead, not the notification.** A notification records that
+  something happened; the question here is "is there a lead waiting for an
+  answer *right now*", and only the lead knows — `ASSIGNED` with a live
+  `acceptDeadlineAt`. Reading the notification would leave the card on screen
+  offering a lead that had already gone to the next person.
+- **Its own query, and a cheap one.** This mounts on every screen, and an
+  employee's pipeline is hundreds of documents. `assignedUserId == me &&
+  status == 'ASSIGNED'` — two equality filters, no `orderBy`, so the automatic
+  single-field indexes serve it and nothing has to be deployed. Both clauses are
+  what the `leads` rule checks, so the query is provable rather than refused.
+- **Dismiss is not decline.** The × hides the card; the lead stays assigned and
+  the timer keeps running. Closing a window must never give a lead away.
+- **The cost of passing is stated before the button, not discovered after it** —
+  two points, the same as giving back one connected call.
+- It portals to `document.body`, or `.animate-page-transition`'s
+  `will-change: transform` pins it to the page's content box and it lands
+  cropped or under the phone's tab bar.
+
+**5 · The Meta Ads panel says when a lead lands.** A teal alert per ad, from the
+folder's own `lastLeadAt`, with Open and a per-ad dismiss. **Elapsed time, not a
+seen-watermark**: a watermark needs storage, goes stale the moment the panel is
+opened on a second device, and answers the wrong question — an admin wants to
+know what has just come in whether or not they were watching. Ten minutes, then
+it leaves on its own.
+
+**`timestampMillis` in `lib/dates`.** The same field arrives in three shapes —
+a live `Timestamp` with `toDate()`, a serialised `{seconds, nanoseconds}`, and a
+date string from the demo store — and a reader that knows only the first returns
+null for the other two. Null here does not throw; it quietly means "never
+happened", which is a countdown with no deadline and an alert that never fires.
+Two copies of this had already appeared in one round, so it is one tested
+function.
+
+**Demo parity: `passLead`.** `clientActions.passLead` had no demo branch, so the
+button the popup puts in front of every employee would have done nothing in demo
+mode — a feature the product appears to have and does not. The demo mirror
+charges the pass, cascades by priority through the same `resolveCascadeAssignee`,
+force-accepts at the floor and writes the notification.
+
+**Three `setState`-in-effect errors were caught by the lint rule and fixed
+properly**, not suppressed: the popup's entrance, its per-offer reset and its
+portal guard are now one reset-during-render state object plus a
+`useSyncExternalStore` mounted flag — the pattern `useIsMobile` already uses.
+
+- **Validation**: `typecheck` 0 errors, `test` **689/689** (685 → 689, all on
+  `timestampMillis`: the three transports agreeing on one instant, absent
+  reading as null rather than the epoch, junk reading as null rather than NaN,
+  and a half-deserialised Timestamp whose `toDate()` returns an invalid date),
+  `build` compiles, `eslint src` at the 7 pre-existing errors and 33 warnings —
+  none of the new files flagged.
+
+  **Not driven in a browser** — Chrome tooling is not enabled for this session.
+  The screens are reasoned from the shared components and the data they read;
+  nothing here was clicked.
+
+  **The gap named here — a 5-minute window swept once a day — was closed the
+  same day from Railway.** See the entry below.
 
 ### 2026-09-13 — Data Bank Assigned view, no doubling, personal leads, source filters, private Clients
 
