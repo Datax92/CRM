@@ -207,6 +207,29 @@ export function buildMetaRecord(lead: MetaLeadInput): {
 }
 
 /**
+ * The extra answers, written out as a note a person can read.
+ *
+ * **Why not map them onto typed KYC fields.** The obvious move is to send a
+ * "Budget" answer to `kyc:budget` — but that field is money, and a Meta form
+ * asks budget as a *range*: "less then 1 lac", "5 lac to 1o lac". The mapper
+ * strips non-digits, so those would be stored as **1** and **51**. A confidently
+ * wrong figure on a client record is worse than no figure, so the answer is
+ * kept as the words the customer actually chose.
+ *
+ * It lands in the record's `notes`, which is visible in the Data Bank and is
+ * carried onto the lead when the row is promoted — so whoever rings them can
+ * see the budget band before they dial.
+ */
+export function metaNotes(lead: MetaLeadInput): string | null {
+  const lines = Object.entries(lead.extras ?? {})
+    .map(([question, answer]) => [clean(question), clean(answer)] as const)
+    .filter(([question, answer]) => question && answer)
+    .map(([question, answer]) => `${question.replace(/\s*\?\s*$/, '')}: ${answer}`);
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/**
  * Meta sends a lead's answers as `[{ name, values: [...] }]`.
  *
  * The question's `name` is Meta's own machine key — `full_name`, `phone_number`

@@ -30,6 +30,7 @@ import {
   resolveMetaSource,
   META_FOLDER_FIELDS,
   META_FOLDER_ROLES,
+  metaNotes,
   type MetaLeadInput,
 } from '@/lib/metaIntake';
 
@@ -143,7 +144,10 @@ export async function fileMetaLead(lead: MetaLeadInput): Promise<FileResult> {
     phone,
     phoneKey: key,
     status: 'NEW',
-    notes: null,
+    // The form's extra answers — the budget band and anything else it asked —
+    // in the customer's own words. See `metaNotes` for why they are not mapped
+    // onto typed KYC fields.
+    notes: metaNotes(lead),
     source: 'META_ADS',
     // Provenance, frozen on the row — a campaign renamed later must not restate
     // where this particular lead came from.

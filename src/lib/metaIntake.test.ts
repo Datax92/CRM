@@ -6,6 +6,7 @@ import {
   metaFolderId,
   buildMetaRecord,
   normalizeFieldData,
+  metaNotes,
   META_FIELD_KEYS,
 } from './metaIntake.ts';
 
@@ -134,4 +135,20 @@ test('empty answers and junk entries are skipped, not stored as blanks', () => {
   assert.equal(out.name, '');
   assert.equal(out.phone, '0300 9999999');
   assert.deepEqual(out.extras, {});
+});
+
+test('extra answers become a readable note, not a mangled number', () => {
+  // The trap this avoids: `kyc:budget` is a money field, and "less then 1 lac"
+  // stripped to digits is **1**. A confident Rs 1 on a client record is worse
+  // than no figure, so the words the customer chose are kept verbatim.
+  const note = metaNotes({
+    leadgenId: '1',
+    extras: { 'Your Budget of investment ?': 'less then 1 lac', 'Interested in': '5 Marla' },
+  });
+  assert.equal(note, 'Your Budget of investment: less then 1 lac\nInterested in: 5 Marla');
+});
+
+test('a form with no extra questions produces no note at all', () => {
+  assert.equal(metaNotes({ leadgenId: '1' }), null);
+  assert.equal(metaNotes({ leadgenId: '1', extras: { '': 'x', 'Blank': '' } }), null);
 });
