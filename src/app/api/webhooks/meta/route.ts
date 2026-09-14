@@ -5,7 +5,8 @@ import {
   resolveCampaign,
   isMetaConfigured,
 } from '@/lib/meta';
-import { fileMetaLead, notifyMetaLead } from '@/lib/server/metaFiling';
+import { notifyMetaLead } from '@/lib/server/metaFiling';
+import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
 import { karachiDayKey } from '@/lib/dates';
 
 // firebase-admin and node:crypto both require the Node runtime.
@@ -115,7 +116,7 @@ export async function POST(request: Request) {
  * **It used to create a lead in the pipeline directly.** The owner's
  * instruction is that Facebook leads land in the admin's Data Bank, grouped one
  * folder per ad, and are distributed from there — so both this route and the
- * Make.com bridge now call `fileMetaLead` and a lead is filed identically
+ * Make.com bridge now call `fileAndOfferMetaLead`, so a lead is filed and offered identically
  * whichever door it came through.
  */
 async function ingestLead(leadgenId: string, value: Record<string, unknown>): Promise<boolean> {
@@ -136,7 +137,7 @@ async function ingestLead(leadgenId: string, value: Record<string, unknown>): Pr
   const details = await fetchLeadDetails(leadgenId);
   const campaign = await resolveCampaign(adId);
 
-  const result = await fileMetaLead({
+  const result = await fileAndOfferMetaLead({
     leadgenId,
     name: details.name,
     phone: details.phone,

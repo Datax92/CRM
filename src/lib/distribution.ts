@@ -33,6 +33,35 @@ function takesAutoLeads(employee: Employee): boolean {
   return employee.status === 'ACTIVE' && employee.autoAssign !== false;
 }
 
+/**
+ * One stored `users` document, as the lane needs to see it.
+ *
+ * **This exists because the mapping is where the bug was.** Every server path
+ * that assigns a lead used to build these objects inline, and the cron's copy
+ * simply never read `autoAssign` — so `takesAutoLeads` above, and the tests
+ * proving it, were being handed `undefined` every time and the rule stopped
+ * existing. Measured on 2026-09-14: four of five employees were marked out of
+ * distribution and all four were still being given automatic leads.
+ *
+ * That is this project's most-repeated failure — a field typed on an interface
+ * and never taken out of the snapshot, now ten occurrences — and it survives
+ * typecheck, lint and clicking around every time, because the symptom is a
+ * confident default rather than an error. One mapper, in the same
+ * dependency-free module as the rule it feeds, so the tests can reach it.
+ */
+export function readLaneEmployee(uid: string, data: Record<string, unknown>): Employee {
+  return {
+    uid,
+    // 99 puts an employee with no priority at the back rather than the front;
+    // an absent field must never read as "first in line".
+    priority: typeof data.priority === 'number' ? data.priority : 99,
+    status: data.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+    // Only an explicit `false` takes somebody out. Absent means in the lane,
+    // so records predating the setting keep receiving leads.
+    autoAssign: data.autoAssign === false ? false : undefined,
+  };
+}
+
 export interface CycleState {
   [uid: string]: number; // leads assigned to this employee in the current cycle
 }

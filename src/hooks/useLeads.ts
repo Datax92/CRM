@@ -47,6 +47,12 @@ export interface Lead {
   dataBankFolderName?: string | null;
   /** True on a lead an employee brought in themselves (`addPersonalLead`). */
   personalLead?: boolean;
+  /**
+   * Free text carried from intake — for a Meta lead, the form's extra answers
+   * in the customer's own words ("Your Budget of investment: 5 lac to 10 lac").
+   * Deliberately not mapped onto typed KYC fields; see `metaNotes`.
+   */
+  notes?: string | null;
   assignedUserId: string | null;
   assigneeName?: string | null;
   /** Assignment provenance (§9) — who handed this out, and under which team. */

@@ -284,7 +284,12 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           title: "My Workspace", short: "Workspace", icon: Briefcase,
           subItems: [
             // Active / Closed / Pending are filter chips inside this workspace now.
-            { title: "My Leads", path: "/employee/leads", icon: ListChecks }
+            { title: "My Leads", path: "/employee/leads", icon: ListChecks },
+            // Facebook leads being offered to them, and the ones they took.
+            // Its own entry rather than a filter on My Leads: an offer has a
+            // five-minute clock, and a thing you must answer now does not
+            // belong behind a filter somebody has to remember to apply.
+            { title: "Meta Leads", path: "/employee/meta-leads", icon: Megaphone }
           ]
         },
         {

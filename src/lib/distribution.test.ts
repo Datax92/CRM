@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
+  readLaneEmployee,
   LEADS_PER_TURN,
   type Employee,
   type CycleState,
@@ -266,6 +267,59 @@ test('the cascade skips them too — a lapsed window must not land there', () =>
     { uid: 'a', priority: 1, status: 'ACTIVE' as const },
     { uid: 'b', priority: 2, status: 'ACTIVE' as const, autoAssign: false },
     { uid: 'c', priority: 3, status: 'ACTIVE' as const },
+  ];
+  assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', forced: true });
+});
+
+/* -------------------------------------------------------------------------- */
+/* readLaneEmployee — the mapper, because the mapper is where the bug was      */
+/* -------------------------------------------------------------------------- */
+
+test('an employee marked out of distribution is read as out', () => {
+  // The whole point. The cron's inline copy of this mapping never read
+  // `autoAssign`, so four people marked "Manual only" kept receiving
+  // automatically distributed leads. See the module note.
+  const employee = readLaneEmployee('u1', { priority: 1, status: 'ACTIVE', autoAssign: false });
+  assert.equal(employee.autoAssign, false);
+  assert.equal(getNextAssigneeAndState([employee], {}).uid, null, 'must not be offered a lead');
+});
+
+test('an absent autoAssign keeps somebody in the lane', () => {
+  // Adding the field must never silently empty the rotation for every record
+  // that predates it.
+  const employee = readLaneEmployee('u1', { priority: 1, status: 'ACTIVE' });
+  assert.equal(getNextAssigneeAndState([employee], {}).uid, 'u1');
+});
+
+test('only an explicit false takes somebody out', () => {
+  for (const value of [true, undefined, null, 0, '', 'false']) {
+    const employee = readLaneEmployee('u1', { priority: 1, status: 'ACTIVE', autoAssign: value });
+    assert.equal(
+      getNextAssigneeAndState([employee], {}).uid,
+      'u1',
+      `autoAssign=${JSON.stringify(value)} must not remove them from the lane`
+    );
+  }
+});
+
+test('a missing priority sorts to the back, never the front', () => {
+  const noPriority = readLaneEmployee('nobody', { status: 'ACTIVE' });
+  const first = readLaneEmployee('first', { priority: 1, status: 'ACTIVE' });
+  assert.equal(noPriority.priority, 99);
+  assert.equal(getNextAssigneeAndState([noPriority, first], {}).uid, 'first');
+});
+
+test('status is read, and anything but DISABLED is active', () => {
+  assert.equal(readLaneEmployee('u1', { status: 'DISABLED' }).status, 'DISABLED');
+  assert.equal(readLaneEmployee('u1', {}).status, 'ACTIVE');
+  assert.equal(readLaneEmployee('u1', { status: 'ACTIVE' }).status, 'ACTIVE');
+});
+
+test('the cascade honours it too — a lapsed lead must not land on somebody out of the lane', () => {
+  const roster = [
+    readLaneEmployee('a', { priority: 1, status: 'ACTIVE' }),
+    readLaneEmployee('b', { priority: 2, status: 'ACTIVE', autoAssign: false }),
+    readLaneEmployee('c', { priority: 3, status: 'ACTIVE' }),
   ];
   assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', forced: true });
 });

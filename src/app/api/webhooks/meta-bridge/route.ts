@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { karachiDayKey } from '@/lib/dates';
-import { fileMetaLead, notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
+import { notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
+import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
 import type { MetaLeadInput } from '@/lib/metaIntake';
 
 export const runtime = 'nodejs';
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic';
  * us with `ads_read` — a permission that costs a screencast and a day of test
  * calls to request.
  *
- * **A second door, not a second system.** It hands the lead to `fileMetaLead`,
+ * **A second door, not a second system.** It hands the lead to `fileAndOfferMetaLead`,
  * the same function Meta's own webhook uses, so a lead is filed identically
  * either way and turning this off when Meta approves changes nothing anybody
  * can see.
@@ -81,7 +82,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await fileMetaLead(lead);
+    const result = await fileAndOfferMetaLead(lead);
     if (result.outcome === 'CREATED') {
       await notifyMetaLead(result.folderId, result.folderName, karachiDayKey());
     }

@@ -4,6 +4,7 @@ import { FieldValue, Transaction, QueryDocumentSnapshot } from 'firebase-admin/f
 import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
+  readLaneEmployee,
   type Employee,
   type CycleState,
 } from '@/lib/distribution';
@@ -409,14 +410,16 @@ async function processStaleLeads(): Promise<number> {
 async function readDistributionState(t: Transaction) {
   const usersSnap = await t.get(adminDb.collection('users').where('role', '==', 'employee'));
 
+  /*
+    **`readLaneEmployee`, not an inline copy.** This mapping used to be written
+    out here and never read `autoAssign`, so every employee arrived as "in the
+    lane" and the rule taking somebody out of distribution silently stopped
+    existing. It now lives in `lib/distribution` beside the rule it feeds,
+    where the tests can reach it.
+  */
   const employees: Employee[] = [];
   usersSnap.forEach((doc: QueryDocumentSnapshot) => {
-    const data = doc.data();
-    employees.push({
-      uid: doc.id,
-      priority: typeof data.priority === 'number' ? data.priority : 99,
-      status: data.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
-    });
+    employees.push(readLaneEmployee(doc.id, doc.data()));
   });
 
   const configRef = adminDb.collection('config').doc('distribution');

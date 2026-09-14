@@ -34,6 +34,7 @@ follow-ups, attendance, payroll and financial reporting.
 - Auto-distribution sorts by **priority 1–10** (1 = front) with a **5-lead rotation** (`LEADS_PER_TURN`) — after 5 consecutive leads the next employee starts the cycle. It was 8 until 2026-09-14; the owner's instruction is 5. Rotation governs incoming volume only, and **no test hardcodes the number** — they are written against the constant, or they only prove what it used to be.
 - The assigned employee has a **5-min accept window**. On a miss the lead cascades strictly down the priority lane, skipping anyone who already let it expire (`resolveCascadeAssignee`), and a `RED_FLAG` notification + `missedLeadsCount` increment is recorded.
 - **Passing on is not missing.** `passLead` is the employee saying no, from the arrival popup or the lead pane: it cascades by the same `resolveCascadeAssignee` and force-accepts at the floor, but writes **no `RED_FLAG` and no `missedLeadsCount`** — a red flag is for silence, and punishing somebody for answering honestly would teach them to let the window lapse instead. The cost is on the lane, where it belongs: `passes` is incremented in `kpiMonths` and costs 2 points on the next ranking, and the popup says so before the button is pressed.
+- **A Meta lead is offered to the lane the moment it lands.** `fileAndOfferMetaLead` files the record into the admin's Data Bank (unchanged) and then promotes it into a lead `ASSIGNED` to whoever holds priority 1, with the five-minute window — so the popup, the cascade and the Railway sweep finally have a source. **Straight to the lane, no admin holding window**, at the owner's instruction: these are paid leads and the first call should not wait on an admin who is probably not watching. The admin still sees it, counted under *In pipeline* rather than *To give out*, and can reassign it. **An empty lane leaves the record in the Data Bank** rather than creating a lead with no owner — a record waiting in a folder is a normal state somebody can act on, an unassigned lead is something to go and clean up. Promotion, never duplication: the row moves to `PROMOTED_FOLDER_ID` exactly as a hand-promoted one does.
 - **The lane has a floor.** When one candidate remains — or everyone has had a turn — that employee is *force-accepted*: no window, no decline. A lead cannot reach `UNASSIGNED_NO_CAPACITY` while an active roster exists.
 - **Admin actions bypass the lane.** Assign, reassign and promote write `ACCEPTED` + `acceptedAt` immediately and delete `acceptDeadlineAt`. An admin handing out a lead is a decision, not an offer.
 - **The cascade never advances rotation counters.** Cleaning up a colleague's miss must not consume your turn.
@@ -319,7 +320,7 @@ FOR CHANGES IN THE CODE
 **This project's conventions**
 - The lint rule rejects `setState` in an effect body and impure calls (`Date.now()`) in a render body. Reset-during-render, or a `useCallback` registered from a browser event — not an effect.
 - The raw `--experimental-strip-types` test loader cannot resolve extensionless imports — a module under test must not import `./dates`.
-- **Recurring bug class: a field typed on a hook's interface but never read out of the snapshot.** It has now shipped **six** times (`phone`/`joinedAt`/`notes`/`autoAssign`, `monthlySalary`, the payroll fields, the client-folder fields, `managerKind`, and `paidAmount`/`paymentStatus` in `useOfficeExpenses`). Check the mapper, not just the type. **The symptom is never an error** — it is a screen confidently showing the field's default, which is why it survives typecheck, lint, build and clicking around. The 2026-09-10 outing is the clearest case: the server wrote `paidAmount` correctly on every payment and the screen read a hard 0, so paying an expense appeared to do nothing.
+- **Recurring bug class: a field typed on a hook's interface but never read out of the snapshot.** It has now shipped **ten** times (`phone`/`joinedAt`/`notes`/`autoAssign`, `monthlySalary`, the payroll fields, the client-folder fields, `managerKind`, and `paidAmount`/`paymentStatus` in `useOfficeExpenses`). Check the mapper, not just the type. **The symptom is never an error** — it is a screen confidently showing the field's default, which is why it survives typecheck, lint, build and clicking around. The 2026-09-10 outing is the clearest case: the server wrote `paidAmount` correctly on every payment and the screen read a hard 0, so paying an expense appeared to do nothing.
 - Derive on read (`pipelineStage`, `leadSource`, `followUpKind`, `managerMetrics`) rather than denormalising a computed value: every existing record is classified the moment the code ships, with no backfill to run and nothing to go stale. Denormalise only *provenance* — facts that must not change when their source does.
 - Day keys are `YYYY-MM-DD` in **Karachi**, which makes string comparison date comparison. Seeds and sweeps keyed off UTC break between 19:00 and midnight UTC.
 - Read state is per-browser, not a field on the lead: it changes on every click, differs per person and nobody audits it.
@@ -407,6 +408,84 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-14 (third round) — the lane had no source, and four of five people were not in it
+
+*"a person enters the details in the form it comes in meta leads section in admin
+pannel but also it goes to the employes meta leads section… employee is selected
+based on priority and if employee accepts then it only comes other wise it is
+passed down."*
+
+**Traced before building, and the trace found two blockers.**
+
+**1 · Nothing fed the lane.** Both Meta routes call `fileMetaLead`, which writes
+`dataBankRecords` and nothing else — so a Facebook lead became a Data Bank row
+and stopped. Promotion then writes `status: "ACCEPTED"` outright, because an
+admin handing out a lead is a decision rather than an offer. The only thing that
+ever produced an `ASSIGNED` lead with an accept window was `createLead` with
+status NEW and nobody assigned — the manual Add Lead form, **which is removed
+from the UI**. So the popup and the five-minute window shipped that morning had
+no live path to them at all. That was the wrong order to work in: the answering
+half was built before checking anything reached it.
+
+**2 · `autoAssign` was never read, and four of five employees were marked out.**
+`eligible()` filters the lane on `autoAssign !== false` and is tested, but
+`readDistributionState` in the cron — the only place auto-distribution happens —
+built its `Employee` objects from `uid`, `priority` and `status` alone. Every
+employee therefore arrived as `undefined`, which means *in the lane*, and the
+documented rule that `autoAssign: false` removes somebody from distribution
+**and** the cascade silently did not exist.
+
+Measured live: **Sundus, Aroosa, Hussain and Rafia were all `autoAssign: false`**
+and all four were still receiving automatically distributed leads. Fixing the
+bug alone would have narrowed the lane to one account — and a lane of one
+force-accepts at the floor, so there would have been no offer, no window and no
+cascade. The feature would have been correct and done nothing recognisable.
+Raised before building rather than after.
+
+**The owner's call:** Aroosa, Sundus and Rafia back into the lane, Hussain left
+out, priorities by performance. Done, and re-ranked with the system's own rule
+rather than by hand — this month's figures gave **Aroosa 138 (69 connects),
+Sundus 34, Rafia 32**, so the lane is Aroosa → Sundus → Rafia → *(Hussain
+skipped)* → maysampersonal.
+
+**`readLaneEmployee` is the fix, and it is the mapper that is now tested.** The
+mapping lives in `lib/distribution` beside the rule it feeds, with six tests
+including the one that matters — somebody marked out is offered nothing — plus
+the proof that only an explicit `false` removes them, so adding the field can
+never empty the rotation for records predating it. **Tenth outing of this
+project's most-repeated bug**; every previous fix corrected a mapper without
+making one testable, which is why it kept coming back.
+
+**Built:**
+- `lib/server/metaDistribute.ts` — `offerMetaRecordToLane` and
+  `fileAndOfferMetaLead`. One transaction, because the rotation counter is a
+  read-modify-write and two leads arriving together would otherwise both be
+  handed to the same person, which is the exact unfairness the rotation exists
+  to prevent. **Offering can fail without the filing failing** — by then the
+  record is safely in the Data Bank, and letting it bubble up would make the
+  webhook answer non-2xx and Meta redeliver a lead already stored, which is how
+  one submission becomes two rows.
+- **One wrapper, two doors.** The direct webhook and the Make.com bridge both
+  call `fileAndOfferMetaLead`, or the two would eventually disagree about what
+  happens to a lead depending on which route Meta used.
+- The lead is written `source: 'META_ADS'` with the campaign name, so
+  `describeLeadSource` prints *Meta Ads (Ramadan Offer)* rather than *Data
+  Bank*, and the employee's screen has something to filter on.
+- `/employee/meta-leads` + `MetaLeadsView` — offers at the top with a live
+  countdown, Accept and Pass on, their own Facebook leads below. **Its own nav
+  entry rather than a filter on My Leads**: a thing with a five-minute clock does
+  not belong behind a filter somebody has to remember to apply.
+- `Lead.notes` typed — the raw rows already carried it.
+
+- **Validation**: `typecheck` 0 errors, `test` **695/695** (689 → 695, all six on
+  `readLaneEmployee`), `build` compiles including `/employee/meta-leads`,
+  `eslint src` at the 7 pre-existing errors and 33 warnings — verified file by
+  file that all 7 are pre-existing and none is in the new code.
+
+  **Not driven in a browser, and not yet exercised end to end.** One un-promoted
+  Meta record is sitting in the Data Bank (the owner's own test submission);
+  offering it would notify a real employee, so it is the owner's to trigger.
 
 ### 2026-09-14 (second round) — the 5-minute window actually fires, from Railway
 
