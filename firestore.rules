@@ -380,6 +380,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /*
+      Leads that arrived but could not be filed — a form with no phone
+      question, or a field under a name the intake did not recognise. Read by
+      the Meta Ads screen so nothing is lost in silence; written only by the
+      server, and resolvable by a manager once the contact has been recovered.
+    */
+    match /metaIntakeIssues/{issueId} {
+      allow read: if isAdmin() || isSubAdmin();
+      allow write: if false;
+    }
+
     /**
      * What a capital investment has been spent on.
      *

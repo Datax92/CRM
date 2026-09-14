@@ -192,3 +192,43 @@ export async function notifyMetaLead(folderId: string, folderName: string, dayKe
     { merge: true }
   );
 }
+
+/**
+ * Records a lead that could not be filed, so it is never lost in silence.
+ *
+ * **The one thing an unattended pipeline must not do is drop a lead quietly.**
+ * A Facebook form with no phone question, a form renamed mid-campaign, an
+ * intermediary sending a field under a name nobody expected — each of those
+ * produces a lead the Data Bank cannot take, and the only trace today is an
+ * HTTP status in a Make.com log that nobody reads. The whole payload is kept
+ * here instead, so the contact is recoverable by hand and the Meta Ads screen
+ * can say plainly that something needs attention.
+ *
+ * Keyed on the leadgen id, so a retry updates one row rather than piling up.
+ */
+export async function recordMetaIntakeIssue(input: {
+  reason: string;
+  detail: string;
+  leadgenId?: string | null;
+  source?: string | null;
+  payload: unknown;
+}): Promise<void> {
+  const id = input.leadgenId ? `lead_${input.leadgenId}` : `at_${Date.now()}`;
+  await adminDb
+    .collection('metaIntakeIssues')
+    .doc(id)
+    .set(
+      {
+        reason: input.reason,
+        detail: input.detail,
+        leadgenId: input.leadgenId ?? null,
+        source: input.source ?? null,
+        // Kept whole and unparsed: whatever went wrong, the contact's details
+        // are somewhere in here and a person can retrieve them.
+        payload: JSON.parse(JSON.stringify(input.payload ?? {})),
+        resolved: false,
+        at: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+}

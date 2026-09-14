@@ -19,9 +19,11 @@
  * already open for the Data Bank screen and the two share one listener.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Megaphone, FolderOpen, ChevronRight, Radio } from "lucide-react";
+import { Megaphone, FolderOpen, ChevronRight, Radio, AlertTriangle } from "lucide-react";
+import { collection, onSnapshot, query, where, limit } from "firebase/firestore";
+import { db } from "@/lib/firebase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -54,6 +56,31 @@ export function MetaAdsView() {
 
   const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: undefined });
   const [search, setSearch] = useState("");
+
+  /*
+    **Leads that arrived and could not be filed.** Almost always a Facebook form
+    with no phone question. Surfaced here rather than left as an HTTP status in
+    a Make.com log, because an unattended pipeline that drops a contact silently
+    is worse than one that visibly stops.
+  */
+  const [issues, setIssues] = useState<Array<{ id: string; reason: string; detail: string; source: string | null }>>([]);
+  useEffect(() => {
+    if (!isManager) return;
+    const unsubscribe = onSnapshot(
+      query(collection(db, "metaIntakeIssues"), where("resolved", "==", false), limit(50)),
+      (snap) =>
+        setIssues(
+          snap.docs.map((doc) => ({
+            id: doc.id,
+            reason: String(doc.data().reason ?? ""),
+            detail: String(doc.data().detail ?? ""),
+            source: (doc.data().source as string | null) ?? null,
+          }))
+        ),
+      (err) => console.error("[metaIntakeIssues]", err)
+    );
+    return () => unsubscribe();
+  }, [isManager]);
 
   /*
     A Meta folder is one the intake created — it carries `metaSource`. Matching
@@ -114,6 +141,36 @@ export function MetaAdsView() {
       </header>
 
       {error && <div className="mb-4"><Banner tone="error" text={error} /></div>}
+
+      {issues.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-[#ecdcae] bg-[#fdf5e6] px-5 py-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[#a5762a]" />
+            <div className="min-w-0">
+              <p className="text-[13.5px] font-semibold text-[#8a6321]">
+                {issues.length} lead{issues.length === 1 ? "" : "s"} arrived but could not be filed
+              </p>
+              <p className="mt-1 text-[12.5px] leading-relaxed text-[#8a6321]">
+                {issues.some((i) => i.reason === "NO_PHONE")
+                  ? "Some came in without a phone number — the Facebook form is probably not asking for one. Add the Phone number question to the form and future leads will file normally."
+                  : "Something went wrong filing them."}{" "}
+                Nothing is lost: each one is kept with everything Facebook sent, so the contact can be
+                recovered.
+              </p>
+              <ul className="mt-2 space-y-0.5">
+                {issues.slice(0, 5).map((issue) => (
+                  <li key={issue.id} className="text-[12px] text-[#8a6321]">
+                    · {issue.source ?? "Unknown ad"} — {issue.detail}
+                  </li>
+                ))}
+                {issues.length > 5 && (
+                  <li className="text-[12px] text-[#8a6321]">· and {issues.length - 5} more</li>
+                )}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {metaFolders.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-[#cfe2e0] bg-white/70 px-6 py-16 text-center">

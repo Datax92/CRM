@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { karachiDayKey } from '@/lib/dates';
-import { fileMetaLead, notifyMetaLead } from '@/lib/server/metaFiling';
+import { fileMetaLead, notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
 import type { MetaLeadInput } from '@/lib/metaIntake';
 
 export const runtime = 'nodejs';
@@ -60,9 +60,23 @@ export async function POST(request: Request) {
 
   const lead = readBridgeLead(body);
   if (!lead) {
+    /*
+      **Kept, not discarded.** Usually it means the Facebook form has no phone
+      question, or the intermediary is sending it under a name we do not
+      recognise. Either way the person's details are in the payload and must not
+      evaporate into an HTTP status nobody reads — the Meta Ads screen surfaces
+      these so somebody notices the same day.
+    */
+    await recordMetaIntakeIssue({
+      reason: 'NO_PHONE',
+      detail: 'The lead arrived without a phone number, so it cannot be filed in the Data Bank.',
+      leadgenId: typeof body.leadgen_id === 'string' ? body.leadgen_id : null,
+      source: typeof body.campaign_name === 'string' ? body.campaign_name : null,
+      payload: body,
+    });
     return NextResponse.json(
-      { ok: false, error: 'A lead needs at least a phone number.' },
-      { status: 400 }
+      { ok: false, error: 'A lead needs at least a phone number. It has been kept under Meta Ads.' },
+      { status: 200 }
     );
   }
 
@@ -78,9 +92,17 @@ export async function POST(request: Request) {
     */
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
-    // A real failure. Non-2xx so the intermediary retries rather than losing it.
+    // A real failure. Non-2xx so the intermediary retries rather than losing it
+    // — and recorded too, in case every retry fails and it would otherwise go.
     const message = error instanceof Error ? error.message : String(error);
     console.error('[meta-bridge] Failed to file a lead:', message);
+    await recordMetaIntakeIssue({
+      reason: 'FAILED',
+      detail: message.slice(0, 300),
+      leadgenId: lead.leadgenId,
+      source: lead.campaignName ?? lead.formName ?? null,
+      payload: body,
+    }).catch(() => {});
     return NextResponse.json({ ok: false, error: 'Could not file the lead.' }, { status: 500 });
   }
 }
