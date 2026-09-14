@@ -1,0 +1,11 @@
+{
+  "name": "crm-lead-cron",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Railway cron that drives the CRM's 5-minute lead accept-window sweep.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node sweep.mjs"
+  }
+}
