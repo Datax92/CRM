@@ -171,6 +171,14 @@ const EMPLOYEE_SECTIONS: Section[] = [
       { label: "My Report", path: "/employee/reports", d: I.report },
     ],
   },
+  {
+    // Also the phone's centre button. Listed here too because the sheet is
+    // where somebody looks for a screen they cannot immediately find, and a
+    // destination reachable one way only is one people ask about.
+    title: "Leads",
+    d: I.megaphone,
+    items: [{ label: "Meta Leads", path: "/employee/meta-leads", d: I.megaphone }],
+  },
 ];
 
 function sectionsFor(role: string | undefined): Section[] {

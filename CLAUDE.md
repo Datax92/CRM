@@ -409,6 +409,44 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-14 (fourth round) — the phone had no way to reach Meta Leads
+
+*"in the mobile view there isnt any way to view meta leads add meta leads in the
+middle like databank is for admin."*
+
+Correct, and it was a real hole rather than a preference. The Meta Leads entry
+went into `GlobalLayout`, which is the **desktop** shell — below 820px this app
+renders a separate product with a five-slot tab bar, and none of those slots led
+there. A screen that exists on one surface only is a screen half the team cannot
+reach, and this is the one carrying a five-minute clock.
+
+`EMPLOYEE_CENTRE` now points the employee's centre slot at
+`/employee/meta-leads`, exactly as `ADMIN_CENTRE` points an admin's at the Data
+Bank, and for the same stated reason: a **destination**, not a contextual
+action, because nobody learns where a button is if it is only sometimes there.
+It is listed in the phone account sheet too — a destination reachable one way
+only is one people ask about.
+
+**The cost, stated:** an employee loses the contextual *"call whoever is on the
+acceptance clock"* button that used to sit in that slot. What replaces it is the
+screen listing every lead on that clock, with the number, Accept and Pass on —
+so the call is one tap further away rather than gone, and the slide-in popup
+still carries both answers wherever they are in the app.
+
+**Found while doing it, and left alone deliberately:** with every role now
+carrying a fixed destination, `useMobileCentre` is effectively dead —
+`MobileDashboard`, `MobileLeads` and `MobileEmployees` all still compute and
+publish a contextual action that nothing reads. That is dead weight rather than
+a bug, and ripping out the mechanism is a different change from adding this
+destination. It is recorded in `MobileTabBar`'s own comment so the next person
+does not spend an afternoon working out why their contextual button never
+appears.
+
+- **Validation**: `typecheck` 0 errors, `test` 695/695, `build` compiles,
+  `eslint src` at the 7 pre-existing errors and 33 warnings.
+
+  **Not driven on a phone** — Chrome tooling is not enabled for this session.
+
 ### 2026-09-14 (third round) — the lane had no source, and four of five people were not in it
 
 *"a person enters the details in the form it comes in meta leads section in admin

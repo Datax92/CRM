@@ -7,9 +7,10 @@
  * breaks the bar's top edge. What it does depends on who is looking:
  *
  * - **Admins** get the Data Bank, always — see `ADMIN_CENTRE` below.
- * - **Employees** get the contextual action the two mockups show: a phone to
- *   dial the lead on the acceptance clock, or a plus. Neither is decoration;
- *   with nothing to dial the slot is empty rather than offering a dead button.
+ * - **Employees** get Meta Leads, always, for the same reason — see
+ *   `EMPLOYEE_CENTRE`. It used to be the contextual action the mockups show (a
+ *   phone to dial the lead on the acceptance clock, or a plus); the cost of
+ *   replacing it is stated there.
  */
 
 import Link from "next/link";
@@ -50,6 +51,31 @@ const SUBADMIN_CENTRE: CentreAction = {
   kind: "nav",
   href: "/subadmin/data-bank",
   label: "Data Bank",
+};
+
+/**
+ * An employee's centre slot is Meta Leads, on every screen.
+ *
+ * **The phone had no route to it at all.** The Meta Leads entry was added to
+ * the sidebar, which is the desktop shell — below 820px the app renders a
+ * separate product with a five-slot tab bar, and none of those slots led there.
+ * A screen that only exists on one surface is a screen half the team cannot
+ * reach, and this is the one carrying a five-minute clock.
+ *
+ * Same argument as `ADMIN_CENTRE`: a *destination* rather than a contextual
+ * action, because nobody learns where a button is if it is only sometimes
+ * there, and the five slots have no room for a sixth tab.
+ *
+ * **The cost, stated plainly:** an employee loses the contextual "call whoever
+ * is on the acceptance clock" button that used to sit here. What replaces it is
+ * the screen that lists every lead on that clock — with the number, Accept and
+ * Pass on — so the lead is one tap further away rather than unreachable, and
+ * the slide-in popup still offers both answers wherever they are in the app.
+ */
+const EMPLOYEE_CENTRE: CentreAction = {
+  kind: "nav",
+  href: "/employee/meta-leads",
+  label: "Meta Leads",
 };
 
 interface Tab {
@@ -123,9 +149,24 @@ export function MobileTabBar({
   const tabs = tabsForRole(role);
   // The centre sits between slot 2 and slot 3, as both design files lay it out.
   const slots = [tabs[0], tabs[1], null, tabs[2], tabs[3]];
-  // An admin's centre is fixed; an employee's stays contextual.
+  /*
+    **Every role now has a fixed destination, so `centre` is only reached
+    before the role is known** — one or two frames while auth resolves. Three
+    screens still compute and publish a contextual action through
+    `useMobileCentre` (`MobileDashboard`, `MobileLeads`, `MobileEmployees`) and
+    nothing reads them any more. That is dead weight rather than a bug, and
+    removing the mechanism is a separate change from adding this destination —
+    recorded here so the next person does not spend an afternoon working out
+    why their contextual button never appears.
+  */
   const centreAction =
-    role === "admin" ? ADMIN_CENTRE : role === "subadmin" ? SUBADMIN_CENTRE : centre;
+    role === "admin"
+      ? ADMIN_CENTRE
+      : role === "subadmin"
+        ? SUBADMIN_CENTRE
+        : role === "employee"
+          ? EMPLOYEE_CENTRE
+          : centre;
 
   return (
     <nav
