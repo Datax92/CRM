@@ -6,12 +6,9 @@ import { MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
 import { karachiMonthKey } from '@/lib/dates';
 import {
   DEFAULT_KPI_TARGETS,
-  EMPTY_KPI_COUNTS,
-  kpiScore,
-  priorityFromScores,
-  type KpiCounts,
   type KpiTargets,
 } from '@/lib/kpi';
+import { assignPriorities, leadScore, readLeadActivity } from '@/lib/leadPriority';
 
 export interface PriorityChange {
   uid: string;
@@ -48,10 +45,17 @@ export function normalizeTargets(input: Partial<KpiTargets> | undefined): KpiTar
  * Re-ranks the lead-distribution lane from this month's KPI performance.
  *
  * The best performer this month takes priority 1 and therefore sees new leads
- * first. Only employees left on automatic are moved: anyone an admin has
- * pinned by setting a priority by hand keeps it, and a duplicate priority
- * between a pinned and an auto-ranked employee is harmless because the
- * rotation already sorts by priority and then by uid.
+ * first. Anyone an admin has pinned keeps the priority they were given — see
+ * `assignPriorities`, which fills the remaining places around them so no two
+ * people end up sharing one.
+ *
+ * **The score is connected calls and follow-ups, not the KPI blend.** It used
+ * to run on `kpiScore`, which weighs connects, closed deals and meetings
+ * 40/40/20 — a fair measure of a salesperson, and the wrong measure for *this*
+ * question. The lane decides who gets the **next lead**, so it should reward
+ * the person working the leads they already have: `connects × 2 + follow-ups −
+ * passes × 2`. Closing a deal still matters everywhere else; it just does not
+ * buy you a place at the front of the queue. See `lib/leadPriority`.
  *
  * Shared by the admin's "Recalculate" button and the nightly cron so the two
  * can never diverge. Safe to run repeatedly — when nothing has moved it writes
@@ -87,13 +91,23 @@ export async function recalculatePriorities(actorUid: string): Promise<RecalcRes
     )
   );
 
-  const scored = autoEmployees.map((employee, index) => {
-    const counts: KpiCounts = { ...EMPTY_KPI_COUNTS, ...(monthDocs[index].data() ?? {}) };
-    return { ...employee, score: kpiScore(counts, employee.targets) };
-  });
+  const scored = autoEmployees.map((employee, index) => ({
+    ...employee,
+    score: leadScore(readLeadActivity(monthDocs[index].data())),
+  }));
 
-  const assigned = priorityFromScores(
-    scored.map(({ uid, score }) => ({ uid, score })),
+  /*
+    Pinned employees are passed in too, even though they are not re-ranked:
+    `assignPriorities` needs to know which places are already taken, or an
+    automatic employee would be handed a number somebody is already holding.
+  */
+  const assigned = assignPriorities(
+    [
+      ...scored.map(({ uid, score }) => ({ uid, score })),
+      ...employees
+        .filter((employee) => !employee.auto)
+        .map(({ uid, priority }) => ({ uid, score: 0, autoPriority: false as const, priority })),
+    ],
     MIN_PRIORITY,
     MAX_PRIORITY
   );
@@ -135,7 +149,7 @@ export async function recalculatePriorities(actorUid: string): Promise<RecalcRes
       payload: {
         message: `Lane priority updated for ${changes.length} employee${
           changes.length === 1 ? '' : 's'
-        } from ${monthKey} KPIs.`,
+        } from ${monthKey} connects and follow-ups.`,
         changes,
       },
       actorUid,

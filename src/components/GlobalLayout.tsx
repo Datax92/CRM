@@ -18,6 +18,7 @@ import { MobileShell } from "./mobile/MobileShell";
 import { NotificationsPanel } from "./NotificationsPanel";
 import Link from "next/link";
 import { BrandLogo } from "./BrandLogo";
+import { IncomingLeadPopup } from "./leads/IncomingLeadPopup";
 
 /**
  * The height a rail flyout is guaranteed, so it is never squeezed into a
@@ -118,7 +119,22 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
 
   if (!user) return <>{children}</>;
 
-  if (isMobile) return <MobileShell role={role ?? undefined}>{children}</MobileShell>;
+  /*
+    **Mounted above the surface split**, so one component covers the desktop and
+    the phone. It portals to `document.body` and renders nothing at all unless
+    the signed-in person is an employee with a lead actually waiting on them,
+    so it costs a query nobody else opens and takes no space on any other
+    screen.
+  */
+  const leadOffer = <IncomingLeadPopup />;
+
+  if (isMobile)
+    return (
+      <MobileShell role={role ?? undefined}>
+        {children}
+        {leadOffer}
+      </MobileShell>
+    );
 
   const handleLogout = async () => {
     await logout();
@@ -601,6 +617,10 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           </div>
         </main>
       </div>
+
+      {/* Outside `<main>`: it portals to the body anyway, and a lead offer is
+          not page content — it survives navigation. */}
+      {leadOffer}
     </div>
   );
 }

@@ -167,6 +167,39 @@ export function karachiDayRange(dayKey: string | null | undefined): DateRange {
   };
 }
 
+/**
+ * A Firestore Timestamp-ish value as epoch milliseconds, or null.
+ *
+ * **The same field arrives in three shapes**, which is why this exists as one
+ * function rather than three inline reads. A live `onSnapshot` gives a
+ * `Timestamp` with `toDate()`; a value that has been through a Server Action's
+ * serialisation, or come back from the REST transport, arrives as
+ * `{ seconds, nanoseconds }`; and anything written by the demo store or parsed
+ * from JSON is a date string. A reader that knows only the first shape returns
+ * null for the other two — and null here does not throw, it quietly means
+ * "never happened", which is how a countdown ends up with no deadline and an
+ * alert never fires.
+ */
+export function timestampMillis(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.getTime();
+
+  const stamp = value as { toDate?: () => Date; seconds?: number };
+  if (typeof stamp.toDate === 'function') {
+    const date = stamp.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getTime() : null;
+  }
+  if (typeof stamp.seconds === 'number' && Number.isFinite(stamp.seconds)) {
+    return stamp.seconds * 1000;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 /** Whether a Firestore Timestamp-ish value falls inside the range. */
 export function withinRange(value: { toDate?: () => Date } | Date | null | undefined, range?: DateRange): boolean {
   if (!range || (range.from === null && range.to === null)) return true;

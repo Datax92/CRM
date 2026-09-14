@@ -21,7 +21,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Megaphone, FolderOpen, ChevronRight, Radio, AlertTriangle } from "lucide-react";
+import { Megaphone, FolderOpen, ChevronRight, Radio, AlertTriangle, BellRing, X } from "lucide-react";
 import { collection, onSnapshot, query, where, limit } from "firebase/firestore";
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "@/context/AuthContext";
@@ -29,7 +29,7 @@ import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useDataBankFolders, type DataBankFolder } from "@/hooks/useDataBank";
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
-import { formatBusinessDate } from "@/lib/dates";
+import { formatBusinessDate, timestampMillis } from "@/lib/dates";
 
 /**
  * A folder this screen owns — one Meta source.
@@ -46,6 +46,28 @@ const BASIS_LABEL: Record<string, string> = {
   AD: "Ad",
   NONE: "Unattributed",
 };
+
+/**
+ * How recently a lead must have landed for this screen to call it news.
+ *
+ * **Elapsed time, not a watermark.** The alternative is remembering what this
+ * browser had already seen, which needs storage, goes stale the moment somebody
+ * opens the panel on a second device, and answers the wrong question anyway —
+ * an admin opening this screen wants to know what has *just* come in, whether
+ * or not they happened to be watching when it did. Ten minutes appears on its
+ * own and leaves on its own.
+ */
+const JUST_IN_MS = 10 * 60_000;
+
+/**
+ * The alert slides in, and does not under `prefers-reduced-motion`. Inline
+ * styles cannot carry a media query, which is why this is a stylesheet.
+ */
+const ALERT_CSS = `
+@keyframes meta-alert-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+.meta-alert { animation: meta-alert-in 320ms cubic-bezier(0.22,0.61,0.36,1) both; }
+@media (prefers-reduced-motion: reduce) { .meta-alert { animation: none !important; } }
+`;
 
 export function MetaAdsView() {
   const { role } = useAuth();
@@ -83,6 +105,27 @@ export function MetaAdsView() {
   }, [isManager]);
 
   /*
+    **"A lead just came in."** The owner asked for an alert on this panel when
+    one lands, and the folder's own `lastLeadAt` is the signal — it is written
+    by `fileMetaLead` at the moment the lead is filed, so the banner appears
+    without a second collection, a second listener or anything to poll.
+  */
+  const [clock, setClock] = useState(0);
+  useEffect(() => {
+    if (!isManager) return;
+    // Set from the timer, never from the effect body: `Date.now()` in a render
+    // body and `setState` in an effect body are both refused by the lint rule.
+    const timer = setInterval(() => setClock(Date.now()), 15_000);
+    const first = setTimeout(() => setClock(Date.now()), 0);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(first);
+    };
+  }, [isManager]);
+  /** Ads the admin has waved away this session. */
+  const [acknowledged, setAcknowledged] = useState<string[]>([]);
+
+  /*
     A Meta folder is one the intake created — it carries `metaSource`. Matching
     on the id prefix as well, so a folder created before that field existed is
     still recognised rather than disappearing from this screen.
@@ -109,6 +152,22 @@ export function MetaAdsView() {
     }),
     [metaFolders]
   );
+
+  /*
+    Newest first: if three ads fired at once the most recent is the one somebody
+    is looking for. Unacknowledged only — the × is per ad, so waving away one
+    quiet campaign does not hide the next arrival on another.
+  */
+  const justIn = useMemo(() => {
+    if (clock === 0) return [];
+    return metaFolders
+      .map((folder) => ({ folder, at: timestampMillis(folder.lastLeadAt) }))
+      .filter(
+        (row): row is { folder: MetaFolder; at: number } =>
+          row.at !== null && clock - row.at < JUST_IN_MS && !acknowledged.includes(row.folder.id)
+      )
+      .sort((a, b) => b.at - a.at);
+  }, [metaFolders, clock, acknowledged]);
 
   if (loading) return <FullPageSpinner />;
 
@@ -141,6 +200,47 @@ export function MetaAdsView() {
       </header>
 
       {error && <div className="mb-4"><Banner tone="error" text={error} /></div>}
+
+      {justIn.length > 0 && (
+        <div className="mb-4 space-y-2">
+          <style>{ALERT_CSS}</style>
+          {justIn.map(({ folder, at }) => (
+            <div
+              key={folder.id}
+              className="meta-alert flex items-center gap-3 rounded-2xl border border-[#bfe0dc] bg-[#e8f5f3] px-4 py-3"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#2f7d78] text-white">
+                <BellRing size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13.5px] font-semibold text-[#1f5c58]">
+                  A new lead just came in from {folder.name}
+                </p>
+                <p className="mt-0.5 text-[12px] text-[#3c6d69]">
+                  {minutesAgo(clock, at)} · {(folder.recordCount ?? 0).toLocaleString()} waiting to
+                  be given out
+                </p>
+              </div>
+              <Link
+                href={`/admin/data-bank/${folder.id}`}
+                className="shrink-0 rounded-full bg-[#2f7d78] px-3.5 py-1.5 text-[12.5px] font-semibold text-white"
+              >
+                Open
+              </Link>
+              <button
+                type="button"
+                onClick={() => setAcknowledged((current) => [...current, folder.id])}
+                aria-label={`Dismiss the alert for ${folder.name}`}
+                className="shrink-0 rounded-full p-1 text-[#5b8b87] hover:bg-[#d6ebe8]"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {issues.length > 0 && (
         <div className="mb-4 rounded-2xl border border-[#ecdcae] bg-[#fdf5e6] px-5 py-4">
@@ -242,4 +342,12 @@ function AdCard({ folder, basePath }: { folder: MetaFolder; basePath: string }) 
       </div>
     </div>
   );
+}
+
+/** "Just now" / "4 minutes ago" — a clock time would need reading twice. */
+function minutesAgo(now: number, at: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes === 1) return "1 minute ago";
+  return `${minutes} minutes ago`;
 }

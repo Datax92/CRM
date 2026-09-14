@@ -1,11 +1,16 @@
 /**
  * Leads one employee receives before the lane moves to the next priority.
  *
+ * **Five, at the owner's instruction** — it was eight. A shorter turn spreads
+ * a day's leads across more of the team and shortens the wait for the person at
+ * the back of the lane, which is what makes the order feel fair rather than
+ * winner-takes-all.
+ *
  * Defined here rather than imported: this module is deliberately dependency
  * free so the node test runner can load it directly, without a bundler to
  * resolve extensionless paths.
  */
-export const LEADS_PER_TURN = 8;
+export const LEADS_PER_TURN = 5;
 
 export interface Employee {
   uid: string;

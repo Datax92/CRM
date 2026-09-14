@@ -11,7 +11,8 @@ import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
 
-import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
+import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
+  passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
 import type { PipelineStage } from '@/lib/pipelineStage';
 import { saveKyc as _saveKyc } from '@/app/actions/kyc';
 import type { KycValues } from '@/lib/kyc';
@@ -184,6 +185,12 @@ export async function reassignLeadManual(token: string, leadId: string, userId: 
 export async function acceptLead(token: string, leadId: string): Promise<ActionResult> {
   if (IS_DEMO) return demo.acceptLead(leadId, actor().uid);
   return _acceptLead(token, leadId);
+}
+
+/** "Pass on" — hand the lead to the next person in the lane. See `passLead`. */
+export async function passLead(token: string, leadId: string) {
+  if (IS_DEMO) return demo.passLead(leadId, actor().uid);
+  return _passLead(token, leadId);
 }
 
 export async function setLeadStatus(token: string, leadId: string, status: LeadStatus): Promise<ActionResult> {

@@ -8,6 +8,7 @@ import {
   formatDayKeyDisplay,
   resolveRange,
   withinRange,
+  timestampMillis,
 } from './dates.ts';
 
 test('offsetDayKey steps days forward and backward across month boundaries', () => {
@@ -62,4 +63,44 @@ test('formatDayKeyDisplay labels Today, Yesterday, and past dates clearly', () =
   assert.match(formatDayKeyDisplay(today), /^Today · /);
   assert.match(formatDayKeyDisplay(yesterday), /^Yesterday · /);
   assert.equal(formatDayKeyDisplay('2026-07-07'), '07 Jul 2026');
+});
+
+/* -------------------------------------------------------------------------- */
+/* timestampMillis — the same field, three transports                          */
+/* -------------------------------------------------------------------------- */
+
+test('a live Timestamp, a serialised one and a date string all read the same instant', () => {
+  const instant = Date.UTC(2026, 8, 14, 9, 30, 0);
+  const asDate = new Date(instant);
+
+  // What onSnapshot hands back.
+  assert.equal(timestampMillis({ toDate: () => asDate }), instant);
+  // What survives a Server Action's serialisation, or arrives over REST.
+  assert.equal(timestampMillis({ seconds: instant / 1000, nanoseconds: 0 }), instant);
+  // What the demo store writes, and what JSON round-trips to.
+  assert.equal(timestampMillis(asDate.toISOString()), instant);
+  assert.equal(timestampMillis(asDate), instant);
+  assert.equal(timestampMillis(instant), instant);
+});
+
+test('absent reads as null, not as the epoch', () => {
+  // Zero would be a real instant — 1970 — and a countdown given it would
+  // report a window that closed 56 years ago rather than no window at all.
+  assert.equal(timestampMillis(null), null);
+  assert.equal(timestampMillis(undefined), null);
+});
+
+test('junk reads as null rather than NaN', () => {
+  // NaN propagates silently through every comparison as `false`, so a lead
+  // would simply stop appearing with nothing to show for it.
+  assert.equal(timestampMillis('not a date'), null);
+  assert.equal(timestampMillis({}), null);
+  assert.equal(timestampMillis(new Date('nonsense')), null);
+  assert.equal(timestampMillis({ seconds: Number.NaN }), null);
+  assert.equal(timestampMillis(Number.NaN), null);
+});
+
+test('a toDate that returns something useless does not throw', () => {
+  // A half-deserialised Timestamp has the method and no value behind it.
+  assert.equal(timestampMillis({ toDate: () => new Date('nonsense') }), null);
 });

@@ -15,8 +15,10 @@ import { toE164Digits } from "@/lib/phone";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 import {
   ADMIN_ASSIGN_WINDOW_MS,
+  ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
+import { resolveCascadeAssignee, type Employee } from "@/lib/distribution";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
 import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
@@ -185,6 +187,133 @@ export async function reassignLeadManual(
  * is the assigned employee, that the lead is actually awaiting acceptance, and
  * that the window has not already closed.
  */
+/**
+ * "Pass on" — the employee hands the lead straight to the next in the lane.
+ *
+ * **It is not the same as letting the window run out, and is deliberately
+ * treated more kindly.** An expiry raises a red flag and increments
+ * `missedLeadsCount`, because nobody knows whether the person was busy or
+ * asleep. A pass is somebody saying so out loud, immediately, which is the
+ * behaviour worth having — a lead sitting unread for five minutes helps nobody.
+ *
+ * What it costs is **two points off this month's lane score** (the owner's
+ * figure — the same as giving back one connected call). Enough that passing
+ * every lead quietly sinks you down the lane, small enough that a person who is
+ * driving can be honest without being punished for it. No red flag, no missed
+ * count; see `lib/leadPriority`.
+ *
+ * The lead cascades by exactly the rule the expiry sweep uses, including its
+ * floor: the passer is added to `attemptedAssignees`, so they are not offered
+ * it again, and when nobody is left below, the last employee in the lane takes
+ * it forced. A lead can never be passed into oblivion.
+ */
+export async function passLead(token: string, leadId: string): Promise<ActionResult<{ passedTo: string | null; forced: boolean }>> {
+  return runAction("passLead", async () => {
+    const auth = await verifyAuth(token);
+
+    return adminDb.runTransaction(async (t: Transaction) => {
+      const leadRef = adminDb.collection("leads").doc(leadId);
+      const leadSnap = await t.get(leadRef);
+      if (!leadSnap.exists) throw new UserFacingError("That lead no longer exists.");
+
+      const lead = leadSnap.data()!;
+
+      if (lead.assignedUserId !== auth.uid) {
+        throw new UserFacingError("This lead is not assigned to you.");
+      }
+      if (lead.status !== "ASSIGNED") {
+        throw new UserFacingError(
+          lead.status === "ACCEPTED"
+            ? "You have already accepted this lead. Ask an admin to reassign it."
+            : "This lead is not waiting to be accepted."
+        );
+      }
+
+      /*
+        Every read before every write — Firestore refuses a transaction that
+        reads after writing, and the roster read below is what decides where
+        the lead goes.
+      */
+      const rosterSnap = await t.get(adminDb.collection("users").where("role", "==", "employee"));
+      const employees: Employee[] = rosterSnap.docs.map((doc) => ({
+        uid: doc.id,
+        priority: Number(doc.data().priority ?? 99),
+        status: doc.data().status === "DISABLED" ? "DISABLED" : "ACTIVE",
+        autoAssign: doc.data().autoAssign,
+      }));
+
+      const attempted: string[] = Array.isArray(lead.attemptedAssignees)
+        ? lead.attemptedAssignees
+        : [auth.uid];
+      if (!attempted.includes(auth.uid)) attempted.push(auth.uid);
+
+      const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
+      const now = FieldValue.serverTimestamp();
+
+      // The pass itself, scored against the month it happened in.
+      t.set(
+        adminDb.collection("users").doc(auth.uid).collection("kpiMonths").doc(karachiMonthKey()),
+        { monthKey: karachiMonthKey(), passes: FieldValue.increment(1), updatedAt: now },
+        { merge: true }
+      );
+
+      t.create(leadRef.collection("events").doc(), {
+        type: "LEAD_PASSED",
+        actorUid: auth.uid,
+        at: now,
+        meta: { from: auth.uid, to: nextAssignee, forced },
+      });
+
+      if (!nextAssignee) {
+        // Only reachable with no other active employee at all.
+        t.update(leadRef, {
+          status: "UNASSIGNED_NO_CAPACITY",
+          assignedUserId: null,
+          acceptDeadlineAt: FieldValue.delete(),
+          attemptedAssignees: attempted,
+        });
+        t.create(adminDb.collection("notifications").doc(), {
+          type: "UNASSIGNED_LEAD",
+          leadId,
+          targetRole: "admin",
+          targetUid: null,
+          payload: { message: `"${lead.name ?? leadId}" was passed on and there is no other active employee. Assign it manually.` },
+          createdAt: now,
+          readAt: null,
+        });
+        return { passedTo: null, forced: false };
+      }
+
+      t.update(leadRef, {
+        assignedUserId: nextAssignee,
+        assignedAt: now,
+        lastActivityAt: now,
+        distributionMethod: "AUTO_REASSIGN",
+        attemptedAssignees: attempted.concat(attempted.includes(nextAssignee) ? [] : [nextAssignee]),
+        ...(forced
+          ? { status: "ACCEPTED", acceptedAt: now, acceptDeadlineAt: FieldValue.delete() }
+          : { status: "ASSIGNED", acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS) }),
+      });
+
+      t.create(adminDb.collection("notifications").doc(), {
+        type: "NEW_LEAD_ASSIGNED",
+        leadId,
+        targetRole: "employee",
+        targetUid: nextAssignee,
+        payload: {
+          message: forced
+            ? `"${lead.name ?? leadId}" was passed to you and accepted automatically — it reached the end of the priority lane.`
+            : `"${lead.name ?? leadId}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+        },
+        createdAt: now,
+        readAt: null,
+      });
+
+      return { passedTo: nextAssignee, forced };
+    });
+  });
+}
+
 export async function acceptLead(token: string, leadId: string): Promise<ActionResult> {
   return runAction("acceptLead", async () => {
     const auth = await verifyAuth(token);

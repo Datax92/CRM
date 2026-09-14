@@ -59,7 +59,8 @@ import {
 } from '@/lib/reportScope';
 import type { ReportOption } from '@/app/actions/reports';
 import { entryAllowance } from '@/lib/followUpKind';
-import { ADMIN_ASSIGN_WINDOW_MS, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
+import { ADMIN_ASSIGN_WINDOW_MS, ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
+import { resolveCascadeAssignee } from '@/lib/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
 import { normalizeDealCategory } from '@/lib/constants/deals';
@@ -1060,6 +1061,85 @@ export const demo = {
     addEvent(leadId, 'LEAD_ACCEPTED', actorUid);
     emit();
     return ok(undefined);
+  },
+
+  /**
+   * Mirrors `passLead`: hand the lead down the lane rather than taking it.
+   *
+   * The demo store exists so the two surfaces cannot drift, and this one is
+   * reachable from a button the popup puts in front of every employee — a
+   * "Pass on" that silently does nothing in demo mode would be a feature the
+   * product appears to have and does not.
+   *
+   * Same three facts as the server: the pass is counted against the person who
+   * passed (it costs them two points on the lane — see `lib/leadPriority`), the
+   * lead cascades to the next active employee in priority order, and the last
+   * one in the lane is force-accepted rather than the lead falling out of the
+   * system.
+   */
+  passLead(leadId: string, actorUid: string): Result<{ passedTo: string | null; forced: boolean }> {
+    const lead = state.leads.find((l) => l.id === leadId);
+    if (!lead) return fail('That lead no longer exists.');
+    if (lead.assignedUserId !== actorUid) return fail('This lead is not assigned to you.');
+    if (lead.status !== 'ASSIGNED') return fail('This lead is not waiting to be accepted.');
+
+    const attempted = [...(lead.attemptedAssignees ?? []), actorUid];
+    const roster = state.employees
+      .filter((employee) => employee.accessRole !== 'subadmin' && employee.status === 'ACTIVE')
+      .map((employee) => ({
+        uid: employee.uid,
+        priority: employee.priority,
+        status: employee.status,
+        autoAssign: employee.autoAssign,
+      }));
+
+    const { uid: nextUid, forced } = resolveCascadeAssignee(roster, attempted);
+
+    // The pass is charged whether or not anybody is left to take it: the
+    // person still chose not to work the lead.
+    bumpKpi(actorUid, karachiMonthKey(), { passes: 1 } as Partial<KpiCounts>);
+    addEvent(leadId, 'LEAD_PASSED', actorUid, { to: nextUid, forced });
+
+    if (!nextUid) {
+      // Nobody left in the lane. The real action leaves the lead where it is
+      // rather than orphaning it, and says so.
+      emit();
+      return fail('There is nobody else in the lane to pass this to.');
+    }
+
+    const nextPerson = state.employees.find((employee) => employee.uid === nextUid);
+    patchLead(leadId, {
+      assignedUserId: nextUid,
+      assigneeName: nextPerson?.name ?? null,
+      subAdminUid: nextPerson?.subAdminUid ?? null,
+      attemptedAssignees: attempted,
+      status: forced ? 'ACCEPTED' : 'ASSIGNED',
+      ...(forced
+        ? { acceptedAt: now(), acceptDeadlineAt: undefined }
+        : { acceptDeadlineAt: ts(new Date(Date.now() + ACCEPT_WINDOW_MS)) }),
+      lastActivityAt: now(),
+    });
+
+    state.notifications = [
+      {
+        id: nextId('n'),
+        type: 'NEW_LEAD_ASSIGNED',
+        leadId,
+        targetRole: 'employee',
+        targetUid: nextUid,
+        payload: {
+          message: forced
+            ? `"${lead.name}" was passed to you and accepted automatically — it reached the end of the priority lane.`
+            : `"${lead.name}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+        },
+        createdAt: now(),
+        readAt: null,
+      },
+      ...state.notifications,
+    ];
+
+    emit();
+    return ok({ passedTo: nextUid, forced });
   },
 
   setLeadStatus(leadId: string, status: Lead['status'], actorUid: string): Result {

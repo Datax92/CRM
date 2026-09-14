@@ -188,6 +188,13 @@ export async function addFollowUp(
             calls: FieldValue.increment(callMade ? 1 : 0),
             connects: FieldValue.increment(connect ? 1 : 0),
             meetings: FieldValue.increment(meetingHeld ? 1 : 0),
+            /*
+              **Every entry, connected or not.** The lead lane scores on
+              connects and follow-ups (see `lib/leadPriority`), and a day of
+              unanswered calls is real work that has to count for something —
+              just for less than a conversation.
+            */
+            followUps: FieldValue.increment(1),
             updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }

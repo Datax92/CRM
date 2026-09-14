@@ -26,7 +26,7 @@ function drain(employees: Employee[], count: number, exclude: string[] = []) {
   return { order, state };
 }
 
-test('the highest priority employee takes the first eight leads', () => {
+test('the highest priority employee takes the first turn of leads', () => {
   const { order } = drain(roster(), LEADS_PER_TURN);
   assert.deepEqual(order, Array(LEADS_PER_TURN).fill('emp1'));
 });
@@ -36,14 +36,18 @@ test('the ninth lead rotates to the next priority', () => {
   assert.equal(order[LEADS_PER_TURN], 'emp2');
 });
 
-test('a full cycle is eight each in priority order, then wraps to the top', () => {
+test('a full cycle is one turn each in priority order, then wraps to the top', () => {
   const total = LEADS_PER_TURN * 3;
   const { order } = drain(roster(), total + 1);
 
-  assert.deepEqual(order.slice(0, 8), Array(8).fill('emp1'));
-  assert.deepEqual(order.slice(8, 16), Array(8).fill('emp2'));
-  assert.deepEqual(order.slice(16, 24), Array(8).fill('emp3'));
-  assert.equal(order[24], 'emp1', 'lead 25 starts a new cycle at priority 1');
+  // Written against LEADS_PER_TURN rather than a literal: the turn was eight
+  // and is now five, and a test that hardcodes the number only proves what the
+  // number used to be.
+  const n = LEADS_PER_TURN;
+  assert.deepEqual(order.slice(0, n), Array(n).fill('emp1'));
+  assert.deepEqual(order.slice(n, n * 2), Array(n).fill('emp2'));
+  assert.deepEqual(order.slice(n * 2, n * 3), Array(n).fill('emp3'));
+  assert.equal(order[n * 3], 'emp1', 'the next lead starts a new cycle at priority 1');
 });
 
 test('the wrap-around clears every counter, not just the selected one', () => {
@@ -77,9 +81,10 @@ test('disabled employees are skipped without breaking the sequence', () => {
     { uid: 'emp2', priority: 2, status: 'ACTIVE' },
     { uid: 'emp3', priority: 3, status: 'ACTIVE' },
   ];
-  const { order } = drain(withDisabled, LEADS_PER_TURN + 1);
-  assert.deepEqual(order.slice(0, 8), Array(8).fill('emp2'));
-  assert.equal(order[8], 'emp3');
+  const n = LEADS_PER_TURN;
+  const { order } = drain(withDisabled, n + 1);
+  assert.deepEqual(order.slice(0, n), Array(n).fill('emp2'));
+  assert.equal(order[n], 'emp3');
 });
 
 test('no active employees yields no assignee and leaves state untouched', () => {
@@ -149,7 +154,10 @@ test('distribution across a long run stays even', () => {
     if (uid) acc[uid] = (acc[uid] ?? 0) + 1;
     return acc;
   }, {});
-  assert.deepEqual(counts, { emp1: 32, emp2: 32, emp3: 32 });
+  // Four complete cycles: everybody gets exactly the same number of leads,
+  // whatever the turn size happens to be.
+  const each = LEADS_PER_TURN * 4;
+  assert.deepEqual(counts, { emp1: each, emp2: each, emp3: each });
 });
 
 /* -------------------------------------------------------------------------- */
