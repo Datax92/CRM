@@ -31,9 +31,10 @@ systems start disagreeing about the same lead. There isn't one here.
 
 1. **Railway → New Project → Deploy from GitHub repo** → this repository.
 2. **Settings → Source → Root Directory**: `ops/lead-cron`
-3. **Settings → Deploy → Cron Schedule**: `*/5 * * * *`
-   (Railway's minimum interval is 5 minutes. A run is skipped if the previous
-   one is still going, which is the behaviour you want.)
+3. **Cron schedule** — already set to `*/5 * * * *` in `railway.json`, so
+   there is nothing to type. Confirm it under Settings → Deploy after the first
+   build. (Railway's minimum interval is 5 minutes. A run is skipped if the
+   previous one is still going, which is the behaviour you want.)
 4. **Settings → Networking**: no public domain. Nothing should be able to reach
    this service from outside.
 5. **Variables**:
