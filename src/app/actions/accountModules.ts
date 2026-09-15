@@ -16,6 +16,7 @@
  * else.
  */
 
+import { assertMonthOpen } from "@/lib/groupMonthGuard";
 import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth, requireAdmin, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
@@ -232,6 +233,7 @@ export async function savePersonalExpense(
       if (current.employeeUid !== auth.uid && !auth.isHr) {
         throw new UserFacingError("That is not your expense.");
       }
+      await assertMonthOpen(current.dayKey as string | undefined, payload.dayKey);
 
       /*
         **The amount may not fall below what an account has already paid back.**
@@ -261,6 +263,7 @@ export async function savePersonalExpense(
     }
 
     const profile = await adminDb.collection("users").doc(auth.uid).get();
+    await assertMonthOpen(payload.dayKey);
     const ref = adminDb.collection(PERSONAL).doc();
     await ref.create({
       ...payload,
@@ -314,6 +317,7 @@ export async function deletePersonalExpense(
     if (snap.data()!.employeeUid !== auth.uid && !auth.isHr) {
       throw new UserFacingError("That is not your expense.");
     }
+    await assertMonthOpen(snap.data()!.dayKey as string | undefined);
 
     const legs = await adminDb
       .collection("transactions")

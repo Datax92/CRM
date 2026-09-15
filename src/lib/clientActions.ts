@@ -1245,3 +1245,122 @@ export async function deleteAccount(token: string, accountId: string) {
 export async function countAccountContents(token: string, accountId: string) {
   return _countAccountContents(token, accountId);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Paying a period's total, Investment with X, Mahziyar Group, Receivables     */
+/* -------------------------------------------------------------------------- */
+
+import {
+  payExpensesTotal as _payExpensesTotal,
+  type PayTotalInput,
+} from '@/app/actions/ledger';
+import {
+  saveInvestmentBook as _saveInvestmentBook,
+  deleteInvestmentBook as _deleteInvestmentBook,
+  saveInvestmentRound as _saveInvestmentRound,
+  deleteInvestmentRound as _deleteInvestmentRound,
+  type InvestmentBookInput,
+  type InvestmentRoundInput,
+} from '@/app/actions/investmentWithX';
+import {
+  saveGroupConfig as _saveGroupConfig,
+  saveGroupEntry as _saveGroupEntry,
+  deleteGroupEntry as _deleteGroupEntry,
+  setGroupIncomeEdit as _setGroupIncomeEdit,
+  setGroupCell as _setGroupCell,
+  setGroupDescription as _setGroupDescription,
+  closeGroupMonth as _closeGroupMonth,
+  reopenGroupMonth as _reopenGroupMonth,
+  type GroupEntryInput,
+} from '@/app/actions/groupFinance';
+import {
+  saveSheetEntry as _saveSheetEntry,
+  settleSheetEntry as _settleSheetEntry,
+  deleteSheetEntry as _deleteSheetEntry,
+  saveSheetGroups as _saveSheetGroups,
+  importLegacyReceivables as _importLegacyReceivables,
+  countLegacyReceivables as _countLegacyReceivables,
+  type SheetEntryInput,
+} from '@/app/actions/receivableSheet';
+import type { GroupField, BuiltinColumn } from '@/lib/groupFinance';
+import type { LedgerSide } from '@/lib/receivableSheet';
+
+/** Every unpaid expense in a period, paid at once from one or more accounts. */
+export async function payExpensesTotal(token: string, input: PayTotalInput) {
+  return _payExpensesTotal(token, input);
+}
+
+export async function saveInvestmentBook(token: string, input: InvestmentBookInput, bookId?: string) {
+  return _saveInvestmentBook(token, input, bookId);
+}
+export async function deleteInvestmentBook(token: string, bookId: string) {
+  return _deleteInvestmentBook(token, bookId);
+}
+export async function saveInvestmentRound(token: string, input: InvestmentRoundInput, roundId?: string) {
+  return _saveInvestmentRound(token, input, roundId);
+}
+export async function deleteInvestmentRound(token: string, roundId: string) {
+  return _deleteInvestmentRound(token, roundId);
+}
+
+export async function saveGroupConfig(
+  token: string,
+  input: { fields: Array<Partial<GroupField>>; labels?: Partial<Record<BuiltinColumn, string>> }
+) {
+  return _saveGroupConfig(token, input);
+}
+export async function saveGroupEntry(token: string, monthKey: string, input: GroupEntryInput, entryId?: string) {
+  return _saveGroupEntry(token, monthKey, input, entryId);
+}
+export async function deleteGroupEntry(token: string, monthKey: string, entryId: string) {
+  return _deleteGroupEntry(token, monthKey, entryId);
+}
+export async function setGroupIncomeEdit(
+  token: string,
+  monthKey: string,
+  transactionId: string,
+  amount: number | null,
+  note?: string | null
+) {
+  return _setGroupIncomeEdit(token, monthKey, transactionId, amount, note);
+}
+export async function setGroupCell(token: string, monthKey: string, columnKey: string, value: number | null) {
+  return _setGroupCell(token, monthKey, columnKey, value);
+}
+export async function setGroupDescription(token: string, monthKey: string, description: string) {
+  return _setGroupDescription(token, monthKey, description);
+}
+export async function closeGroupMonth(token: string, monthKey: string) {
+  return _closeGroupMonth(token, monthKey);
+}
+export async function reopenGroupMonth(token: string, monthKey: string) {
+  return _reopenGroupMonth(token, monthKey);
+}
+
+export async function saveSheetEntry(token: string, input: SheetEntryInput, entryId?: string) {
+  return _saveSheetEntry(token, input, entryId);
+}
+export async function settleSheetEntry(
+  token: string,
+  entryId: string,
+  input: { amount: number; dayKey?: string | null; note?: string | null }
+) {
+  return _settleSheetEntry(token, entryId, input);
+}
+export async function deleteSheetEntry(token: string, entryId: string) {
+  return _deleteSheetEntry(token, entryId);
+}
+export async function saveSheetGroups(
+  token: string,
+  side: LedgerSide,
+  groups: string[],
+  renames?: Array<{ from: string; to: string }>
+) {
+  return _saveSheetGroups(token, side, groups, renames);
+}
+export async function importLegacyReceivables(token: string) {
+  return _importLegacyReceivables(token);
+}
+export async function countLegacyReceivables(token: string) {
+  return _countLegacyReceivables(token);
+}

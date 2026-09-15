@@ -32,6 +32,10 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
 import { PayFromAccounts } from "./PayFromAccounts";
+import { PayPeriodTotal } from "./PayPeriodTotal";
+import { monthLabel } from "@/lib/groupFinance";
+
+const monthName = (dayKey: string) => monthLabel(dayKey.slice(0, 7));
 import { formatMoney } from "@/lib/money";
 import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import {
@@ -427,6 +431,19 @@ export function PersonalExpensesView() {
         <p role="status" style={{ borderRadius: 12, background: banner.ok ? "#e8f5f3" : "#fdeeec", border: `1px solid ${banner.ok ? "#bfe0dc" : "#f0c4bd"}`, padding: "11px 14px", fontSize: 12.5, fontWeight: 600, color: banner.ok ? X.deep : "#a33a29" }}>
           {banner.text}
         </p>
+      )}
+
+      {canPay && (
+        <PayPeriodTotal
+          kind="PERSONAL"
+          rows={inRange.map((expense) => ({ id: expense.id, amount: expense.amount, paid: readPaid(expense).paid }))}
+          periodLabel={from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01") ? monthName(from) : `${from} → ${to}`}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
+          getIdToken={getIdToken}
+          isMobile={isMobile}
+          onPaid={(text) => setBanner({ ok: true, text })}
+        />
       )}
 
       <StatCards isMobile={isMobile} cards={statCards} />

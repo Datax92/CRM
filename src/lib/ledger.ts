@@ -173,6 +173,8 @@ export const SOURCE_MODULES = [
   'CAR_SALE',
   'STATELIFE',
   'CAPITAL_INVESTMENT',
+  /** A round of an investment book — its net profit, banked. See `lib/investmentWithX`. */
+  'INVESTMENT_WITH_X',
   'RECEIVABLE',
   'PAYROLL',
   'TRANSFER',
@@ -387,6 +389,118 @@ export function checkAllocations(
     errors,
     valid: errors.length === 0,
   };
+}
+
+/** One obligation a combined payment can fund, oldest first. */
+export interface OutstandingObligation {
+  id: string;
+  /** What is still owed on it. Anything ≤ 0 is skipped. */
+  outstanding: number;
+}
+
+/** One movement of a combined payment: this much, from this account, for this record. */
+export interface DistributedLeg {
+  obligationId: string;
+  accountId: string;
+  amount: number;
+}
+
+export interface DistributionResult {
+  legs: DistributedLeg[];
+  /** What the payment lines come to. */
+  allocated: number;
+  /** What every obligation still owed before this payment. */
+  totalOutstanding: number;
+  /** Obligation id → what this payment put against it. */
+  paidByObligation: Map<string, number>;
+  errors: string[];
+  valid: boolean;
+}
+
+/**
+ * **Paying a month's total at once** — one set of payment lines spread across
+ * many obligations.
+ *
+ * Each obligation stays its own record with its own `paidAmount`, and each leg
+ * names exactly one obligation and one account, so every statement still opens
+ * the expense it paid for and "one obligation, N movements" still holds
+ * per record. Nothing is pooled into a single unexplained withdrawal.
+ *
+ * **Filled in order, both ways**: the oldest obligation is paid first, from the
+ * first account, and the next account starts where the last ran out. That
+ * produces at most `obligations + accounts − 1` legs rather than a leg for every
+ * pairing, and it means a part payment settles whole expenses rather than
+ * leaving every one of them a little short.
+ *
+ * The rules are `checkAllocations`' rules, applied to the total: an account
+ * appears once, every line is positive, and **more than is owed is refused,
+ * never trimmed**. Paying less than the total is allowed — the remainder stays
+ * outstanding on the newest records.
+ */
+export function distributeAcrossObligations(
+  obligations: OutstandingObligation[],
+  allocations: PaymentAllocation[]
+): DistributionResult {
+  const open = obligations
+    .map((row) => ({ id: row.id, outstanding: round(money(row.outstanding)) }))
+    .filter((row) => row.outstanding > 0);
+  const totalOutstanding = round(open.reduce((sum, row) => sum + row.outstanding, 0));
+
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const lines: PaymentAllocation[] = [];
+  for (const line of allocations) {
+    const amount = round(money(line.amount));
+    if (!line.accountId) {
+      errors.push('Choose the account each payment comes from.');
+      continue;
+    }
+    if (amount <= 0) {
+      errors.push('Every payment line needs an amount greater than zero.');
+      continue;
+    }
+    if (seen.has(line.accountId)) {
+      errors.push('The same account is listed twice. Combine those lines into one.');
+      continue;
+    }
+    seen.add(line.accountId);
+    lines.push({ accountId: line.accountId, amount });
+  }
+
+  const allocated = round(lines.reduce((sum, line) => sum + line.amount, 0));
+  if (open.length === 0) errors.push('Everything in this period is already paid.');
+  if (allocations.length === 0) errors.push('Add at least one account to pay from.');
+  if (allocated > totalOutstanding && totalOutstanding > 0) {
+    errors.push(
+      `The payment lines come to ${allocated.toLocaleString('en-PK')}, more than the ` +
+        `${totalOutstanding.toLocaleString('en-PK')} outstanding. Reduce them before paying.`
+    );
+  }
+
+  const legs: DistributedLeg[] = [];
+  const paidByObligation = new Map<string, number>();
+  if (errors.length === 0) {
+    let o = 0;
+    let owed = open[0]?.outstanding ?? 0;
+    for (const line of lines) {
+      let left = line.amount;
+      while (left > 0 && o < open.length) {
+        const take = round(Math.min(left, owed));
+        if (take > 0) {
+          legs.push({ obligationId: open[o].id, accountId: line.accountId, amount: take });
+          paidByObligation.set(open[o].id, round((paidByObligation.get(open[o].id) ?? 0) + take));
+        }
+        left = round(left - take);
+        owed = round(owed - take);
+        if (owed <= 0) {
+          o += 1;
+          owed = open[o]?.outstanding ?? 0;
+        }
+      }
+    }
+  }
+
+  return { legs, allocated, totalOutstanding, paidByObligation, errors, valid: errors.length === 0 };
 }
 
 /**

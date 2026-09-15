@@ -27,6 +27,7 @@ import {
   accountBalance,
   allocationsToTransactions,
   checkAllocations,
+  distributeAcrossObligations,
   money,
   normalizeAccountKind,
   reversalOf,
@@ -331,6 +332,163 @@ export async function payFromAccounts(
     await Promise.all(
       allocations.map((line) => bumpBalance(line.accountId, deltaOf(direction, line.amount)))
     );
+    return result;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Paying a period's total                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface PayTotalInput {
+  /** Which book of expenses. */
+  kind: "OFFICE" | "PERSONAL";
+  /** The expenses on screen for the period — only the unpaid ones are touched. */
+  ids: string[];
+  allocations: PaymentAllocation[];
+  dayKey?: string;
+  note?: string | null;
+}
+
+/**
+ * **Pays everything outstanding in a period at once** — "this month's office
+ * expenses, from Car Sale and the bank".
+ *
+ * Built on the same rules as `payFromAccounts`, not beside them:
+ *
+ * - **every expense is still paid individually.** The payment lines are spread
+ *   across the expenses oldest first (`distributeAcrossObligations`), and each
+ *   leg names one expense and one account, so every statement still opens the
+ *   expense it paid for and each expense's own `paidAmount` is exact;
+ * - **the guard is a re-read inside the transaction.** Whatever the screen
+ *   believed, each expense's outstanding figure is read again here, so a bill
+ *   paid a second ago by somebody else is simply skipped rather than paid twice;
+ * - **office expenses must be approved** to be paid, exactly as one at a time.
+ *   A pending or rejected one in the period is left alone.
+ *
+ * Paying less than the total is allowed; the newest expenses keep the balance.
+ */
+export async function payExpensesTotal(
+  token: string,
+  input: PayTotalInput
+): Promise<ActionResult<{ groupId: string; posted: number; fullyPaid: boolean; expenses: number }>> {
+  return runAction("payExpensesTotal", async () => {
+    const auth = await requireFinance(token);
+
+    const collectionName = input.kind === "PERSONAL" ? "personalExpenses" : "expenses";
+    const sourceModule: SourceModule = input.kind === "PERSONAL" ? "PERSONAL_EXPENSE" : "OFFICE_EXPENSE";
+    const type: TransactionType = input.kind === "PERSONAL" ? "REIMBURSEMENT" : "EXPENSE";
+
+    const ids = [...new Set((input.ids ?? []).filter(Boolean))];
+    if (ids.length === 0) throw new UserFacingError("There is nothing in this period to pay.");
+    // A Firestore transaction holds up to 500 writes: an expense update per
+    // record plus at most `records + accounts − 1` legs.
+    if (ids.length > 200) throw new UserFacingError("Pay at most 200 expenses at once — narrow the period.");
+
+    const allocations = (input.allocations ?? []).map((line) => ({
+      accountId: (line.accountId ?? "").trim(),
+      amount: money(line.amount),
+    }));
+    const dayKey = input.dayKey && /^\d{4}-\d{2}-\d{2}$/.test(input.dayKey) ? input.dayKey : karachiDayKey();
+    const groupId = adminDb.collection(TRANSACTIONS).doc().id;
+
+    const result = await adminDb.runTransaction(async (t: Transaction) => {
+      const refs = ids.map((id) => adminDb.collection(collectionName).doc(id));
+      const snaps = await Promise.all(refs.map((ref) => t.get(ref)));
+
+      const records = snaps
+        .filter((snap) => snap.exists)
+        .map((snap) => ({ snap, data: snap.data()! }))
+        .filter(({ data }) =>
+          input.kind === "PERSONAL" ? true : data.status !== "PENDING" && data.status !== "REJECTED"
+        )
+        .map(({ snap, data }) => {
+          const amount = money(data.amount);
+          const paid = Math.min(money(data.paidAmount), amount);
+          return {
+            ref: snap.ref,
+            id: snap.id,
+            dayKey: typeof data.dayKey === "string" ? data.dayKey : "",
+            label: (data.title as string) || (data.category as string) || "Expense",
+            amount,
+            paid,
+            outstanding: Math.round((amount - paid) * 100) / 100,
+          };
+        })
+        .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
+
+      const plan = distributeAcrossObligations(records, allocations);
+      if (!plan.valid) throw new UserFacingError(plan.errors[0]);
+
+      const accountSnaps = await Promise.all(
+        allocations.map((line) => t.get(adminDb.collection(ACCOUNTS).doc(line.accountId)))
+      );
+      for (const snap of accountSnaps) {
+        if (!snap.exists) throw new UserFacingError("One of those accounts no longer exists.");
+        if (snap.data()?.status === "ARCHIVED") {
+          throw new UserFacingError(`${snap.data()?.name ?? "That account"} is archived and cannot be paid from.`);
+        }
+      }
+
+      const byId = new Map(records.map((record) => [record.id, record]));
+      for (const leg of plan.legs) {
+        const record = byId.get(leg.obligationId)!;
+        t.create(adminDb.collection(TRANSACTIONS).doc(), {
+          accountId: leg.accountId,
+          direction: "OUT",
+          amount: leg.amount,
+          type,
+          dayKey,
+          sourceModule,
+          sourceId: record.id,
+          sourceLabel: input.kind === "PERSONAL" ? `Personal expense — ${record.label}` : record.label,
+          groupId,
+          status: "POSTED",
+          note: input.note?.trim() || "Paid with the period total",
+          idempotencyKey: `${sourceModule}:${record.id}:${leg.accountId}`,
+          createdByUid: auth.uid,
+          createdByName: auth.name ?? auth.email ?? null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      let fullyPaid = true;
+      for (const record of records) {
+        const add = plan.paidByObligation.get(record.id) ?? 0;
+        if (add <= 0) {
+          if (record.outstanding > 0) fullyPaid = false;
+          continue;
+        }
+        const paidNow = Math.round((record.paid + add) * 100) / 100;
+        if (paidNow < record.amount) fullyPaid = false;
+        t.update(record.ref, {
+          paidAmount: paidNow,
+          paymentStatus: paidNow >= record.amount ? "PAID" : "PARTIALLY_PAID",
+          paidAt: paidNow >= record.amount ? FieldValue.serverTimestamp() : null,
+          history: FieldValue.arrayUnion({
+            at: new Date().toISOString(),
+            action: "PAID",
+            byUid: auth.uid,
+            byName: auth.name ?? auth.email ?? null,
+            amount: add,
+            groupId,
+            detail: "Paid with the period total",
+            allocations: plan.legs
+              .filter((leg) => leg.obligationId === record.id)
+              .map((leg) => ({ accountId: leg.accountId, amount: leg.amount })),
+          }),
+        });
+      }
+
+      return {
+        groupId,
+        posted: plan.legs.length,
+        fullyPaid,
+        expenses: plan.paidByObligation.size,
+      };
+    });
+
+    await Promise.all(allocations.map((line) => bumpBalance(line.accountId, -line.amount)));
     return result;
   });
 }

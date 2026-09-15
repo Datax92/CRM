@@ -15,6 +15,7 @@ import {
   accountMovement,
   compareToPrevious,
   summarizeMonth,
+  distributeAcrossObligations,
   type LedgerTransaction,
 } from './ledger.ts';
 
@@ -507,5 +508,67 @@ describe('movement, and refusing to invent a trend', () => {
     const sept = summarizeMonth(rows, '2026-09');
     assert.equal(sept.income, 100);
     assert.equal(sept.expenses, 40);
+  });
+});
+
+describe('paying a period total across many expenses', () => {
+  const expenses = [
+    { id: 'rent', outstanding: 30_000 },
+    { id: 'bills', outstanding: 12_000 },
+    { id: 'ads', outstanding: 8_000 },
+  ];
+
+  test('50,000 from two accounts settles all three, oldest first, with no leg per pairing', () => {
+    const result = distributeAcrossObligations(expenses, [
+      { accountId: 'carSale', amount: 35_000 },
+      { accountId: 'bank', amount: 15_000 },
+    ]);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.legs, [
+      { obligationId: 'rent', accountId: 'carSale', amount: 30_000 },
+      { obligationId: 'bills', accountId: 'carSale', amount: 5_000 },
+      { obligationId: 'bills', accountId: 'bank', amount: 7_000 },
+      { obligationId: 'ads', accountId: 'bank', amount: 8_000 },
+    ]);
+    assert.equal(result.legs.length <= expenses.length + 2 - 1, true);
+    assert.equal(result.paidByObligation.get('bills'), 12_000);
+  });
+
+  test('the legs add up to exactly what was allocated — nothing invented, nothing lost', () => {
+    const result = distributeAcrossObligations(expenses, [{ accountId: 'bank', amount: 41_500.5 }]);
+    const sum = result.legs.reduce((total, leg) => total + leg.amount, 0);
+    assert.equal(Math.round(sum * 100) / 100, 41_500.5);
+    assert.equal(result.paidByObligation.get('rent'), 30_000);
+    assert.equal(result.paidByObligation.get('bills'), 11_500.5);
+    assert.equal(result.paidByObligation.has('ads'), false);
+  });
+
+  test('more than is owed is refused, never trimmed', () => {
+    const result = distributeAcrossObligations(expenses, [{ accountId: 'bank', amount: 50_001 }]);
+    assert.equal(result.valid, false);
+    assert.equal(result.legs.length, 0);
+  });
+
+  test('settled records are skipped, and an all-settled period is refused', () => {
+    const partly = distributeAcrossObligations(
+      [{ id: 'paid', outstanding: 0 }, { id: 'open', outstanding: 500 }],
+      [{ accountId: 'cash', amount: 500 }]
+    );
+    assert.deepEqual(partly.legs, [{ obligationId: 'open', accountId: 'cash', amount: 500 }]);
+    assert.equal(
+      distributeAcrossObligations([{ id: 'paid', outstanding: 0 }], [{ accountId: 'cash', amount: 1 }]).valid,
+      false
+    );
+  });
+
+  test('an account listed twice, or a zero line, is refused', () => {
+    assert.equal(
+      distributeAcrossObligations(expenses, [
+        { accountId: 'bank', amount: 100 },
+        { accountId: 'bank', amount: 100 },
+      ]).valid,
+      false
+    );
+    assert.equal(distributeAcrossObligations(expenses, [{ accountId: 'bank', amount: 0 }]).valid, false);
   });
 });

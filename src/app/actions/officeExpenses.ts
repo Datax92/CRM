@@ -1,5 +1,6 @@
 "use server";
 
+import { assertMonthOpen } from "@/lib/groupMonthGuard";
 import { adminDb } from "@/lib/firebase/server";
 import { requireAdmin, requireManager, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager } from "@/lib/constants/hierarchy";
@@ -226,6 +227,7 @@ export async function createOfficeExpense(
   return runAction("createOfficeExpense", async () => {
     const auth = await requireExpenseAccess(token);
     const clean = await cleanInput(input);
+    await assertMonthOpen(clean.dayKey);
 
     /*
       **Only the admin may record an expense as already approved.** An HR
@@ -311,6 +313,9 @@ export async function updateOfficeExpense(
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
 
     const before = snap.data() ?? {};
+    // Both months: moving an expense out of a closed month changes it as much
+    // as moving one in.
+    await assertMonthOpen(before.dayKey as string | undefined, clean.dayKey);
 
     /*
       **HR edits only what HR recorded.** The read is already scoped to their own
@@ -386,6 +391,7 @@ export async function setOfficeExpenseStatus(
     const snap = await ref.get();
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
 
+    await assertMonthOpen(snap.data()?.dayKey as string | undefined);
     const current = normalizeExpenseStatus(snap.data()?.status);
     if (current === status) {
       throw new UserFacingError(`This expense is already ${status.toLowerCase()}.`);
@@ -448,6 +454,7 @@ export async function deleteOfficeExpense(
     const snap = await ref.get();
     if (!snap.exists) throw new UserFacingError("That expense no longer exists.");
 
+    await assertMonthOpen(snap.data()?.dayKey as string | undefined);
     if (normalizeExpenseStatus(snap.data()?.status) === "APPROVED") {
       throw new UserFacingError(
         "An approved expense cannot be deleted. Reject it instead — that keeps the record and the reason."

@@ -381,6 +381,44 @@ service cloud.firestore {
     }
 
     /*
+      Investment with X, Mahziyar Group (income performance and the monthly
+      expense sheet with its closing) and the Receivables / Payables sheet —
+      the same shape as every other finance collection: admin and HR read,
+      and nobody writes from the browser. Closing a month in particular must
+      only ever be written by `closeGroupMonth`, which computes the frozen
+      figures from the records on the server.
+    */
+    match /investmentBooks/{bookId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /investmentRounds/{roundId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /groupMonths/{monthKey} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /groupFinanceConfig/{configId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /receivableEntries/{entryId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    match /receivableSheetConfig/{configId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    /*
       Leads that arrived but could not be filed — a form with no phone
       question, or a field under a name the intake did not recognise. Read by
       the Meta Ads screen so nothing is lost in silence; written only by the

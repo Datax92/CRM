@@ -25,6 +25,9 @@ import { IncomingLeadPopup } from "./leads/IncomingLeadPopup";
  * sliver against the bottom of the screen. Anything past this scrolls.
  */
 const MIN_FLYOUT_HEIGHT = 260;
+/** The flyout's heading plus the list's padding, and one entry's height. */
+const FLYOUT_CHROME_HEIGHT = 56;
+const FLYOUT_ITEM_HEIGHT = 38;
 
 export function GlobalLayout({ children }: { children: React.ReactNode }) {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
@@ -58,6 +61,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
   const [topbarSearch, setTopbarSearch] = useState("");
   const profileRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
   const { user, role, isHr, logout, getIdToken } = useAuth();
   const router = useRouter();
@@ -102,7 +106,13 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
    * effect body, and it cannot see that this one only ever runs from a browser
    * event.
    */
-  const closeFlyout = useCallback(() => {
+  const closeFlyout = useCallback((event?: Event) => {
+    // The flyout's own list is a scroll container, and the capture-phase
+    // listener below hears its scroll too. Closing on that made a long menu —
+    // Accounts has ten entries — impossible to scroll: the first wheel tick
+    // shut it. Only a scroll *outside* the panel moves what it was measured
+    // against.
+    if (event?.target instanceof Node && flyoutRef.current?.contains(event.target)) return;
     setRailFlyout((open) => (open ? null : open));
   }, []);
 
@@ -199,10 +209,12 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           { title: "StateLife", path: "/admin/accounts/statelife", icon: ReceiptText },
           { title: "Marketing Income", path: "/admin/accounts/marketing-income", icon: TrendingUp },
           { title: "Car Sale", path: "/admin/accounts/car-sale", icon: Car },
+          { title: "Investment with X", path: "/admin/accounts/investment-with-x", icon: TrendingUp },
           { title: "Capital Investments", path: "/admin/accounts/capital-investments", icon: PiggyBank },
           { title: "Committee", path: "/admin/accounts/committee", icon: Users2 },
-          { title: "Receivable", path: "/admin/accounts/receivable", icon: ReceiptText },
-          { title: "Income Sheet", path: "/admin/accounts/income-sheet", icon: BarChart3 }
+          { title: "Receivables & Payables", path: "/admin/accounts/receivable", icon: ReceiptText },
+          { title: "Group Income", path: "/admin/accounts/group-income", icon: BarChart3 },
+          { title: "Group Expense", path: "/admin/accounts/group-expense", icon: Building2 }
         ]
       },
       {
@@ -346,15 +358,16 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           rather than scrolling. The scroll lives here rather than on the
           <aside> so the footer's Collapse and Sign out stay pinned.
 
-          The collapsed rail keeps `overflow-visible` on desktop, because its
-          flyout panel has to escape the 96px rail and a scroll container clips
-          on both axes.
+          The collapsed rail scrolls too. It used to be `md:overflow-visible`,
+          from when the flyout was an `absolute` child that had to escape the
+          96px rail — but that also switched the scroll off, so on a short
+          laptop screen Accounts, Time and Settings sat below the fold, the
+          wheel scrolled the whole document instead, and they could not be
+          reached. The flyout is `position: fixed` now, and its containing
+          block is the <aside> (which carries a transform), an ancestor of
+          this scroller — so this element cannot clip it.
         */}
-        <div
-          className={`flex min-h-0 flex-1 flex-col ${
-            isCollapsed ? "overflow-y-auto md:overflow-visible" : "overflow-y-auto"
-          } overflow-x-hidden custom-scrollbar`}
-        >
+        <div className="custom-scrollbar flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain">
           {/* Logo Area */}
           <div
             className={`flex h-18 items-center border-b border-[#dceae8] bg-[#f5faf9] ${
@@ -419,16 +432,31 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
                           }
 
                           const rect = event.currentTarget.getBoundingClientRect();
-                          // Never above 12px, never so low that the panel has
-                          // no room; whatever is left becomes its max height,
-                          // and the list inside scrolls.
-                          const floor = Math.max(12, window.innerHeight - 12 - MIN_FLYOUT_HEIGHT);
+                          // Never above 12px, and lifted high enough that the
+                          // whole menu fits when the screen has room for it —
+                          // a fixed 260px floor squeezed a ten-entry menu into
+                          // a scrolling sliver on a laptop with space to spare.
+                          // Whatever is left becomes its max height, and the
+                          // list inside scrolls only when it truly must.
+                          const wanted = Math.max(
+                            MIN_FLYOUT_HEIGHT,
+                            Math.min(window.innerHeight - 24, FLYOUT_CHROME_HEIGHT + (children?.length ?? 0) * FLYOUT_ITEM_HEIGHT)
+                          );
+                          const floor = Math.max(12, window.innerHeight - 12 - wanted);
                           const top = Math.max(12, Math.min(rect.top, floor));
+
+                          // The <aside> carries a transform, which makes it the
+                          // containing block for this `fixed` panel: `top` and
+                          // `left` are read from the aside's box, not the
+                          // viewport. They coincide only while the shell starts
+                          // at 0,0 — anything above it (the demo banner is 30px)
+                          // pushed the panel off the bottom of the screen.
+                          const origin = event.currentTarget.closest("aside")?.getBoundingClientRect();
 
                           setRailFlyout({
                             title: item.title,
-                            top,
-                            left: rect.right + 8,
+                            top: top - (origin?.top ?? 0),
+                            left: rect.right + 8 - (origin?.left ?? 0),
                             maxHeight: window.innerHeight - top - 16,
                           });
                         }}
@@ -442,6 +470,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
 
                       {flyoutOpen && children && railFlyout && (
                         <div
+                          ref={flyoutRef}
                           role="menu"
                           aria-label={item.title}
                           // `fixed`, so the panel is measured against the
@@ -459,7 +488,11 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
                           <p className="shrink-0 rounded-t-xl border-b border-[#e6f1f0] bg-[#f5faf9] px-4 py-2.5 text-[11px] tracking-[0.8px] text-[#7e918f]">
                             {item.title.toUpperCase()}
                           </p>
-                          <div className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto p-1.5">
+                          {/* `overscroll-contain`: a wheel that reaches the end of
+                              the list must not carry on into the sidebar behind
+                              it — that scroll moves the rail the panel was
+                              measured against, and the panel closes. */}
+                          <div className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto overscroll-contain p-1.5">
                             {children.map((sub, subIdx) => {
                               const subActive = pathname === sub.path || pathname.startsWith(sub.path + "/");
                               return (

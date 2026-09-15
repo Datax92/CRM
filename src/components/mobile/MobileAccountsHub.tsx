@@ -78,6 +78,12 @@ const MODULES: Array<Omit<Entry, "figure" | "detail"> & { detail: string }> = [
     d: "M5 17h14M6 17l-1-5 2-4h10l2 4-1 5M7.5 13.5h.01M16.5 13.5h.01",
   },
   {
+    label: "Investment with X",
+    detail: "Rounds with a partner, and the profit each banked",
+    href: "/admin/accounts/investment-with-x",
+    d: "M3 17l6-6 4 4 8-8M15 7h6v6",
+  },
+  {
     label: "Capital Investments",
     detail: "What went into a venture, and what it cost",
     href: "/admin/accounts/capital-investments",
@@ -90,16 +96,22 @@ const MODULES: Array<Omit<Entry, "figure" | "detail"> & { detail: string }> = [
     d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4",
   },
   {
-    label: "Receivable",
-    detail: "Money owed to the business",
+    label: "Receivables & Payables",
+    detail: "Who owes us, and whom we owe",
     href: "/admin/accounts/receivable",
     d: "M3 7h18v12H3zM3 11h18M7 15h4",
   },
   {
-    label: "Income Sheet",
-    detail: "Everything in and out, month by month",
-    href: "/admin/accounts/income-sheet",
-    d: "M4 7h16M7 12h10M10 17h4",
+    label: "Group Income",
+    detail: "The year month by month — made, spent, remaining",
+    href: "/admin/accounts/group-income",
+    d: "M4 16l5-5 4 3 7-8M15 6h6v6",
+  },
+  {
+    label: "Group Expense",
+    detail: "The month's spending, its income, and closing",
+    href: "/admin/accounts/group-expense",
+    d: "M3 21h18M5 21V7l7-4 7 4v14M9 11h2M13 11h2M9 15h2M13 15h2",
   },
 ];
 

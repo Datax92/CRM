@@ -69,6 +69,8 @@ import {
 import { HISTORY_LABELS } from "@/lib/officeExpenses";
 import { ExpenseFormModal } from "./ExpenseFormModal";
 import { PayFromAccounts } from "@/components/accounts/PayFromAccounts";
+import { PayPeriodTotal } from "@/components/accounts/PayPeriodTotal";
+import { monthLabel } from "@/lib/groupFinance";
 import { useLedger } from "@/hooks/useLedger";
 import { ExpenseCategoriesModal } from "./ExpenseCategoriesModal";
 import { OverlayPanel } from "@/components/ui/OverlayPanel";
@@ -457,6 +459,20 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
 
       {banner && <Banner ok={banner.ok}>{banner.text}</Banner>}
       {error && <Banner ok={false}>{error}</Banner>}
+
+      {/* Every approved, unpaid expense in the period, paid at once. */}
+      <PayPeriodTotal
+        kind="OFFICE"
+        rows={inRange
+          .filter((expense) => expense.status === "APPROVED")
+          .map((expense) => ({ id: expense.id, amount: expense.amount, paid: readPaid(expense).paid }))}
+        periodLabel={from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01") ? monthLabel(from.slice(0, 7)) : `${from} → ${to}`}
+        accounts={ledger.accounts}
+        balances={ledger.balances}
+        getIdToken={getIdToken}
+        isMobile={isMobile}
+        onPaid={(text) => setBanner({ ok: true, text })}
+      />
 
       {/* ------------------------------------------------------------------ */}
       {/* Dashboard — describes the range, never the filter                   */}
