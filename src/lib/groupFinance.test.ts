@@ -76,6 +76,11 @@ test('income is the income modules plus manual income, signed, for the month onl
   assert.equal(isIncomeMovement(txn({ sourceModule: 'TRANSFER', type: 'TRANSFER' })), false);
 });
 
+test("an investment round's capital coming back is not income; its net profit is", () => {
+  assert.equal(isIncomeMovement(txn({ sourceModule: 'INVESTMENT_WITH_X', type: 'INVESTMENT', direction: 'IN' })), false);
+  assert.equal(isIncomeMovement(txn({ sourceModule: 'INVESTMENT_WITH_X', type: 'INCOME', direction: 'IN' })), true);
+});
+
 test('spent combines approved office and all personal; remaining is made − spent', () => {
   const month = computeGroupMonth({ ...base, month: null });
   assert.equal(month.columns.find((c) => c.key === 'office')!.value, 35_000);

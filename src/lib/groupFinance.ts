@@ -120,6 +120,9 @@ export interface LedgerRowInput {
 /** Whether a ledger row is income, as the group sheets count it. */
 export function isIncomeMovement(txn: LedgerRowInput): boolean {
   if (txn.status && txn.status !== 'POSTED') return false;
+  // An investment round's capital leaving an account and coming back is the
+  // company's own money going round — only the round's net profit earns.
+  if (txn.type === 'INVESTMENT') return false;
   if ((INCOME_SOURCE_MODULES as readonly string[]).includes(txn.sourceModule)) return true;
   return txn.sourceModule === 'MANUAL' && txn.type === 'INCOME' && txn.direction === 'IN';
 }

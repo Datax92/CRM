@@ -28,9 +28,12 @@
  * - **The share columns are named per book, and editable.** AARYJ, INVESTOR,
  *   CC, ALI and MISC are this sheet's people; the template has no ALI. A column
  *   is a key and a label, so renaming "ALI" to "MAISAM ALI" rewrites nothing.
- * - **Only the net profit touches an account** (the owner's choice). The amount
- *   and the shares are facts on the sheet; the net lands in the book's income
- *   account, and a round that lost money takes its loss back out.
+ * - **The net profit lands in the book's income account**, and a round that
+ *   lost money takes its loss back out. The shares are facts on the sheet.
+ * - **The amount comes out of an account and goes back into it** — out on the
+ *   date, back on the return date (`checkRoundFunding`, below). It was a fact
+ *   on the sheet only until 2026-09-16, when the owner asked where the money
+ *   came from; a round saved without an account still reads that way.
  *
  * Dependency-free so the raw `--experimental-strip-types` test loader runs it.
  */
@@ -210,4 +213,161 @@ export function readShareColumns(raw: unknown): ShareColumn[] {
 /** The account a book's net profit lands in. Fixed, so a rename never makes a second one. */
 export function investmentAccountId(bookId: string): string {
   return `invx_${bookId}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Where a round's amount came from                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One account a round's AMOUNT was taken out of.
+ *
+ * **The money goes out and comes back** (the owner's choice, 2026-09-16). The
+ * amount leaves these accounts on the round's DATE and goes back into the same
+ * accounts on its RETURN DATE — the sheet's own point that "the same capital
+ * goes round again": 350,000 three times is one 350,000, not 1,050,000 spent.
+ * A round with no return date yet is money still out with the partner.
+ *
+ * The profit is a separate question and is unchanged: the net lands in the
+ * book's own account.
+ */
+export interface FundingLine {
+  accountId: string;
+  amount: number;
+}
+
+export interface FundingCheck {
+  /** The lines as they will be saved: blanks dropped, a lone line's amount filled in. */
+  lines: FundingLine[];
+  allocated: number;
+  errors: string[];
+  valid: boolean;
+}
+
+const rupees = new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 });
+
+/**
+ * Whether a round's funding lines account for its amount.
+ *
+ * - **No account at all is allowed**: the amount is then a fact on the sheet
+ *   only, which is what every round saved before this existed is.
+ * - **One account takes the whole amount** without anybody typing it twice.
+ * - Split across several, **the lines must come to the amount exactly** —
+ *   short leaves part of it from nowhere, over takes money the partner never
+ *   received. Neither is trimmed to fit; the same account twice is refused.
+ */
+export function checkRoundFunding(
+  amount: number,
+  raw: ReadonlyArray<{ accountId?: string | null; amount?: unknown }>
+): FundingCheck {
+  const total = parseAmount(amount);
+  const picked = raw
+    .map((line) => ({ accountId: (line.accountId ?? '').trim(), amount: parseAmount(line.amount) }))
+    .filter((line) => line.accountId);
+
+  if (picked.length === 0) return { lines: [], allocated: 0, errors: [], valid: true };
+
+  const lines = picked.length === 1 ? [{ accountId: picked[0].accountId, amount: total }] : picked;
+  const errors: string[] = [];
+
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (seen.has(line.accountId)) {
+      errors.push('The same account is listed twice. Put its whole share on one line.');
+      break;
+    }
+    seen.add(line.accountId);
+  }
+  if (lines.some((line) => line.amount <= 0)) {
+    errors.push('Enter how much came out of each account.');
+  }
+
+  const allocated = roundMoney(lines.reduce((sum, line) => sum + line.amount, 0));
+  if (total > 0 && errors.length === 0) {
+    if (allocated > total) {
+      errors.push(`The accounts come to ${rupees.format(allocated)}, more than the ${rupees.format(total)} amount.`);
+    } else if (allocated < total) {
+      errors.push(
+        `The accounts come to ${rupees.format(allocated)} — ${rupees.format(roundMoney(total - allocated))} of the ${rupees.format(total)} amount is not from any account.`
+      );
+    }
+  }
+
+  return { lines, allocated, errors, valid: errors.length === 0 };
+}
+
+/** Reads `funding` off a stored round. Anything malformed is dropped, never guessed. */
+export function readFunding(raw: unknown): FundingLine[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((line) => {
+      const entry = (line ?? {}) as { accountId?: unknown; amount?: unknown };
+      return {
+        accountId: typeof entry.accountId === 'string' ? entry.accountId : '',
+        amount: parseAmount(entry.amount),
+      };
+    })
+    .filter((line) => line.accountId && line.amount > 0);
+}
+
+export type FundingLegKind = 'OUT' | 'BACK';
+
+export interface FundingLeg {
+  /** Deterministic, so an edit rewrites the leg it already posted. */
+  id: string;
+  kind: FundingLegKind;
+  accountId: string;
+  direction: 'IN' | 'OUT';
+  amount: number;
+  dayKey: string;
+}
+
+export function fundingLegId(roundId: string, accountId: string, kind: FundingLegKind): string {
+  return `invx_${roundId}_${kind === 'OUT' ? 'out' : 'back'}_${accountId}`;
+}
+
+/** Every leg id a set of lines could have posted, returned or not — what an edit must clear. */
+export function possibleFundingLegIds(roundId: string, lines: readonly FundingLine[]): string[] {
+  return lines.flatMap((line) => [fundingLegId(roundId, line.accountId, 'OUT'), fundingLegId(roundId, line.accountId, 'BACK')]);
+}
+
+/**
+ * The movements a round's funding posts: out of each account on the date, and
+ * — once there is a return date — the same amount back in on that date.
+ */
+export function fundingLegs(
+  roundId: string,
+  lines: readonly FundingLine[],
+  dayKey: string,
+  returnDayKey: string | null
+): FundingLeg[] {
+  const legs: FundingLeg[] = [];
+  for (const line of lines) {
+    legs.push({ id: fundingLegId(roundId, line.accountId, 'OUT'), kind: 'OUT', accountId: line.accountId, direction: 'OUT', amount: line.amount, dayKey });
+    if (returnDayKey) {
+      legs.push({ id: fundingLegId(roundId, line.accountId, 'BACK'), kind: 'BACK', accountId: line.accountId, direction: 'IN', amount: line.amount, dayKey: returnDayKey });
+    }
+  }
+  return legs;
+}
+
+/**
+ * How far each account's balance moves when `before` is replaced by `after`.
+ *
+ * `before` is what is actually posted — read back from the ledger, not from the
+ * round — so a leg somebody deleted from a statement is not taken off twice.
+ */
+export function fundingDeltas(
+  before: ReadonlyArray<Pick<FundingLeg, 'accountId' | 'direction' | 'amount'>>,
+  after: ReadonlyArray<Pick<FundingLeg, 'accountId' | 'direction' | 'amount'>>
+): Map<string, number> {
+  const deltas = new Map<string, number>();
+  const add = (leg: Pick<FundingLeg, 'accountId' | 'direction' | 'amount'>, sign: 1 | -1) => {
+    const effect = leg.direction === 'IN' ? leg.amount : -leg.amount;
+    deltas.set(leg.accountId, roundMoney((deltas.get(leg.accountId) ?? 0) + sign * effect));
+  };
+  for (const leg of before) add(leg, -1);
+  for (const leg of after) add(leg, 1);
+  for (const [accountId, delta] of deltas) if (delta === 0) deltas.delete(accountId);
+  return deltas;
 }

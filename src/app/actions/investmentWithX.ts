@@ -9,8 +9,14 @@
  * book, the same way Car Sale and Marketing Income bank theirs — so an office
  * expense can be paid straight *from* an investment's profit.
  *
- * Only the net moves, at the owner's choice. The amount handed over and every
- * share column are facts on the sheet, not movements.
+ * **The net moves into the book's account; the amount moves out and back.** A
+ * round names the account(s) its amount was taken from — Investor A, M, the
+ * bank — and the money leaves them on the round's date and goes back into them
+ * on its return date (`lib/investmentWithX.checkRoundFunding`). The share
+ * columns are facts on the sheet, not movements.
+ *
+ * Those capital legs are typed `INVESTMENT`, never `INCOME`: the company's own
+ * money going round is not earnings, and the group income sheet skips them.
  *
  * **One transaction per round, rewritten in place** (`invx_{roundId}`), so an
  * edit replaces the movement it already posted rather than leaving two, and the
@@ -31,9 +37,14 @@ import { formatMoney } from "@/lib/money";
 import {
   DEFAULT_SHARE_COLUMNS,
   calculateRound,
+  checkRoundFunding,
+  fundingDeltas,
+  fundingLegs,
   investmentAccountId,
   normalizeNetBasis,
   normalizeShareColumns,
+  possibleFundingLegIds,
+  readFunding,
   readShareColumns,
   type NetBasis,
   type ShareColumn,
@@ -256,6 +267,11 @@ export interface InvestmentRoundInput {
   shares?: Record<string, number>;
   /** `DESCRIPTION` — where the net went. */
   description?: string | null;
+  /**
+   * The account(s) the amount was taken out of. One line takes the whole
+   * amount; several must add up to it. Empty leaves it a figure on the sheet.
+   */
+  funding?: Array<{ accountId: string; amount: number | string }>;
 }
 
 export async function saveInvestmentRound(
@@ -290,6 +306,12 @@ export async function saveInvestmentRound(
       throw new UserFacingError("The return date is before the date the money went in.");
     }
 
+    const funding = checkRoundFunding(figures.amount, input.funding ?? []);
+    if (!funding.valid) throw new UserFacingError(funding.errors[0]);
+
+    const bookName = (book.name as string) ?? "Investment";
+    const partner = (book.partner as string) || "the partner";
+
     const ref = roundId ? adminDb.collection(ROUNDS).doc(roundId) : adminDb.collection(ROUNDS).doc();
     const payload = {
       bookId: input.bookId,
@@ -312,24 +334,106 @@ export async function saveInvestmentRound(
       if (roundId && snap.data()?.bookId !== input.bookId) {
         throw new UserFacingError("That round belongs to a different book.");
       }
+
+      // **What the funding has actually posted is read back from the ledger**,
+      // not from the round: a leg somebody deleted from a statement must not be
+      // taken off its account a second time.
+      const previousLines = snap.exists ? readFunding(snap.data()?.funding) : [];
+      const legs = fundingLegs(ref.id, funding.lines, dayKey, returnDayKey);
+      const legIds = [...new Set([...possibleFundingLegIds(ref.id, previousLines), ...legs.map((leg) => leg.id)])];
+      const accountIds = [...new Set([...previousLines, ...funding.lines].map((line) => line.accountId))];
+      const legSnaps = legIds.length
+        ? await t.getAll(...legIds.map((id) => adminDb.collection(TRANSACTIONS).doc(id)))
+        : [];
+      const accountSnaps = accountIds.length
+        ? await t.getAll(...accountIds.map((id) => adminDb.collection(ACCOUNTS).doc(id)))
+        : [];
+      const accounts = new Map(accountSnaps.map((account) => [account.id, account]));
+
+      const wasOnRound = new Set(previousLines.map((line) => line.accountId));
+      for (const line of funding.lines) {
+        const account = accounts.get(line.accountId);
+        if (!account?.exists) {
+          throw new UserFacingError("One of the accounts this round is taken from no longer exists. Choose another.");
+        }
+        if (account.data()?.status === "ARCHIVED" && !wasOnRound.has(line.accountId)) {
+          throw new UserFacingError(`${account.data()?.name ?? "That account"} is archived and cannot be paid from.`);
+        }
+      }
+
       const entry = {
         at: new Date().toISOString(),
         action: roundId ? "EDITED" : "CREATED",
         byUid: auth.uid,
         byName: auth.name ?? auth.email ?? null,
         amount: figures.netProfit,
+        funding: funding.lines,
+      };
+      const stored = {
+        ...payload,
+        // The name is frozen beside the id, so a renamed or deleted account
+        // still reads as what it was when the money left it.
+        funding: funding.lines.map((line) => ({
+          ...line,
+          accountName: (accounts.get(line.accountId)?.data()?.name as string) ?? null,
+        })),
       };
       t.set(
         ref,
         roundId
-          ? { ...payload, history: FieldValue.arrayUnion(entry) }
-          : { ...payload, createdByUid: auth.uid, createdAt: FieldValue.serverTimestamp(), history: [entry] },
+          ? { ...stored, history: FieldValue.arrayUnion(entry) }
+          : { ...stored, createdByUid: auth.uid, createdAt: FieldValue.serverTimestamp(), history: [entry] },
         { merge: Boolean(roundId) }
       );
+
+      const posted = legSnaps
+        .filter((leg) => leg.exists && leg.data()?.status === "POSTED")
+        .map((leg) => ({
+          accountId: leg.data()!.accountId as string,
+          direction: leg.data()!.direction as "IN" | "OUT",
+          amount: money(leg.data()!.amount),
+        }));
+      const keep = new Set(legs.map((leg) => leg.id));
+      for (const leg of legSnaps) if (leg.exists && !keep.has(leg.id)) t.delete(leg.ref);
+
+      const total = formatMoney(figures.amount);
+      for (const leg of legs) {
+        t.set(
+          adminDb.collection(TRANSACTIONS).doc(leg.id),
+          {
+            accountId: leg.accountId,
+            direction: leg.direction,
+            amount: leg.amount,
+            type: "INVESTMENT",
+            dayKey: leg.dayKey,
+            sourceModule: "INVESTMENT_WITH_X",
+            sourceId: ref.id,
+            sourceLabel:
+              leg.kind === "OUT"
+                ? `${bookName} — handed to ${partner} (${total} round)`
+                : `${bookName} — back from ${partner} (${total} round)`,
+            groupId: `invx_${ref.id}`,
+            status: "POSTED",
+            note: payload.description,
+            idempotencyKey: `INVESTMENT_WITH_X:${leg.id}`,
+            createdByUid: auth.uid,
+            createdByName: auth.name ?? auth.email ?? null,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      // Each account moves by the difference, in the same transaction.
+      for (const [accountId, delta] of fundingDeltas(posted, legs)) {
+        const account = accounts.get(accountId);
+        if (account?.exists) t.update(account.ref, { cachedBalance: FieldValue.increment(delta) });
+      }
+
       return snap.exists ? money(snap.data()?.netProfit) : 0;
     });
 
-    await writeRoundMovement(ref.id, input.bookId, (book.name as string) ?? "Investment", payload, figures.netProfit, auth);
+    await writeRoundMovement(ref.id, input.bookId, bookName, payload, figures.netProfit, auth);
 
     const delta = Math.round((figures.netProfit - previousNet) * 100) / 100;
     if (delta !== 0) {
@@ -343,7 +447,9 @@ export async function saveInvestmentRound(
 }
 
 /**
- * Deletes a round and takes its net back out of the account.
+ * Deletes a round, takes its net back out of the book's account, and undoes its
+ * funding: money still out with the partner goes back into the accounts it came
+ * from, and a round already returned leaves them where they are.
  *
  * **Refused once the account has spent below what this round put in**, as Car
  * Sale does — an account cannot un-spend, and the message says what to do.
@@ -351,7 +457,7 @@ export async function saveInvestmentRound(
 export async function deleteInvestmentRound(
   token: string,
   roundId: string
-): Promise<ActionResult<{ reversed: number }>> {
+): Promise<ActionResult<{ reversed: number; restored: number }>> {
   return runAction("deleteInvestmentRound", async () => {
     await requireAdmin(token);
 
@@ -368,14 +474,37 @@ export async function deleteInvestmentRound(
       );
     }
 
+    const legRefs = possibleFundingLegIds(roundId, readFunding(snap.data()?.funding)).map((id) =>
+      adminDb.collection(TRANSACTIONS).doc(id)
+    );
+    const legSnaps = legRefs.length ? await adminDb.getAll(...legRefs) : [];
+    const deltas = fundingDeltas(
+      legSnaps
+        .filter((leg) => leg.exists && leg.data()?.status === "POSTED")
+        .map((leg) => ({
+          accountId: leg.data()!.accountId as string,
+          direction: leg.data()!.direction as "IN" | "OUT",
+          amount: money(leg.data()!.amount),
+        })),
+      []
+    );
+    const fundingAccounts = deltas.size
+      ? await adminDb.getAll(...[...deltas.keys()].map((id) => adminDb.collection(ACCOUNTS).doc(id)))
+      : [];
+
     const batch = adminDb.batch();
     batch.delete(adminDb.collection(TRANSACTIONS).doc(`invx_${roundId}`));
+    for (const leg of legSnaps) if (leg.exists) batch.delete(leg.ref);
+    for (const account of fundingAccounts) {
+      if (account.exists) batch.update(account.ref, { cachedBalance: FieldValue.increment(deltas.get(account.id)!) });
+    }
     batch.delete(ref);
     await batch.commit();
 
     if (net !== 0) {
       await adminDb.collection(ACCOUNTS).doc(accountId).update({ cachedBalance: FieldValue.increment(-net) });
     }
-    return { reversed: net };
+    const restored = Math.round([...deltas.values()].reduce((sum, delta) => sum + delta, 0) * 100) / 100;
+    return { reversed: net, restored };
   });
 }

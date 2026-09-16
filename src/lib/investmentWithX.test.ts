@@ -4,6 +4,11 @@ import {
   DEFAULT_SHARE_COLUMNS,
   bookTotals,
   calculateRound,
+  checkRoundFunding,
+  fundingDeltas,
+  fundingLegs,
+  possibleFundingLegIds,
+  readFunding,
   normalizeShareColumns,
   parseAmount,
   shareKeyFor,
@@ -87,4 +92,84 @@ test('renaming a column keeps its key; a new column gets a fresh unique one', ()
     { key: 'daddy_2', label: 'daddy' },
   ]);
   assert.equal(shareKeyFor('!!!', []), 'share');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Where the amount came from                                                  */
+/* -------------------------------------------------------------------------- */
+
+test('no account is allowed — the amount is then on the sheet only', () => {
+  const check = checkRoundFunding(407_000, [{ accountId: '', amount: '' }]);
+  assert.equal(check.valid, true);
+  assert.deepEqual(check.lines, []);
+});
+
+test('one account takes the whole amount without it being typed twice', () => {
+  const check = checkRoundFunding(407_000, [{ accountId: 'investorA', amount: '' }]);
+  assert.equal(check.valid, true);
+  assert.deepEqual(check.lines, [{ accountId: 'investorA', amount: 407_000 }]);
+});
+
+test('a split must come to the amount exactly — short and over are both refused', () => {
+  assert.equal(checkRoundFunding(407_000, [{ accountId: 'a', amount: 300_000 }, { accountId: 'm', amount: '107,000' }]).valid, true);
+
+  const short = checkRoundFunding(407_000, [{ accountId: 'a', amount: 300_000 }, { accountId: 'm', amount: 100_000 }]);
+  assert.equal(short.valid, false);
+  // Intl puts a non-breaking space after "Rs".
+  assert.match(short.errors[0], /Rs\s7,000 of the Rs\s407,000 amount is not from any account/);
+
+  const over = checkRoundFunding(407_000, [{ accountId: 'a', amount: 300_000 }, { accountId: 'm', amount: 200_000 }]);
+  assert.equal(over.valid, false);
+  assert.match(over.errors[0], /more than the Rs\s407,000 amount/);
+});
+
+test('the same account twice, or a split line with no amount, is refused', () => {
+  assert.equal(checkRoundFunding(10, [{ accountId: 'a', amount: 5 }, { accountId: 'a', amount: 5 }]).valid, false);
+  assert.equal(checkRoundFunding(10, [{ accountId: 'a', amount: 10 }, { accountId: 'm', amount: '' }]).valid, false);
+});
+
+test('out on the date; back on the return date only once there is one', () => {
+  const lines = [{ accountId: 'a', amount: 300_000 }, { accountId: 'm', amount: 107_000 }];
+  const out = fundingLegs('r1', lines, '2026-08-31', null);
+  assert.deepEqual(out.map((leg) => [leg.id, leg.direction, leg.amount, leg.dayKey]), [
+    ['invx_r1_out_a', 'OUT', 300_000, '2026-08-31'],
+    ['invx_r1_out_m', 'OUT', 107_000, '2026-08-31'],
+  ]);
+
+  const back = fundingLegs('r1', lines, '2026-08-31', '2026-09-18');
+  assert.equal(back.length, 4);
+  assert.deepEqual(back.filter((leg) => leg.kind === 'BACK').map((leg) => [leg.accountId, leg.direction, leg.dayKey]), [
+    ['a', 'IN', '2026-09-18'],
+    ['m', 'IN', '2026-09-18'],
+  ]);
+  // Every id an edit might need to clear, returned or not.
+  assert.deepEqual(possibleFundingLegIds('r1', lines).sort(), back.map((leg) => leg.id).sort());
+});
+
+test('a returned round leaves the account where it started', () => {
+  const legs = fundingLegs('r1', [{ accountId: 'a', amount: 407_000 }], '2026-08-31', '2026-09-18');
+  assert.equal(fundingDeltas([], legs).size, 0);
+  assert.equal(fundingDeltas([], fundingLegs('r1', [{ accountId: 'a', amount: 407_000 }], '2026-08-31', null)).get('a'), -407_000);
+});
+
+test('an edit moves each account by the difference only', () => {
+  const before = fundingLegs('r1', [{ accountId: 'a', amount: 407_000 }], '2026-08-31', null);
+
+  // Filling in the return date puts the money back.
+  const returned = fundingLegs('r1', [{ accountId: 'a', amount: 407_000 }], '2026-08-31', '2026-09-18');
+  assert.deepEqual([...fundingDeltas(before, returned)], [['a', 407_000]]);
+
+  // Moving 107,000 of it to M: A gets 107,000 back, M pays 107,000.
+  const split = fundingLegs('r1', [{ accountId: 'a', amount: 300_000 }, { accountId: 'm', amount: 107_000 }], '2026-08-31', null);
+  assert.deepEqual([...fundingDeltas(before, split)], [['a', 107_000], ['m', -107_000]]);
+
+  // Deleting the round undoes whatever is posted.
+  assert.deepEqual([...fundingDeltas(before, [])], [['a', 407_000]]);
+});
+
+test('stored funding is read back strictly', () => {
+  assert.deepEqual(readFunding([{ accountId: 'a', amount: 5 }, { accountId: '', amount: 5 }, { accountId: 'm', amount: 0 }, null]), [
+    { accountId: 'a', amount: 5 },
+  ]);
+  assert.deepEqual(readFunding(undefined), []);
 });

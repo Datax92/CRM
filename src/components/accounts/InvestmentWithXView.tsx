@@ -14,12 +14,15 @@
  * Profit or Gross Profit. The arithmetic is `lib/investmentWithX`; each round's
  * net profit is banked into the book's own income account, from which expenses
  * can be paid like any other account.
+ *
+ * **A round's amount is taken from an account** — any account in Accounts, the
+ * Capital Investment ones first — and goes back into it on the return date.
  */
 
 import { useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import { useLedger } from "@/hooks/useLedger";
+import { useLedger, type AccountDoc } from "@/hooks/useLedger";
 import { usePagination } from "@/hooks/usePagination";
 import { useInvestmentBooks, useInvestmentRounds, type InvestmentBook } from "@/hooks/useAccountSheets";
 import { Pager } from "@/components/employees/DossierControls";
@@ -30,10 +33,14 @@ import {
   NET_BASIS_LABELS,
   bookTotals,
   calculateRound,
+  checkRoundFunding,
   parseAmount,
+  readFunding,
+  type FundingLine,
   type NetBasis,
   type RoundFigures,
 } from "@/lib/investmentWithX";
+import { ACCOUNT_KIND_LABELS, type AccountKind } from "@/lib/ledger";
 import {
   saveInvestmentBook,
   deleteInvestmentBook,
@@ -70,9 +77,35 @@ interface Round extends RoundFigures {
   dayKey: string;
   returnDayKey: string | null;
   description: string | null;
+  /** Where the amount was taken from. Empty on rounds saved before it was asked. */
+  funding: Array<FundingLine & { accountName: string | null }>;
 }
 
 const money = (n: number) => formatMoney(n);
+
+/** Stored funding plus the name frozen beside each line when it was saved. */
+function readRoundFunding(raw: unknown): Round["funding"] {
+  const names = new Map<string, string>();
+  if (Array.isArray(raw)) {
+    for (const line of raw) {
+      const entry = (line ?? {}) as { accountId?: unknown; accountName?: unknown };
+      if (typeof entry.accountId === "string" && typeof entry.accountName === "string") {
+        names.set(entry.accountId, entry.accountName);
+      }
+    }
+  }
+  return readFunding(raw).map((line) => ({ ...line, accountName: names.get(line.accountId) ?? null }));
+}
+
+/** The live name when the account still exists, else the one frozen on the round. */
+function fundingNames(round: Pick<Round, "funding">, accounts: readonly AccountDoc[]): string {
+  return round.funding
+    .map((line) => accounts.find((account) => account.id === line.accountId)?.name ?? line.accountName ?? "A deleted account")
+    .join(", ");
+}
+
+/** Capital Investment accounts first — that is where a round's money usually comes from. */
+const KIND_ORDER: AccountKind[] = ["INVESTMENT", "BANK", "CASH", "WALLET", "COMMITTEE", "INCOME", "OTHER"];
 
 export function InvestmentWithXView() {
   const { role, getIdToken } = useAuth();
@@ -116,6 +149,7 @@ export function InvestmentWithXView() {
         dayKey: typeof raw.dayKey === "string" ? raw.dayKey : "",
         returnDayKey: typeof raw.returnDayKey === "string" && raw.returnDayKey ? raw.returnDayKey : null,
         description: typeof raw.description === "string" && raw.description ? raw.description : null,
+        funding: readRoundFunding(raw.funding),
       }))
       // The sheet reads oldest first, top to bottom.
       .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
@@ -147,12 +181,18 @@ export function InvestmentWithXView() {
 
   const periodLabel = !from && !to ? "All rounds" : !from ? `Up to ${to}` : !to ? `From ${from}` : `${from} → ${to}`;
 
+  /** Taken from an account and not back yet — money currently with the partner. */
+  const stillOut = useMemo(
+    () => inRange.filter((round) => round.funding.length > 0 && !round.returnDayKey).reduce((sum, round) => sum + round.amount, 0),
+    [inRange]
+  );
+
   const statCards = useMemo<StatCard[]>(() => {
     const pct = (n: number, of: number) => (of ? Math.max(0, Math.min(100, Math.round((n / of) * 100))) : 0);
     return [
       {
         label: "Invested", value: money(totals.amount),
-        note: `${totals.rounds} round${totals.rounds === 1 ? "" : "s"}`,
+        note: `${totals.rounds} round${totals.rounds === 1 ? "" : "s"}${stillOut > 0 ? ` · ${money(stillOut)} still out` : ""}`,
         pill: `${totals.rounds}`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.wallet,
       },
       {
@@ -174,10 +214,11 @@ export function InvestmentWithXView() {
         color: balance < 0 ? "#a8483c" : "#2f7d78", accent: "#4fa39c", icon: ICON.wallet,
       },
     ];
-  }, [totals, balance, spent, book]);
+  }, [totals, balance, spent, book, stillOut]);
 
   const figuresFor = (round: Round): Figure[] => [
     { label: "Amount", value: money(round.amount), strong: true, hint: round.dayKey },
+    { label: "From", value: round.funding.length ? fundingNames(round, ledger.accounts) : "—", tone: "muted" },
     { label: "Return", value: round.returnDayKey ?? "—", tone: "muted" },
     { label: "Profit", value: money(round.profit), tone: "ink" },
     { label: "Gross", value: money(round.grossProfit), tone: "muted" },
@@ -196,7 +237,12 @@ export function InvestmentWithXView() {
     setDeleting(null);
     setBanner(
       result.ok
-        ? { ok: true, text: `Round deleted, and ${money(result.data.reversed)} taken back out of ${book?.name}.` }
+        ? {
+            ok: true,
+            text: `Round deleted, and ${money(result.data.reversed)} taken back out of ${book?.name}.${
+              result.data.restored > 0 ? ` ${money(result.data.restored)} put back into the account it came from.` : ""
+            }`,
+          }
         : { ok: false, text: result.error }
     );
   };
@@ -216,6 +262,12 @@ export function InvestmentWithXView() {
 
   const columns: SheetColumn<Round>[] = [
     { key: "amount", header: "Amount", align: "right", render: (r) => money(r.amount), total: money(listedTotals.amount) },
+    {
+      key: "from", header: "From",
+      render: (r) => r.funding.length
+        ? <span style={{ fontWeight: 600, color: X.body }}>{fundingNames(r, ledger.accounts)}</span>
+        : <span style={{ color: "#c3d5d3" }}>–</span>,
+    },
     { key: "date", header: "Date", render: (r) => r.dayKey },
     { key: "return", header: "Return date", render: (r) => r.returnDayKey ?? <span style={{ color: "#c3d5d3" }}>–</span> },
     { key: "profit", header: "Profit", align: "right", tone: book?.netBasis === "PROFIT" ? "income" : undefined, render: (r) => money(r.profit), total: money(listedTotals.profit) },
@@ -332,7 +384,7 @@ export function InvestmentWithXView() {
               from={from} to={to} maxTo={karachiDayKey()} onFrom={setFrom} onTo={setTo}
               periodLabel={periodLabel}
               search={search} onSearch={setSearch}
-              onDownload={() => downloadSheet(book, filtered)} canDownload={filtered.length > 0}
+              onDownload={() => downloadSheet(book, filtered, ledger.accounts)} canDownload={filtered.length > 0}
               selects={[]}
             />
           )}
@@ -392,6 +444,8 @@ export function InvestmentWithXView() {
         <RoundForm
           book={book}
           round={roundForm.round}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
           getIdToken={getIdToken}
           onClose={() => setRoundForm(null)}
           onSaved={(text) => {
@@ -414,6 +468,9 @@ export function InvestmentWithXView() {
           <strong style={{ color: X.ink }}>{money(deleting.netProfit)}</strong>.
           {deleting.netProfit !== 0 && (
             <> That {deleting.netProfit > 0 ? "profit comes back out of" : "loss is put back into"} {book?.name}&rsquo;s account.</>
+          )}
+          {deleting.funding.length > 0 && !deleting.returnDayKey && (
+            <> The {money(deleting.amount)} goes back into {fundingNames(deleting, ledger.accounts)}.</>
           )}{" "}
           This cannot be undone.
         </ConfirmPanel>
@@ -424,10 +481,10 @@ export function InvestmentWithXView() {
 
 /* -------------------------------------------------------------------------- */
 
-function downloadSheet(book: InvestmentBook, rounds: Round[]) {
-  const header = ["AMOUNT", "DATE", "RETURN DATE", "PROFIT", "GROSS PROFIT", ...book.columns.map((c) => c.label), "NET PROFIT", "DESCRIPTION"];
+function downloadSheet(book: InvestmentBook, rounds: Round[], accounts: readonly AccountDoc[]) {
+  const header = ["AMOUNT", "FROM", "DATE", "RETURN DATE", "PROFIT", "GROSS PROFIT", ...book.columns.map((c) => c.label), "NET PROFIT", "DESCRIPTION"];
   const rows = rounds.map((round) => [
-    round.amount, round.dayKey, round.returnDayKey ?? "", round.profit, round.grossProfit,
+    round.amount, fundingNames(round, accounts), round.dayKey, round.returnDayKey ?? "", round.profit, round.grossProfit,
     ...book.columns.map((c) => round.shares[c.key] ?? 0), round.netProfit, round.description ?? "",
   ]);
   const csv = [header, ...rows]
@@ -445,9 +502,11 @@ function downloadSheet(book: InvestmentBook, rounds: Round[]) {
 /* A round                                                                     */
 /* -------------------------------------------------------------------------- */
 
-function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
+function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSaved, onDelete }: {
   book: InvestmentBook;
   round: Round | null;
+  accounts: AccountDoc[];
+  balances: Map<string, { balance: number }>;
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
@@ -468,8 +527,38 @@ function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
   );
   // Gross follows profit until somebody types a different gross.
   const [grossTouched, setGrossTouched] = useState(Boolean(round && round.grossProfit !== round.profit));
+  // Amounts are only typed once the money is split; one account takes it all.
+  const [lines, setLines] = useState<Array<{ accountId: string; amount: string }>>(
+    round && round.funding.length
+      ? round.funding.map((line) => ({ accountId: line.accountId, amount: round.funding.length > 1 ? String(line.amount) : "" }))
+      : [{ accountId: "", amount: "" }]
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const funding = checkRoundFunding(parseAmount(form.amount), lines);
+  const fundingError = parseAmount(form.amount) > 0 ? funding.errors[0] ?? null : null;
+  const split = lines.length > 1;
+
+  /** Open accounts, plus any already on this round, grouped by kind. */
+  const groups = useMemo(() => {
+    const onRound = new Set(round?.funding.map((line) => line.accountId) ?? []);
+    const usable = accounts.filter((account) => account.status !== "ARCHIVED" || onRound.has(account.id));
+    return KIND_ORDER.map((kind) => ({
+      kind,
+      // A kind this list does not know is shown under Other rather than dropped.
+      accounts: usable.filter((account) => (KIND_ORDER.includes(account.kind) ? account.kind : "OTHER") === kind),
+    })).filter((group) => group.accounts.length > 0);
+  }, [accounts, round]);
+  const missing = (round?.funding ?? []).filter((line) => !accounts.some((account) => account.id === line.accountId));
+
+  const nameOf = (accountId: string) =>
+    accounts.find((account) => account.id === accountId)?.name
+    ?? round?.funding.find((line) => line.accountId === accountId)?.accountName
+    ?? "A deleted account";
+
+  const setLine = (index: number, patch: Partial<{ accountId: string; amount: string }>) =>
+    setLines((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
 
   const gross = grossTouched ? form.grossProfit : form.profit;
   const preview = calculateRound(
@@ -493,12 +582,16 @@ function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
           grossProfit: parseAmount(gross),
           shares: Object.fromEntries(Object.entries(shares).map(([k, v]) => [k, parseAmount(v)])),
           description: form.description,
+          funding: lines,
         },
         round?.id
       );
       if (result.ok) {
+        const from = funding.lines.map((line) => nameOf(line.accountId)).join(", ");
         onSaved(
-          `${round ? "Round updated" : "Round added"} — ${formatMoney(result.data.netProfit)} net ${result.data.netProfit < 0 ? "taken out of" : "banked into"} ${book.name}.`
+          `${round ? "Round updated" : "Round added"} — ${formatMoney(result.data.netProfit)} net ${result.data.netProfit < 0 ? "taken out of" : "banked into"} ${book.name}.${
+            from ? ` ${formatMoney(parseAmount(form.amount))} ${form.returnDayKey ? `taken from and back into ${from}` : `taken from ${from}, until it comes back`}.` : ""
+          }`
         );
       } else {
         setError(result.error);
@@ -522,6 +615,7 @@ function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
           onCancel={onClose}
           onSubmit={() => void submit()}
           busy={busy}
+          disabled={Boolean(fundingError)}
           submitLabel={round ? "Save round" : "Add round"}
           left={
             <span style={{ fontSize: 12.5, fontWeight: 700, color: preview.netProfit < 0 ? "#a8483c" : X.deep }}>
@@ -539,7 +633,7 @@ function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
           <Field label="Date">
             <input type="date" value={form.dayKey} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, dayKey: v })); }} style={field} />
           </Field>
-          <Field label="Return date" hint="When the profit comes back. The net is banked on this date.">
+          <Field label="Return date" hint="When the money and profit come back. The amount goes back into its account and the net is banked on this date.">
             <input type="date" value={form.returnDayKey} min={form.dayKey} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, returnDayKey: v })); }} style={field} />
           </Field>
           <div />
@@ -550,6 +644,72 @@ function RoundForm({ book, round, getIdToken, onClose, onSaved, onDelete }: {
             <input inputMode="decimal" value={gross} onChange={(e) => { const v = e.target.value; setGrossTouched(true); setForm((f) => ({ ...f, grossProfit: v })); }} style={field} />
           </Field>
         </FormGrid>
+      </OverlayCard>
+
+      <OverlayCard title="Taken from" hint="Leaves the account on the date, goes back in on the return date">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {lines.map((line, index) => (
+            <div key={index} style={{ display: "grid", gap: 8, alignItems: "center", gridTemplateColumns: split ? `minmax(0, 1fr) ${isMobile ? 112 : 140}px 38px` : "minmax(0, 1fr)" }}>
+              <select
+                aria-label={split ? `Account ${index + 1}` : "Account"}
+                value={line.accountId}
+                onChange={(e) => { const v = e.target.value; setLine(index, { accountId: v }); }}
+                style={{ ...field, cursor: "pointer" }}
+              >
+                <option value="">{split ? "Choose an account…" : "Not taken from an account"}</option>
+                {groups.map((group) => (
+                  <optgroup key={group.kind} label={group.kind === "INVESTMENT" ? "Capital Investment" : ACCOUNT_KIND_LABELS[group.kind]}>
+                    {group.accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name} · {formatMoney(balances.get(account.id)?.balance ?? 0)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                {missing.map((line) => (
+                  <option key={line.accountId} value={line.accountId}>{line.accountName ?? "A deleted account"} (deleted)</option>
+                ))}
+              </select>
+              {split && (
+                <>
+                  <input inputMode="decimal" aria-label={`Amount from account ${index + 1}`} value={line.amount} placeholder="Amount"
+                    onChange={(e) => { const v = e.target.value; setLine(index, { amount: v }); }} style={field} />
+                  <button type="button" aria-label="Remove this account"
+                    onClick={() => setLines((rows) => rows.filter((_, i) => i !== index))}
+                    style={{ width: 38, height: 38, borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: "#a8483c", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Glyph d={ICON.cross} size={14} />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+
+          {lines[0]?.accountId && (
+            <button type="button"
+              onClick={() => setLines((rows) => [
+                // Splitting starts the first line at the whole amount, so only the
+                // second figure has to be taken off it.
+                ...rows.map((row, i) => (i === 0 && rows.length === 1 && !row.amount ? { ...row, amount: form.amount } : row)),
+                { accountId: "", amount: "" },
+              ])}
+              style={{ alignSelf: isMobile ? "stretch" : "flex-start", borderRadius: 11, border: `1px dashed ${X.track}`, background: "transparent", padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: X.deep, cursor: "pointer", fontFamily: "inherit" }}>
+              + Split across another account
+            </button>
+          )}
+        </div>
+
+        <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: 12, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
+          background: fundingError ? "#fdeeec" : funding.lines.length ? "#eef7f5" : "#f4f7f7",
+          color: fundingError ? "#a8483c" : funding.lines.length ? X.darkest : X.muted }}>
+          {fundingError
+            ? fundingError
+            : funding.lines.length === 0
+              ? "Not taken from any account — the amount is a figure on the sheet only."
+              : <>
+                  {formatMoney(parseAmount(form.amount))} leaves {funding.lines.map((l) => nameOf(l.accountId)).join(" and ")} on {form.dayKey || "the date"}
+                  {form.returnDayKey ? ` and goes back in on ${form.returnDayKey}.` : " and stays out until a return date is filled in."}
+                </>}
+        </div>
       </OverlayCard>
 
       <OverlayCard title="Shares" hint={`Each comes off ${NET_BASIS_LABELS[book.netBasis].toLowerCase()} before the net`}>
