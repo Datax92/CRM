@@ -6,13 +6,16 @@
  * The centre slot is a raised 52px circle that sits `margin-top:-26px` so it
  * breaks the bar's top edge. What it does depends on who is looking:
  *
- * - **Admins** get the Data Bank, always — see `ADMIN_CENTRE` below.
+ * - **Admins and managers** get a small menu — Data Bank, Meta Ads, and for a
+ *   manager their own Meta Leads — see `ADMIN_CENTRE` below.
  * - **Employees** get Meta Leads, always, for the same reason — see
  *   `EMPLOYEE_CENTRE`. It used to be the contextual action the mockups show (a
  *   phone to dial the lead on the acceptance clock, or a plus); the cost of
  *   replacing it is stated there.
  */
 
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { M } from "./mobileChrome";
@@ -21,9 +24,21 @@ export type CentreAction =
   | { kind: "call"; href: string }
   /** `label` names what is being added, so the button is not "Add a lead" on the directory. */
   | { kind: "add"; onPress: () => void; label?: string }
-  /** A fixed destination rather than an action — the admin's Data Bank. */
-  | { kind: "nav"; href: string; label: string }
+  /** A fixed destination rather than an action. */
+  | { kind: "nav"; href: string; label: string; icon: CentreIcon }
+  /** A short list of destinations — the button opens it rather than going anywhere. */
+  | { kind: "menu"; label: string; icon: CentreIcon; items: CentreMenuItem[] }
   | null;
+
+type CentreIcon = "database" | "megaphone";
+
+export interface CentreMenuItem {
+  label: string;
+  /** One line saying what is behind it, so the menu is not three bare words. */
+  hint: string;
+  href: string;
+  icon: CentreIcon;
+}
 
 /**
  * The admin's centre slot is the Data Bank, on every screen.
@@ -40,17 +55,33 @@ export type CentreAction =
  * employee's job, and the lead is one tap away in the pipeline either way.
  * Employees keep the contextual centre exactly as it was.
  */
+/*
+ * **Now a menu, not one destination** (owner, 2026-09-17: "if I click on the
+ * databank button it should give option like databank or meta, then meta
+ * leads"). The Data Bank and the Meta Ads campaigns are two halves of where
+ * leads come from, and the bar has no sixth slot for the second. Still a fixed
+ * set, for the same reason as before: nobody learns a button whose contents move.
+ */
 const ADMIN_CENTRE: CentreAction = {
-  kind: "nav",
-  href: "/admin/data-bank",
-  label: "Data Bank",
+  kind: "menu",
+  label: "Data Bank and Meta Ads",
+  icon: "database",
+  items: [
+    { label: "Data Bank", hint: "Lead sources and imported lists", href: "/admin/data-bank", icon: "database" },
+    { label: "Meta Ads", hint: "Campaigns sending Facebook and WhatsApp leads", href: "/admin/meta-ads", icon: "megaphone" },
+  ],
 };
 
-/** The same reasoning for a sub admin, pointed at their own folders. */
+/** The same for a sub admin, plus the leads offered to them when they are in the rotation. */
 const SUBADMIN_CENTRE: CentreAction = {
-  kind: "nav",
-  href: "/subadmin/data-bank",
-  label: "Data Bank",
+  kind: "menu",
+  label: "Data Bank and Meta",
+  icon: "database",
+  items: [
+    { label: "My Sources", hint: "Your Data Bank folders", href: "/subadmin/data-bank", icon: "database" },
+    { label: "Meta Ads", hint: "Campaigns sending your team's leads", href: "/subadmin/meta-ads", icon: "megaphone" },
+    { label: "Meta Leads", hint: "Facebook leads offered to you", href: "/subadmin/meta-leads", icon: "megaphone" },
+  ],
 };
 
 /**
@@ -76,6 +107,8 @@ const EMPLOYEE_CENTRE: CentreAction = {
   kind: "nav",
   href: "/employee/meta-leads",
   label: "Meta Leads",
+  // It drew the Data Bank's discs, which is not what it opens.
+  icon: "megaphone",
 };
 
 interface Tab {
@@ -273,13 +306,13 @@ function CentreButton({ action }: { action: CentreAction }) {
   if (action.kind === "nav") {
     return (
       <Link href={action.href} aria-label={action.label} style={circle}>
-        {/* A stack of discs — the same database mark the sidebar uses. */}
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <ellipse cx="12" cy="6" rx="7.5" ry="3" />
-          <path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3" />
-        </svg>
+        <CentreGlyph icon={action.icon} stroke="#fff" />
       </Link>
     );
+  }
+
+  if (action.kind === "menu") {
+    return <CentreMenu action={action} circle={circle} />;
   }
 
   if (action.kind === "call") {
@@ -298,5 +331,164 @@ function CentreButton({ action }: { action: CentreAction }) {
         <path d="M12 5v14M5 12h14" />
       </svg>
     </button>
+  );
+}
+
+function CentreGlyph({ icon, stroke, size = 22 }: { icon: CentreIcon; stroke: string; size?: number }) {
+  return icon === "megaphone" ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4 11v3l12 5V6L4 11ZM16 9a3 3 0 0 1 0 6M6 14v5h3v-4" />
+    </svg>
+  ) : (
+    // A stack of discs — the same database mark the sidebar uses.
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <ellipse cx="12" cy="6" rx="7.5" ry="3" />
+      <path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3" />
+    </svg>
+  );
+}
+
+const noopSubscribe = () => () => {};
+/** False on the server and on the first client render, so the portal never mismatches hydration. */
+const useMounted = () => useSyncExternalStore(noopSubscribe, () => true, () => false);
+
+const MENU_CSS = `
+@keyframes centre-menu-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.centre-menu-sheet { animation: centre-menu-in 240ms cubic-bezier(0.22,0.61,0.36,1) both; }
+@media (prefers-reduced-motion: reduce) { .centre-menu-sheet { animation: none !important; } }
+`;
+
+/**
+ * The centre button's menu.
+ *
+ * **Portalled to the body**: every page sits inside `.animate-page-transition`,
+ * whose `will-change: transform` would pin a fixed panel to the page instead of
+ * the screen. **Open is tied to the path it was opened on**, so moving to
+ * another screen closes it without an effect setting state — the project's lint
+ * rule refuses that.
+ */
+function CentreMenu({
+  action,
+  circle,
+}: {
+  action: Extract<CentreAction, { kind: "menu" }>;
+  circle: React.CSSProperties;
+}) {
+  const pathname = usePathname();
+  const mounted = useMounted();
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  const open = openOn === pathname;
+  const here = action.items.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenOn(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={action.label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpenOn(open ? null : pathname)}
+        style={{
+          ...circle,
+          // A ring when the current screen is one of its destinations, since the
+          // button itself goes nowhere and cannot otherwise show where you are.
+          boxShadow: here ? `0 0 0 3px ${M.cardBg}, 0 0 0 5px ${M.teal}` : circle.boxShadow,
+          transform: open ? "rotate(0deg) scale(0.94)" : undefined,
+        }}
+      >
+        <CentreGlyph icon={action.icon} stroke="#fff" />
+      </button>
+
+      {open &&
+        mounted &&
+        createPortal(
+          <div
+            role="presentation"
+            onClick={() => setOpenOn(null)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 60,
+              background: "rgba(20,40,38,0.32)",
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent: "center",
+              padding: "0 12px calc(env(safe-area-inset-bottom, 0px) + 92px)",
+            }}
+          >
+            <style>{MENU_CSS}</style>
+            <div
+              role="menu"
+              aria-label={action.label}
+              className="centre-menu-sheet"
+              onClick={(event) => event.stopPropagation()}
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                background: M.cardBg,
+                borderRadius: 20,
+                border: `1px solid ${M.cardBorder}`,
+                boxShadow: "0 18px 40px rgba(20,40,38,0.22)",
+                padding: 8,
+              }}
+            >
+              {action.items.map((item) => {
+                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                return (
+                  <Link
+                    key={item.href}
+                    role="menuitem"
+                    href={item.href}
+                    onClick={() => setOpenOn(null)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "12px 12px",
+                      borderRadius: 14,
+                      background: active ? "#e8f5f3" : "transparent",
+                      textDecoration: "none",
+                      WebkitTapHighlightColor: "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 12,
+                        background: active ? M.teal : "#e8f5f3",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <CentreGlyph icon={item.icon} stroke={active ? "#fff" : M.tealDeep} size={19} />
+                    </span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: "#2b3a39" }}>
+                        {item.label}
+                      </span>
+                      <span style={{ display: "block", fontSize: 12.5, color: "#7e918f", marginTop: 1 }}>
+                        {item.hint}
+                      </span>
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
   );
 }

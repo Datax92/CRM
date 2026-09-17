@@ -248,7 +248,9 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         {
           title: "Data Bank", short: "Data", icon: Database,
           subItems: [
-            { title: "My Sources", path: "/subadmin/data-bank", icon: FolderOpen }
+            { title: "My Sources", path: "/subadmin/data-bank", icon: FolderOpen },
+            // The campaigns their team's Facebook leads come from — the admin's screen, scoped.
+            { title: "Meta Ads", path: "/subadmin/meta-ads", icon: Megaphone }
           ]
         },
         {

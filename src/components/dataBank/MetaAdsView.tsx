@@ -21,7 +21,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Megaphone, FolderOpen, ChevronRight, Radio, AlertTriangle, BellRing, X } from "lucide-react";
+import { Megaphone, Radio, AlertTriangle, BellRing, X } from "lucide-react";
 import { collection, onSnapshot, query, where, limit } from "firebase/firestore";
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "@/context/AuthContext";
@@ -29,7 +29,8 @@ import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useDataBankFolders, type DataBankFolder } from "@/hooks/useDataBank";
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
-import { formatBusinessDate, timestampMillis } from "@/lib/dates";
+import { timestampMillis } from "@/lib/dates";
+import { MetaCampaignCard } from "./MetaCampaignCard";
 
 /**
  * A folder this screen owns — one Meta source.
@@ -40,12 +41,6 @@ import { formatBusinessDate, timestampMillis } from "@/lib/dates";
  */
 type MetaFolder = DataBankFolder;
 
-const BASIS_LABEL: Record<string, string> = {
-  CAMPAIGN: "Campaign",
-  FORM: "Lead form",
-  AD: "Ad",
-  NONE: "Unattributed",
-};
 
 /**
  * How recently a lead must have landed for this screen to call it news.
@@ -74,6 +69,8 @@ export function MetaAdsView() {
   useProtectedRoute(["admin", "subadmin"]);
   const isAdmin = role === "admin";
   const isManager = role === "admin" || role === "subadmin";
+  // A manager's folders open under their own routes; the admin's path 404s for them.
+  const basePath = isAdmin ? "/admin" : "/subadmin";
   const isMobile = useIsMobile();
 
   const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: undefined });
@@ -172,7 +169,11 @@ export function MetaAdsView() {
   if (loading) return <FullPageSpinner />;
 
   return (
-    <div className="-m-6 min-h-full bg-[#e9f1f0] px-6 py-6 text-[#2b3a39] md:-m-8 md:px-8 md:py-7">
+    <div
+      className="-m-6 min-h-full bg-[#e9f1f0] px-6 py-6 text-[#2b3a39] md:-m-8 md:px-8 md:py-7"
+      // The phone shell pads 16px, not 24: the class bleed scrolled the page sideways there.
+      style={isMobile ? { margin: -16, padding: "16px 14px 28px" } : undefined}
+    >
       <header className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#4f9c99] text-white">
@@ -224,7 +225,7 @@ export function MetaAdsView() {
                 </p>
               </div>
               <Link
-                href={`/admin/data-bank/${folder.id}`}
+                href={`${basePath}/data-bank/${folder.id}`}
                 className="shrink-0 rounded-full bg-[#2f7d78] px-3.5 py-1.5 text-[12.5px] font-semibold text-white"
               >
                 Open
@@ -278,68 +279,34 @@ export function MetaAdsView() {
           <p className="text-[14.5px] text-[#2b3a39]">No Facebook leads yet.</p>
           <p className="mx-auto mt-1.5 max-w-[520px] text-[13px] leading-relaxed text-[#7e918f]">
             Each Facebook ad gets its own folder here the first time one of its leads arrives —
-            nothing to set up per campaign. If ads are running and nothing appears, check that the
-            campaign&rsquo;s objective is <strong>Leads</strong> with an instant form attached, and
-            that the ad account has no payment error.
+            nothing to set up per campaign. Lead-form ads and click-to-WhatsApp ads both land here.
+            If ads are running and nothing appears, check the ad sends people to the WhatsApp number
+            connected to the CRM, or has an instant form attached.
           </p>
         </div>
       ) : (
-        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+        <div
+          className="grid gap-4"
+          // Inline: an arbitrary Tailwind value only exists if the scanner saw it.
+          style={{ gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill, minmax(300px, 1fr))" }}
+        >
           {filtered.map((folder) => (
-            <AdCard key={folder.id} folder={folder} basePath={isAdmin ? "/admin" : "/subadmin"} />
+            <MetaCampaignCard
+              key={folder.id}
+              name={folder.name}
+              basis={folder.metaSource?.basis ?? "NONE"}
+              href={`${basePath}/data-bank/${folder.id}`}
+              figures={[
+                // The number that means "somebody has to act on this".
+                { value: folder.recordCount ?? 0, label: "To give out", tone: "ink" },
+                { value: folder.promotedCount ?? 0, label: "In pipeline", tone: "teal" },
+              ]}
+              lastLeadAt={folder.lastLeadAt?.toDate?.() ?? null}
+              actionLabel="Open and distribute"
+            />
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function AdCard({ folder, basePath }: { folder: MetaFolder; basePath: string }) {
-  const waiting = folder.recordCount ?? 0;
-  const given = folder.promotedCount ?? 0;
-  const last = folder.lastLeadAt?.toDate?.() ?? null;
-  const basis = folder.metaSource?.basis ?? "NONE";
-
-  return (
-    <div className="group overflow-hidden rounded-2xl border border-[#dceae8] bg-white transition-colors hover:border-[#8cc3bf]">
-      <Link href={`${basePath}/data-bank/${folder.id}`} className="block px-5 pt-5 pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <span className="truncate text-[16px] text-[#2b3a39]">{folder.name}</span>
-            <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-2.5 py-0.5 text-[11px] text-[#2f7d78]">
-              <Megaphone size={11} />
-              {BASIS_LABEL[basis] ?? "Meta"}
-            </span>
-          </div>
-          <ChevronRight size={18} className="mt-1 shrink-0 text-[#a9cfcc]" />
-        </div>
-
-        <div className="mt-4 flex items-end gap-6">
-          <div>
-            {/* The number that means "somebody has to act on this". */}
-            <div className="text-[24px] tabular-nums text-[#2b3a39]">{waiting.toLocaleString()}</div>
-            <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">To give out</div>
-          </div>
-          <div>
-            <div className="text-[24px] tabular-nums text-[#2f7d78]">{given.toLocaleString()}</div>
-            <div className="text-[11px] tracking-[0.9px] text-[#9aacaa] uppercase">In pipeline</div>
-          </div>
-        </div>
-
-        <p className="mt-3.5 text-[12px] text-[#9aacaa]">
-          {last ? `Last lead ${formatBusinessDate(last)}` : "No leads yet"}
-        </p>
-      </Link>
-
-      <div className="flex items-center gap-1 border-t border-[#f0f6f5] px-3 py-2">
-        <Link
-          href={`${basePath}/data-bank/${folder.id}`}
-          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-[#5b6d6b] transition-colors hover:bg-[#f2f8f7]"
-        >
-          <FolderOpen size={13} />
-          <span>Open and distribute</span>
-        </Link>
-      </div>
     </div>
   );
 }

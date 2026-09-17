@@ -63,7 +63,69 @@ const I = {
   wallet: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M16 13h2",
 } as const;
 
+/*
+ * **The phone's menu mirrors the desktop sidebar, section for section**
+ * (owner, 2026-09-17: "add all the options in the mobile view as well"). It had
+ * drifted: no Meta Ads, none of the Accounts modules, and two links to screens
+ * the sidebar had already retired. Anything added to `GlobalLayout`'s menu
+ * belongs here too — a screen reachable on one surface only is a screen half
+ * the team cannot reach.
+ */
 const ADMIN_SECTIONS: Section[] = [
+  {
+    title: "Leads",
+    d: I.megaphone,
+    items: [
+      { label: "Leads", path: "/admin/leads", d: I.sheet },
+      { label: "Campaigns", path: "/admin/leads/campaigns", d: I.megaphone },
+    ],
+  },
+  {
+    title: "Data Bank",
+    d: I.folder,
+    items: [
+      { label: "Sources", path: "/admin/data-bank", d: I.folder },
+      { label: "Meta Ads", path: "/admin/meta-ads", d: I.megaphone },
+    ],
+  },
+  {
+    title: "Team",
+    d: I.team,
+    items: [
+      { label: "Directory", path: "/admin/employees/directory", d: I.team },
+      { label: "Reports", path: "/admin/team/reports", d: I.report },
+      { label: "Priority Settings", path: "/admin/employees/priority", d: I.sliders },
+    ],
+  },
+  { title: "Clients", d: I.clients, items: [{ label: "Folders", path: "/admin/clients", d: I.clients }] },
+  {
+    title: "Financials",
+    d: I.money,
+    items: [
+      { label: "Closed Deals", path: "/admin/financials/deals", d: I.deals },
+      { label: "Profit Distribution", path: "/admin/financials/distribution", d: I.pie },
+      { label: "Salary / Payroll", path: "/admin/financials/payroll", d: I.money },
+      { label: "Reports", path: "/admin/financials/reports", d: I.report },
+    ],
+  },
+  {
+    title: "Accounts",
+    d: I.wallet,
+    items: [
+      { label: "All Accounts", path: "/admin/accounts", d: I.wallet },
+      { label: "Office Expenses", path: "/admin/accounts/office-expenses", d: I.receipt },
+      { label: "Personal Expenses", path: "/admin/accounts/personal-expense", d: I.wallet },
+      { label: "StateLife", path: "/admin/accounts/statelife", d: I.receipt },
+      { label: "Marketing Income", path: "/admin/accounts/marketing-income", d: I.sheet },
+      { label: "Car Sale", path: "/admin/accounts/car-sale", d: I.deals },
+      { label: "Investment with X", path: "/admin/accounts/investment-with-x", d: I.sheet },
+      { label: "Capital Investments", path: "/admin/accounts/capital-investments", d: I.money },
+      { label: "Committee", path: "/admin/accounts/committee", d: I.team },
+      { label: "Receivables & Payables", path: "/admin/accounts/receivable", d: I.receipt },
+      { label: "Group Income", path: "/admin/accounts/group-income", d: I.sheet },
+      { label: "Group Expense", path: "/admin/accounts/group-expense", d: I.receipt },
+    ],
+  },
   {
     title: "Attendance",
     d: I.attendance,
@@ -77,76 +139,88 @@ const ADMIN_SECTIONS: Section[] = [
       { label: "Settings", path: "/admin/attendance/settings", d: I.settings },
     ],
   },
-  {
-    title: "Money",
-    d: I.money,
-    items: [
-      { label: "Closed Deals", path: "/admin/financials/deals", d: I.deals },
-      { label: "Profit Distribution", path: "/admin/financials/distribution", d: I.pie },
-      { label: "Salary / Payroll", path: "/admin/financials/payroll", d: I.money },
-      { label: "Office Expenses", path: "/admin/financials/expenses", d: I.receipt },
-      { label: "Financial Reports", path: "/admin/financials/reports", d: I.report },
-      { label: "Income Sheet", path: "/admin/accounts/income-sheet", d: I.sheet },
-      { label: "Receivables", path: "/admin/accounts/receivable", d: I.receipt },
-      { label: "Investments", path: "/admin/accounts/investment", d: I.sheet },
-    ],
-  },
-  {
-    title: "Team",
-    d: I.team,
-    items: [
-      { label: "Directory", path: "/admin/employees/directory", d: I.team },
-      { label: "Summary Report", path: "/admin/team/reports", d: I.report },
-      { label: "Priority Settings", path: "/admin/employees/priority", d: I.sliders },
-    ],
-  },
-  {
-    title: "Leads",
-    d: I.megaphone,
-    items: [
-      { label: "Data Bank", path: "/admin/data-bank", d: I.folder },
-      { label: "Campaigns", path: "/admin/leads/campaigns", d: I.megaphone },
-    ],
-  },
-  { title: "Clients", d: I.clients, items: [{ label: "Clients", path: "/admin/clients", d: I.clients }] },
   { title: "Settings", d: I.settings, items: [{ label: "Settings", path: "/admin/settings", d: I.settings }] },
 ];
 
-const SUBADMIN_SECTIONS: Section[] = [
-  {
-    title: "Attendance",
-    d: I.attendance,
-    items: [
-      { label: "Dashboard", path: "/subadmin/attendance", d: I.dash },
-      { label: "My Attendance", path: "/subadmin/attendance/me", d: I.clock },
-      { label: "Calendar", path: "/subadmin/attendance/calendar", d: I.calendar },
-      { label: "Leave Management", path: "/subadmin/attendance/leave", d: I.calendar },
-      { label: "Attendance Reports", path: "/subadmin/attendance/reports", d: I.report },
-      { label: "Late / Absence", path: "/subadmin/attendance/records", d: I.alert },
-    ],
-  },
-  {
-    title: "Money",
-    d: I.money,
-    items: [
-      { label: "My Earnings", path: "/subadmin/earnings", d: I.wallet },
-      { label: "My Salary", path: "/subadmin/salary", d: I.money },
-    ],
-  },
-  {
-    title: "Team",
-    d: I.team,
-    items: [
-      { label: "Team Performance", path: "/subadmin/team", d: I.team },
-      { label: "Summary Report", path: "/subadmin/reports", d: I.report },
-    ],
-  },
-  { title: "Meta Leads", d: I.megaphone, items: [{ label: "Meta Leads", path: "/subadmin/meta-leads", d: I.megaphone }] },
-  { title: "Clients", d: I.clients, items: [{ label: "Clients", path: "/subadmin/clients", d: I.clients }] },
-  { title: "Data Bank", d: I.folder, items: [{ label: "My Sources", path: "/subadmin/data-bank", d: I.folder }] },
-];
+/** A manager's menu depends on their kind: HR runs payroll, expenses and attendance settings. */
+function subAdminSections(isHr: boolean): Section[] {
+  return [
+    {
+      title: "Leads",
+      d: I.megaphone,
+      items: [
+        { label: "Team Leads", path: "/subadmin/leads", d: I.sheet },
+        // Offers to the manager themselves, when an admin puts them in the rotation.
+        { label: "Meta Leads", path: "/subadmin/meta-leads", d: I.megaphone },
+      ],
+    },
+    {
+      title: "Data Bank",
+      d: I.folder,
+      items: [
+        { label: "My Sources", path: "/subadmin/data-bank", d: I.folder },
+        { label: "Meta Ads", path: "/subadmin/meta-ads", d: I.megaphone },
+      ],
+    },
+    {
+      title: "My Team",
+      d: I.team,
+      items: [
+        { label: "Team Performance", path: "/subadmin/team", d: I.team },
+        { label: "Reports", path: "/subadmin/reports", d: I.report },
+      ],
+    },
+    { title: "Clients", d: I.clients, items: [{ label: "Folders", path: "/subadmin/clients", d: I.clients }] },
+    {
+      title: "Attendance",
+      d: I.attendance,
+      items: [
+        { label: "Dashboard", path: "/subadmin/attendance", d: I.dash },
+        { label: "My Attendance", path: "/subadmin/attendance/me", d: I.clock },
+        { label: "Calendar", path: "/subadmin/attendance/calendar", d: I.calendar },
+        { label: "Leave Management", path: "/subadmin/attendance/leave", d: I.calendar },
+        { label: "Attendance Reports", path: "/subadmin/attendance/reports", d: I.report },
+        { label: "Late / Absence", path: "/subadmin/attendance/records", d: I.alert },
+        ...(isHr ? [{ label: "Settings", path: "/subadmin/attendance/settings", d: I.settings }] : []),
+      ],
+    },
+    {
+      title: "Earnings",
+      d: I.money,
+      items: [
+        { label: "My Earnings", path: "/subadmin/earnings", d: I.wallet },
+        ...(isHr
+          ? [
+              { label: "Salary / Payroll", path: "/subadmin/financials/payroll", d: I.money },
+              { label: "Office Expenses", path: "/subadmin/financials/expenses", d: I.receipt },
+            ]
+          : [{ label: "My Salary", path: "/subadmin/salary", d: I.money }]),
+      ],
+    },
+  ];
+}
 
 const EMPLOYEE_SECTIONS: Section[] = [
+  {
+    // Meta Leads is also the phone's centre button. Listed here too because the
+    // sheet is where somebody looks for a screen they cannot immediately find.
+    title: "My Workspace",
+    d: I.megaphone,
+    items: [
+      { label: "My Leads", path: "/employee/leads", d: I.sheet },
+      { label: "Meta Leads", path: "/employee/meta-leads", d: I.megaphone },
+    ],
+  },
+  {
+    title: "Performance",
+    d: I.report,
+    items: [
+      { label: "My Stats", path: "/employee/performance/stats", d: I.sheet },
+      { label: "My Report", path: "/employee/reports", d: I.report },
+      { label: "My Earnings", path: "/employee/earnings", d: I.wallet },
+      { label: "My Salary", path: "/employee/salary", d: I.money },
+    ],
+  },
   {
     title: "Attendance",
     d: I.attendance,
@@ -156,35 +230,11 @@ const EMPLOYEE_SECTIONS: Section[] = [
       { label: "My Leave", path: "/employee/attendance/leave", d: I.calendar },
     ],
   },
-  {
-    title: "Money",
-    d: I.money,
-    items: [
-      { label: "My Earnings", path: "/employee/earnings", d: I.wallet },
-      { label: "My Salary", path: "/employee/salary", d: I.money },
-    ],
-  },
-  {
-    title: "Performance",
-    d: I.report,
-    items: [
-      { label: "My Stats", path: "/employee/performance/stats", d: I.sheet },
-      { label: "My Report", path: "/employee/reports", d: I.report },
-    ],
-  },
-  {
-    // Also the phone's centre button. Listed here too because the sheet is
-    // where somebody looks for a screen they cannot immediately find, and a
-    // destination reachable one way only is one people ask about.
-    title: "Leads",
-    d: I.megaphone,
-    items: [{ label: "Meta Leads", path: "/employee/meta-leads", d: I.megaphone }],
-  },
 ];
 
-function sectionsFor(role: string | undefined): Section[] {
+function sectionsFor(role: string | undefined, isHr: boolean): Section[] {
   if (role === "admin") return ADMIN_SECTIONS;
-  if (role === "subadmin") return SUBADMIN_SECTIONS;
+  if (role === "subadmin") return subAdminSections(isHr);
   if (role === "employee") return EMPLOYEE_SECTIONS;
   return [];
 }
@@ -236,13 +286,13 @@ export function AccountButton({ initial, size = 38 }: { initial?: string; size?:
 }
 
 function AccountSheet({ onClose }: { onClose: () => void }) {
-  const { user, role, logout } = useAuth();
+  const { user, role, isHr, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [signingOut, setSigningOut] = useState(false);
 
   const name = user?.email?.split("@")[0] ?? "User";
-  const sections = sectionsFor(role ?? undefined);
+  const sections = sectionsFor(role ?? undefined, isHr);
   /** `null` at the top level; a section title once drilled in. */
   const [openSection, setOpenSection] = useState<string | null>(null);
 

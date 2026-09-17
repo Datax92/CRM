@@ -59,6 +59,7 @@ import {
 import { ImportModal } from "./ImportModal";
 import { BulkPromoteBar } from "./BulkPromoteBar";
 import { ReassignBar } from "./ReassignBar";
+import { AssignedLeadRow, ROW_TONES } from "./AssignedLeadRow";
 import { AssignModal } from "@/components/admin/AssignModal";
 import { RecordFormModal } from "./RecordFormModal";
 import {
@@ -92,11 +93,7 @@ const STATUS_TONE: Record<DataBankStatus, { bg: string; text: string; dot: strin
  * than Tailwind arbitrary values for the reason recorded in `StageChrome`:
  * a value the content scanner never saw emits no rule at all.
  */
-const ROW_TONES = {
-  selected: { background: "#c6e0dc", border: "#3f8f8a" },
-  unopened: { background: "#e2f0ee", border: "#c9dedb" },
-  opened: { background: "#fbfdfd", border: "#e6f1ef" },
-} as const;
+// `ROW_TONES` lives with the shared row, so every list shades alike.
 
 /**
  * The two halves of a folder. **Unassigned** is the rows still in it, paged
@@ -609,7 +606,6 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                 assignedPages.items.map((item, index) => {
                   const active = item.id === selectedAssigned;
                   const seen = isOpened(item.id);
-                  const shade = ROW_TONES[active ? "selected" : seen ? "opened" : "unopened"];
                   const ticked = pickedAssigned.has(item.id);
                   return (
                     <div key={item.id} className="flex items-center gap-2">
@@ -626,59 +622,24 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
                       }
                       className="h-4 w-4 shrink-0 accent-[#2f7d78]"
                     />
-                    <button
+                    <AssignedLeadRow
+                      name={item.name}
+                      phone={item.phone}
+                      kindLabel={item.kind === "LEAD" ? "Lead" : "In their Data Bank"}
+                      ringColor={item.kind === "LEAD" ? "#2f7d78" : "#4d7590"}
+                      chip={
+                        item.kind === "LEAD"
+                          ? { text: item.assigneeName || "Unassigned", background: "#e8f5f3", color: "#2f7d78", title: `Assigned to ${item.assigneeName}` }
+                          : { text: item.assigneeName || "Unassigned", background: "#eaf1f6", color: "#4d7590", title: `Assigned to ${item.assigneeName}` }
+                      }
+                      active={active}
+                      seen={seen}
+                      index={index}
                       onClick={() => {
                         setSelectedAssigned(item.id);
                         markOpened(item.id);
                       }}
-                      aria-current={active ? "true" : undefined}
-                      style={{
-                        animationDelay: `${Math.min(index, 12) * 35}ms`,
-                        background: shade.background,
-                        borderColor: shade.border,
-                      }}
-                      className="animate-lead-row grid w-full min-w-0 flex-1 grid-cols-[44px_1fr_auto] items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors hover:border-[#8cc3bf]"
-                    >
-                      <span
-                        className="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white text-[13.5px] font-medium text-[#4a5c5a]"
-                        style={{ borderColor: item.kind === "LEAD" ? "#2f7d78" : "#4d7590" }}
-                        aria-hidden
-                      >
-                        {initialsOf(item.name)}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {!seen && !active && (
-                            <span
-                              className="h-[7px] w-[7px] shrink-0 rounded-full"
-                              style={{ background: "#3f8f8a" }}
-                              aria-hidden
-                            />
-                          )}
-                          <span className="truncate text-sm font-medium text-[#2b3a39]">{item.name}</span>
-                          {!seen && !active && <span className="sr-only">(not opened yet)</span>}
-                        </span>
-                        <span className="mt-0.5 block truncate text-[11.5px] tabular-nums text-[#7e918f]">
-                          {item.phone || "No number"}
-                        </span>
-                      </span>
-                      <span className="flex max-w-[132px] flex-col items-end gap-1.5">
-                        <span className="text-right text-[11px] leading-tight text-[#9aacaa]">
-                          {item.kind === "LEAD" ? "Lead" : "In their Data Bank"}
-                        </span>
-                        <span
-                          className="max-w-full truncate rounded-full px-2.5 py-1 text-[11px]"
-                          style={
-                            item.kind === "LEAD"
-                              ? { background: "#e8f5f3", color: "#2f7d78" }
-                              : { background: "#eaf1f6", color: "#4d7590" }
-                          }
-                          title={`Assigned to ${item.assigneeName}`}
-                        >
-                          {item.assigneeName || "Unassigned"}
-                        </span>
-                      </span>
-                    </button>
+                    />
                     </div>
                   );
                 })
