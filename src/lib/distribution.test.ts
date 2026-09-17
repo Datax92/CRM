@@ -33,7 +33,7 @@ test('the highest priority employee takes the first turn of leads', () => {
   assert.deepEqual(order, Array(LEADS_PER_TURN).fill('emp1'));
 });
 
-test('the ninth lead rotates to the next priority', () => {
+test('the lead after a full turn rotates to the next priority', () => {
   const { order } = drain(roster(), LEADS_PER_TURN + 1);
   assert.equal(order[LEADS_PER_TURN], 'emp2');
 });
@@ -42,9 +42,9 @@ test('a full cycle is one turn each in priority order, then wraps to the top', (
   const total = LEADS_PER_TURN * 3;
   const { order } = drain(roster(), total + 1);
 
-  // Written against LEADS_PER_TURN rather than a literal: the turn was eight
-  // and is now five, and a test that hardcodes the number only proves what the
-  // number used to be.
+  // Written against LEADS_PER_TURN rather than a literal: the turn was eight,
+  // then five, and is now one, and a test that hardcodes the number only proves
+  // what the number used to be.
   const n = LEADS_PER_TURN;
   assert.deepEqual(order.slice(0, n), Array(n).fill('emp1'));
   assert.deepEqual(order.slice(n, n * 2), Array(n).fill('emp2'));

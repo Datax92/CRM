@@ -1,16 +1,19 @@
 /**
  * Leads one employee receives before the lane moves to the next priority.
  *
- * **Five, at the owner's instruction** — it was eight. A shorter turn spreads
- * a day's leads across more of the team and shortens the wait for the person at
- * the back of the lane, which is what makes the order feel fair rather than
- * winner-takes-all.
+ * **One, at the owner's instruction (2026-09-17)** — it was eight, then five.
+ * A straight round robin: lead 1 to priority 1, lead 2 to priority 2, and back
+ * to the top once everybody has had one. With paid WhatsApp leads arriving a
+ * few an hour, a turn of five handed one person most of a morning's leads.
+ *
+ * A missed lead still cascades without spending anybody's turn, so the person
+ * who picks it up is not skipped for the next one.
  *
  * Defined here rather than imported: this module is deliberately dependency
  * free so the node test runner can load it directly, without a bundler to
  * resolve extensionless paths.
  */
-export const LEADS_PER_TURN = 5;
+export const LEADS_PER_TURN = 1;
 
 export interface Employee {
   uid: string;
@@ -89,17 +92,17 @@ export interface AssigneeResolution {
 }
 
 /**
- * Resolves the next assignee under the priority + 8-lead rotation rule
- * (BR-6, architecture.md §4.2) and returns the updated cycle state.
+ * Resolves the next assignee under the priority + rotation rule (BR-6,
+ * architecture.md §4.2) and returns the updated cycle state.
  *
- * The rule as implemented: the highest-priority active employee receives eight
- * leads, then the next priority receives eight, and so on; once the lowest
- * priority completes their eight the cycle resets and it starts again from
- * priority 1. Disabled employees are skipped without breaking the sequence.
+ * The rule as implemented: the highest-priority active employee receives
+ * `LEADS_PER_TURN` leads, then the next priority receives theirs, and so on;
+ * once the lowest priority completes their turn the cycle resets and it starts
+ * again from priority 1. Disabled employees are skipped without breaking the sequence.
  *
  * NOTE (PRD §8 open question 1): only auto-assignments advance these counters —
  * a lead the admin hands out manually inside the 5-minute window does not
- * consume anyone's eight. That is the behaviour the system already had; it is
+ * consume anyone's turn. That is the behaviour the system already had; it is
  * flagged for client confirmation rather than changed here.
  *
  * `excludeUids` covers reassignment: an employee who has already been offered
@@ -135,7 +138,7 @@ export function getNextAssigneeAndState(
     };
   }
 
-  // Whoever has not yet taken their eight, in priority order.
+  // Whoever has not yet taken their turn, in priority order.
   const withCapacity = eligible.find((e) => (cycleState[e.uid] ?? 0) < LEADS_PER_TURN);
 
   if (withCapacity) {
@@ -146,11 +149,11 @@ export function getNextAssigneeAndState(
     };
   }
 
-  // Everyone eligible has taken their eight — wrap around and start a new cycle.
+  // Everyone eligible has taken their turn — wrap around and start a new cycle.
   //
   // Counters are cleared for the whole active roster, not just the eligible
   // subset. Clearing only the eligible ones would leave an excluded employee
-  // sitting at 8 into the next cycle and silently cost them their turn.
+  // sitting at a full turn into the next cycle and silently cost them their turn.
   const selected = eligible[0];
   const newState: CycleState = {};
   for (const employee of activeEmployees) {

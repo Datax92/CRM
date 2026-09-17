@@ -243,9 +243,19 @@ export function PriorityLaneView() {
               Who gets the next lead
             </h1>
             <p style={{ fontSize: 12.5, opacity: 0.92, marginTop: 6, maxWidth: 560, lineHeight: 1.6 }}>
-              Priority 1 takes the next <strong>{LEADS_PER_TURN}</strong> leads, then the lane moves
-              down. Whoever is offered one has <strong>{ACCEPT_WINDOW_MINUTES} minutes</strong> to
-              accept before it passes on.
+              {LEADS_PER_TURN === 1 ? (
+                <>
+                  <strong>One lead each</strong>, in priority order — 1, then 2, then 3 — and back to
+                  the top once everybody has had one.
+                </>
+              ) : (
+                <>
+                  Priority 1 takes the next <strong>{LEADS_PER_TURN}</strong> leads, then the lane
+                  moves down.
+                </>
+              )}{" "}
+              Whoever is offered one has <strong>{ACCEPT_WINDOW_MINUTES} minutes</strong> to accept
+              before it passes on.
             </p>
           </div>
 
