@@ -15,6 +15,35 @@
  */
 export const LEADS_PER_TURN = 1;
 
+/**
+ * The most leads one person may be set to take in a turn. The admin sets each
+ * person's own number on the lane screen (`leadsPerTurn`); this is the ceiling,
+ * so a slip of the finger cannot hand one person a whole day's leads.
+ */
+export const MAX_LEADS_PER_TURN = 10;
+
+/** A person's turn size: their own whole number from 1 to the ceiling, else the lane's default. */
+export function normalizeLeadsPerTurn(value: unknown): number {
+  const n = typeof value === 'number' ? Math.floor(value) : Number.NaN;
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_LEADS_PER_TURN) : LEADS_PER_TURN;
+}
+
+/**
+ * Whether a stored profile is in the rotation.
+ *
+ * **The default differs by role, deliberately.** An employee is in unless an
+ * admin has taken them out (`autoAssign: false`), so records that predate the
+ * setting keep receiving leads. A manager is **out unless an admin has put them
+ * in** (`autoAssign: true`): managers were never in the lane, and reading an
+ * absent field as "in" would start handing leads to every manager the moment
+ * this shipped. One predicate, read by the server's roster and the lane screen,
+ * so the screen can never show somebody in rotation whom the server skips.
+ */
+export function laneMembership(data: Record<string, unknown> | undefined): boolean {
+  if (data?.role === 'subadmin') return data.autoAssign === true;
+  return data?.autoAssign !== false;
+}
+
 export interface Employee {
   uid: string;
   priority: number;
@@ -29,6 +58,8 @@ export interface Employee {
    * automatic ones.
    */
   autoAssign?: boolean;
+  /** Leads this person takes before the lane moves on. Absent means `LEADS_PER_TURN`. */
+  leadsPerTurn?: number;
 }
 
 /** In the lane unless an admin has taken them out of it. */
@@ -59,9 +90,10 @@ export function readLaneEmployee(uid: string, data: Record<string, unknown>): Em
     // an absent field must never read as "first in line".
     priority: typeof data.priority === 'number' ? data.priority : 99,
     status: data.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
-    // Only an explicit `false` takes somebody out. Absent means in the lane,
-    // so records predating the setting keep receiving leads.
-    autoAssign: data.autoAssign === false ? false : undefined,
+    // An employee is in unless marked out; a manager is out unless marked in.
+    // See `laneMembership`.
+    autoAssign: laneMembership(data) ? undefined : false,
+    leadsPerTurn: normalizeLeadsPerTurn(data.leadsPerTurn),
   };
 }
 
@@ -139,7 +171,9 @@ export function getNextAssigneeAndState(
   }
 
   // Whoever has not yet taken their turn, in priority order.
-  const withCapacity = eligible.find((e) => (cycleState[e.uid] ?? 0) < LEADS_PER_TURN);
+  const withCapacity = eligible.find(
+    (e) => (cycleState[e.uid] ?? 0) < normalizeLeadsPerTurn(e.leadsPerTurn)
+  );
 
   if (withCapacity) {
     return {

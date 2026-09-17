@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, useEffect } from 'react';
 import { collection, doc, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
 import { useLive } from './useLive';
+import { laneMembership, normalizeLeadsPerTurn } from '@/lib/distribution';
 import { describeLiveError } from './useLeads';
 import { type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
@@ -34,6 +35,8 @@ export interface EmployeeData {
    * `lib/distribution`.
    */
   autoAssign?: boolean;
+  /** Leads they take per turn before the lane moves on (1 to `MAX_LEADS_PER_TURN`). */
+  leadsPerTurn?: number;
   /** Monthly KPI targets. Absent on records predating the KPI module. */
   targets?: KpiTargets;
   /** False once an admin pins the priority by hand. Absent means automatic. */
@@ -151,10 +154,12 @@ function readEmployee(raw: Record<string, unknown>): EmployeeData {
     phone: typeof raw.phone === 'string' ? raw.phone : null,
     joinedAt: raw.joinedAt ?? null,
     notes: typeof raw.notes === 'string' ? raw.notes : null,
-    // Absent means in the lane. Only an explicit `false` takes someone
-    // out of automatic distribution, so records predating the field
-    // keep receiving leads.
-    autoAssign: raw.autoAssign !== false,
+    // In the rotation or not, by the same predicate the server's roster uses:
+    // an employee is in unless marked out, a manager is out unless marked in.
+    // Reading a manager's absent field as "in" would show them in rotation
+    // on the lane screen while the server skipped them.
+    autoAssign: laneMembership(raw),
+    leadsPerTurn: normalizeLeadsPerTurn(raw.leadsPerTurn),
     targets: raw.targets as KpiTargets | undefined,
     autoPriority: raw.autoPriority !== false,
     accessRole: raw.role === 'subadmin' ? 'subadmin' : 'employee',

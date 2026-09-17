@@ -27,7 +27,7 @@ import { closeDeal as _closeDeal } from '@/app/actions/closedDeals';
 import { addExpense as _addExpense } from '@/app/actions/expenses';
 import { addReceivable as _addReceivable } from '@/app/actions/receivables';
 import { addCommitteeRecord as _addCommitteeRecord, addInvestmentRecord as _addInvestmentRecord, addCapitalInvestmentRecord as _addCapitalInvestmentRecord, addPersonalExpense as _addPersonalExpense } from '@/app/actions/accounts';
-import { createEmployee as _createEmployee, updateEmployee as _updateEmployee, setEmployeePriority as _setEmployeePriority, setEmployeeAutoPriority as _setEmployeeAutoPriority, setEmployeeTargets as _setEmployeeTargets, recalculateEmployeePriorities as _recalculateEmployeePriorities, disableEmployee as _disableEmployee, enableEmployee as _enableEmployee, setEmployeeSubAdmin as _setEmployeeSubAdmin, setSubAdminTeam as _setSubAdminTeam, type PriorityChange } from '@/app/actions/employees';
+import { createEmployee as _createEmployee, updateEmployee as _updateEmployee, setEmployeePriority as _setEmployeePriority, setEmployeeAutoPriority as _setEmployeeAutoPriority, updateLaneSettings as _updateLaneSettings, setEmployeeTargets as _setEmployeeTargets, recalculateEmployeePriorities as _recalculateEmployeePriorities, disableEmployee as _disableEmployee, enableEmployee as _enableEmployee, setEmployeeSubAdmin as _setEmployeeSubAdmin, setSubAdminTeam as _setSubAdminTeam, type PriorityChange } from '@/app/actions/employees';
 import type { KpiTargets } from '@/lib/kpi';
 import { createCampaign as _createCampaign, type CreateCampaignInput } from '@/app/actions/campaigns';
 import {
@@ -430,6 +430,15 @@ export async function setSubAdminTeam(
 export async function setEmployeePriority(token: string, uid: string, priority: number): Promise<ActionResult> {
   if (IS_DEMO) return demo.setEmployeePriority(uid, priority);
   return _setEmployeePriority(token, uid, priority);
+}
+
+export async function updateLaneSettings(
+  token: string,
+  uid: string,
+  patch: { inRotation?: boolean; leadsPerTurn?: number; locked?: boolean }
+): Promise<ActionResult> {
+  if (IS_DEMO) return demo.updateLaneSettings(uid, patch);
+  return _updateLaneSettings(token, uid, patch);
 }
 
 export async function setEmployeeAutoPriority(token: string, uid: string, auto: boolean): Promise<ActionResult> {

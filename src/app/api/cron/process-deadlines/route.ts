@@ -12,6 +12,7 @@ import {
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
 import { karachiDayKey } from '@/lib/dates';
+import { owningSubAdminFor } from '@/lib/constants/hierarchy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -134,7 +135,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     if (!leadSnap.exists || leadSnap.data()?.status !== 'NEW') return false;
 
     const lead = leadSnap.data()!;
-    const { employees, names, cycleState, configRef } = await readDistributionState(t);
+    const { employees, recipients, cycleState, configRef } = await readDistributionState(t);
 
     const { uid: assignee, newState } = getNextAssigneeAndState(employees, cycleState);
 
@@ -161,7 +162,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     const now = FieldValue.serverTimestamp();
     t.update(leadRef, {
       assignedUserId: assignee,
-      assigneeName: names.get(assignee) ?? null,
+      ...stampFor(recipients, assignee),
       assignedAt: now,
       lastActivityAt: now,
       distributionMethod: 'AUTO',
@@ -182,7 +183,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     createNotification(t, {
       type: 'NEW_LEAD_ASSIGNED',
       leadId,
-      targetRole: 'employee',
+      targetRole: recipients.get(assignee)?.targetRole ?? 'employee',
       targetUid: assignee,
       message: `You have been assigned a new lead: ${lead.name ?? leadId}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
     });
@@ -211,7 +212,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
         ? [previousAssignee]
         : [];
 
-    const { employees, names } = await readDistributionState(t);
+    const { employees, recipients } = await readDistributionState(t);
     // The cascade runs on priority alone and never touches the rotation
     // counters: a missed lead must not consume the turn of whoever cleans it up.
     const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
@@ -277,7 +278,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
     if (forced) {
       t.update(leadRef, {
         assignedUserId: nextAssignee,
-        assigneeName: names.get(nextAssignee) ?? null,
+        ...stampFor(recipients, nextAssignee),
         assignedAt: now,
         acceptedAt: now,
         lastActivityAt: now,
@@ -297,7 +298,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       createNotification(t, {
         type: 'NEW_LEAD_ASSIGNED',
         leadId,
-        targetRole: 'employee',
+        targetRole: recipients.get(nextAssignee)?.targetRole ?? 'employee',
         targetUid: nextAssignee,
         message: `"${lead.name ?? leadId}" was assigned to you and accepted automatically — it reached the end of the priority lane.`,
       });
@@ -307,7 +308,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
 
     t.update(leadRef, {
       assignedUserId: nextAssignee,
-      assigneeName: names.get(nextAssignee) ?? null,
+      ...stampFor(recipients, nextAssignee),
       assignedAt: now,
       lastActivityAt: now,
       distributionMethod: 'AUTO_REASSIGN',
@@ -326,7 +327,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
     createNotification(t, {
       type: 'NEW_LEAD_ASSIGNED',
       leadId,
-      targetRole: 'employee',
+      targetRole: recipients.get(nextAssignee)?.targetRole ?? 'employee',
       targetUid: nextAssignee,
       message: `You have been reassigned a lead: ${lead.name ?? leadId}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
     });
@@ -412,8 +413,22 @@ async function processStaleLeads(): Promise<number> {
   return count;
 }
 
+interface LeadRecipient {
+  assigneeName: string | null;
+  subAdminUid: string | null;
+  targetRole: 'employee' | 'subadmin';
+}
+
+/** The fields a lead takes on when it lands with `uid`. */
+function stampFor(recipients: Map<string, LeadRecipient>, uid: string) {
+  const recipient = recipients.get(uid);
+  return { assigneeName: recipient?.assigneeName ?? null, subAdminUid: recipient?.subAdminUid ?? null };
+}
+
 async function readDistributionState(t: Transaction) {
-  const usersSnap = await t.get(adminDb.collection('users').where('role', '==', 'employee'));
+  // Managers too: an admin can put a manager in the rotation from the lane
+  // screen, and `readLaneEmployee` keeps every other manager out.
+  const usersSnap = await t.get(adminDb.collection('users').where('role', 'in', ['employee', 'subadmin']));
 
   /*
     **`readLaneEmployee`, not an inline copy.** This mapping used to be written
@@ -423,18 +438,26 @@ async function readDistributionState(t: Transaction) {
     where the tests can reach it.
   */
   const employees: Employee[] = [];
-  // Names from the same snapshot, so moving a lead never costs another read.
-  const names = new Map<string, string | null>();
+  // What a lead carries when it lands with somebody, from the same snapshot,
+  // so moving a lead never costs another read.
+  const recipients = new Map<string, LeadRecipient>();
   usersSnap.forEach((doc: QueryDocumentSnapshot) => {
-    employees.push(readLaneEmployee(doc.id, doc.data()));
-    names.set(doc.id, laneDisplayName(doc.data()));
+    const data = doc.data();
+    employees.push(readLaneEmployee(doc.id, data));
+    recipients.set(doc.id, {
+      assigneeName: laneDisplayName(data),
+      // The lead files under the recipient's team — the manager's own uid when
+      // the recipient is a manager, or a Sales manager could not read it.
+      subAdminUid: owningSubAdminFor({ uid: doc.id, role: data.role, subAdminUid: data.subAdminUid ?? null }),
+      targetRole: data.role === 'subadmin' ? 'subadmin' : 'employee',
+    });
   });
 
   const configRef = adminDb.collection('config').doc('distribution');
   const configSnap = await t.get(configRef);
   const cycleState: CycleState = configSnap.exists ? (configSnap.data()?.cycleState ?? {}) : {};
 
-  return { employees, names, cycleState, configRef };
+  return { employees, recipients, cycleState, configRef };
 }
 
 /** FR-18 says the monitoring period is configurable; this is where it comes from. */

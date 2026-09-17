@@ -9,6 +9,7 @@ import {
   type KpiTargets,
 } from '@/lib/kpi';
 import { assignPriorities, leadScore, readLeadActivity } from '@/lib/leadPriority';
+import { laneMembership } from '@/lib/distribution';
 
 export interface PriorityChange {
   uid: string;
@@ -66,11 +67,18 @@ export async function recalculatePriorities(actorUid: string): Promise<RecalcRes
 
   const snap = await adminDb
     .collection('users')
-    .where('role', '==', 'employee')
+    .where('role', 'in', ['employee', 'subadmin'])
     .where('status', '==', 'ACTIVE')
     .get();
 
-  const employees = snap.docs.map((doc) => ({
+  /*
+    Every active employee, as before, plus the managers an admin has put in
+    the rotation. A manager outside it holds no place in the lane, so ranking
+    them would only take a priority number away from somebody who does.
+  */
+  const inScope = snap.docs.filter((doc) => doc.data().role !== 'subadmin' || laneMembership(doc.data()));
+
+  const employees = inScope.map((doc) => ({
     uid: doc.id,
     name: (doc.data().name as string) ?? doc.id,
     priority: Number(doc.data().priority) || MAX_PRIORITY,
@@ -147,8 +155,8 @@ export async function recalculatePriorities(actorUid: string): Promise<RecalcRes
       leadId: '',
       targetRole: 'admin',
       payload: {
-        message: `Lane priority updated for ${changes.length} employee${
-          changes.length === 1 ? '' : 's'
+        message: `Lane priority updated for ${changes.length} ${
+          changes.length === 1 ? 'person' : 'people'
         } from ${monthKey} connects and follow-ups.`,
         changes,
       },

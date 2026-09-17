@@ -18,7 +18,7 @@ import {
   ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
-import { resolveCascadeAssignee, laneDisplayName, type Employee } from "@/lib/distribution";
+import { resolveCascadeAssignee, readLaneEmployee, laneDisplayName, type Employee } from "@/lib/distribution";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
 import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
@@ -234,13 +234,9 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         reads after writing, and the roster read below is what decides where
         the lead goes.
       */
-      const rosterSnap = await t.get(adminDb.collection("users").where("role", "==", "employee"));
-      const employees: Employee[] = rosterSnap.docs.map((doc) => ({
-        uid: doc.id,
-        priority: Number(doc.data().priority ?? 99),
-        status: doc.data().status === "DISABLED" ? "DISABLED" : "ACTIVE",
-        autoAssign: doc.data().autoAssign,
-      }));
+      // Managers an admin has put in the rotation are in the lane too.
+      const rosterSnap = await t.get(adminDb.collection("users").where("role", "in", ["employee", "subadmin"]));
+      const employees: Employee[] = rosterSnap.docs.map((doc) => readLaneEmployee(doc.id, doc.data()));
 
       const attempted: string[] = Array.isArray(lead.attemptedAssignees)
         ? lead.attemptedAssignees
@@ -285,9 +281,15 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         return { passedTo: null, forced: false };
       }
 
+      const nextProfile = rosterSnap.docs.find((doc) => doc.id === nextAssignee)?.data();
       t.update(leadRef, {
         assignedUserId: nextAssignee,
-        assigneeName: laneDisplayName(rosterSnap.docs.find((doc) => doc.id === nextAssignee)?.data()),
+        assigneeName: laneDisplayName(nextProfile),
+        subAdminUid: owningSubAdminFor({
+          uid: nextAssignee,
+          role: nextProfile?.role,
+          subAdminUid: (nextProfile?.subAdminUid as string | undefined) ?? null,
+        }),
         assignedAt: now,
         lastActivityAt: now,
         distributionMethod: "AUTO_REASSIGN",
@@ -300,7 +302,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
       t.create(adminDb.collection("notifications").doc(), {
         type: "NEW_LEAD_ASSIGNED",
         leadId,
-        targetRole: "employee",
+        targetRole: nextProfile?.role === "subadmin" ? "subadmin" : "employee",
         targetUid: nextAssignee,
         payload: {
           message: forced

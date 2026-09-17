@@ -14,11 +14,13 @@
  * order the nightly job produced rather than presenting a position that has to
  * be taken on trust.
  *
- * **Managers are ranked but not in the lane** — the owner's instruction. They
- * appear with their numbers so everyone can be compared, and automatic
- * distribution still only reaches employees. Saying so on the card is the point:
- * a manager sitting in a ranked list with no badge reads as somebody about to be
- * handed leads.
+ * **The admin runs the lane from here** (owner, 2026-09-17): who is in the
+ * rotation, how many leads each person takes per turn, their priority, and
+ * whether automatic ranking may move it. **Managers can be put in the rotation
+ * too** — out by default, and badged "Manager" either way, so a manager in the
+ * list never reads as an employee. The same predicate the server's roster uses
+ * (`laneMembership`) decides the switch, so the screen cannot show somebody in
+ * rotation whom distribution skips.
  *
  * **Sorted by score, not by the priority they currently hold.** This screen
  * answers "who has earned the front of the queue"; stored-priority order would
@@ -37,10 +39,13 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useEmployees, useSubAdmins, type EmployeeData } from "@/hooks/useEmployees";
 import { useLaneActivity } from "@/hooks/useLaneActivity";
 import { MIN_PRIORITY, MAX_PRIORITY, ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
-import { LEADS_PER_TURN } from "@/lib/distribution";
+import { MAX_LEADS_PER_TURN, normalizeLeadsPerTurn } from "@/lib/distribution";
 import { leadScore, leadScoreBreakdown, LEAD_SCORE_WEIGHTS, EMPTY_LEAD_ACTIVITY } from "@/lib/leadPriority";
 import { roleTitle } from "@/lib/constants/hierarchy";
-import { setEmployeePriority, recalculateEmployeePriorities } from "@/lib/clientActions";
+import { setEmployeePriority, recalculateEmployeePriorities, updateLaneSettings } from "@/lib/clientActions";
+
+/** What the admin can change about one person's place in the lane, besides the number. */
+type LanePatch = { inRotation?: boolean; leadsPerTurn?: number; locked?: boolean };
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
 import { E, Card, Bar, HeroRings } from "./directoryChrome";
 
@@ -53,8 +58,12 @@ interface LaneRow {
   disabled: boolean;
   priority: number;
   pinned: boolean;
-  /** Whether automatic distribution can actually reach them. */
+  /** The admin's switch: in the rotation or not. */
+  inRotation: boolean;
+  /** Whether automatic distribution can actually reach them — in rotation and not paused. */
   inLane: boolean;
+  /** Leads they take per turn before the lane moves on. */
+  leadsPerTurn: number;
   connects: number;
   followUps: number;
   passes: number;
@@ -82,11 +91,21 @@ export function PriorityLaneView() {
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
   /** Optimistic priorities, so a select does not snap back while the write flies. */
   const [pending, setPending] = useState<Record<string, number>>({});
+  /** Optimistic switches and turn sizes, for the same reason. */
+  const [pendingLane, setPendingLane] = useState<Record<string, LanePatch>>({});
 
   const rows = useMemo<LaneRow[]>(() => {
     const build = (person: EmployeeData, isManager: boolean): LaneRow => {
       const counters = activity[person.uid] ?? EMPTY_LEAD_ACTIVITY;
       const disabled = person.status === "DISABLED";
+      const local = pendingLane[person.uid] ?? {};
+      /*
+        The live mapper already applies `laneMembership`, so a manager's absent
+        field arrives as `false`. The role check is kept for demo rows, which do
+        not pass through the mapper: a manager is in only when marked in.
+      */
+      const inRotation =
+        local.inRotation ?? (isManager ? person.autoAssign === true : person.autoAssign !== false);
       return {
         uid: person.uid,
         name: person.name,
@@ -94,14 +113,11 @@ export function PriorityLaneView() {
         isManager,
         disabled,
         priority: pending[person.uid] ?? Number(person.priority ?? MAX_PRIORITY),
-        pinned: person.autoPriority === false,
-        /*
-          Three ways out of the lane and all three are real: a manager is never
-          auto-assigned, a paused account receives nothing, and `autoAssign:
-          false` is somebody deliberately taken out of distribution while still
-          able to be handed a lead by hand.
-        */
-        inLane: !isManager && !disabled && person.autoAssign !== false,
+        pinned: local.locked ?? person.autoPriority === false,
+        inRotation,
+        // A paused account receives nothing, whatever its switch says.
+        inLane: inRotation && !disabled,
+        leadsPerTurn: normalizeLeadsPerTurn(local.leadsPerTurn ?? person.leadsPerTurn),
         ...counters,
         score: leadScore(counters),
       };
@@ -111,7 +127,7 @@ export function PriorityLaneView() {
       ...employees.map((employee) => build(employee, false)),
       ...subAdmins.map((manager) => build(manager, true)),
     ].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  }, [employees, subAdmins, activity, pending]);
+  }, [employees, subAdmins, activity, pending, pendingLane]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -160,8 +176,34 @@ export function PriorityLaneView() {
       }
       return {
         ok: true,
-        text: `${name} is pinned at priority ${value}. Automatic ranking will leave them there.`,
+        text: `${name} is locked at priority ${value}. Automatic ranking will leave them there.`,
       };
+    });
+  };
+
+  const saveLane = (uid: string, name: string, patch: LanePatch) => {
+    setPendingLane((current) => ({ ...current, [uid]: { ...current[uid], ...patch } }));
+    return run(async (token) => {
+      const result = await updateLaneSettings(token, uid, patch);
+      if (!result.ok) {
+        setPendingLane((current) => {
+          const next = { ...current };
+          delete next[uid];
+          return next;
+        });
+        return { ok: false, text: result.error || "Could not change that." };
+      }
+      const text =
+        patch.inRotation !== undefined
+          ? patch.inRotation
+            ? `${name} is in the rotation and will be offered leads in turn.`
+            : `${name} is out of the rotation. They can still be handed a lead by hand.`
+          : patch.leadsPerTurn !== undefined
+            ? `${name} now takes ${patch.leadsPerTurn} ${patch.leadsPerTurn === 1 ? "lead" : "leads"} per turn.`
+            : patch.locked
+              ? `${name}'s priority is locked. Automatic ranking will leave it alone.`
+              : `${name}'s priority is unlocked. The next ranking may move it.`;
+      return { ok: true, text };
     });
   };
 
@@ -243,19 +285,9 @@ export function PriorityLaneView() {
               Who gets the next lead
             </h1>
             <p style={{ fontSize: 12.5, opacity: 0.92, marginTop: 6, maxWidth: 560, lineHeight: 1.6 }}>
-              {LEADS_PER_TURN === 1 ? (
-                <>
-                  <strong>One lead each</strong>, in priority order — 1, then 2, then 3 — and back to
-                  the top once everybody has had one.
-                </>
-              ) : (
-                <>
-                  Priority 1 takes the next <strong>{LEADS_PER_TURN}</strong> leads, then the lane
-                  moves down.
-                </>
-              )}{" "}
-              Whoever is offered one has <strong>{ACCEPT_WINDOW_MINUTES} minutes</strong> to accept
-              before it passes on.
+              Everyone in the rotation takes <strong>their own number of leads per turn</strong>, in
+              priority order — 1, then 2, then 3 — and back to the top. Whoever is offered one has{" "}
+              <strong>{ACCEPT_WINDOW_MINUTES} minutes</strong> to accept before it passes on.
             </p>
           </div>
 
@@ -309,8 +341,8 @@ export function PriorityLaneView() {
         <span style={{ fontSize: 12.5, color: E.body, lineHeight: 1.6 }}>
           Score = <strong>connected calls × {LEAD_SCORE_WEIGHTS.connect}</strong> +{" "}
           <strong>follow-ups × {LEAD_SCORE_WEIGHTS.followUp}</strong> −{" "}
-          <strong>passed leads × {LEAD_SCORE_WEIGHTS.pass}</strong>, this month. The highest score
-          is first in line.
+          <strong>passed leads × {LEAD_SCORE_WEIGHTS.pass}</strong>, this month. Re-ranking gives
+          the highest score priority 1 — except anybody whose priority is <strong>locked</strong>.
         </span>
       </Card>
 
@@ -356,6 +388,7 @@ export function PriorityLaneView() {
             isMobile={isMobile}
             busy={busy}
             onSave={(value) => void savePriority(row.uid, row.name, value)}
+            onLane={(patch) => void saveLane(row.uid, row.name, patch)}
           />
         ))}
         {filtered.length === 0 && (
@@ -396,6 +429,7 @@ function LaneCard({
   isMobile,
   busy,
   onSave,
+  onLane,
 }: {
   row: LaneRow;
   rank: number;
@@ -403,6 +437,7 @@ function LaneCard({
   isMobile: boolean;
   busy: boolean;
   onSave: (value: number) => void;
+  onLane: (patch: LanePatch) => void;
 }) {
   const parts = leadScoreBreakdown(row);
   const share = best > 0 ? Math.round((row.score / best) * 100) : 0;
@@ -449,16 +484,19 @@ function LaneCard({
             >
               {row.name}
             </span>
-            {row.pinned && !row.isManager && <Chip icon={<Lock size={10} />} text="Pinned" tone="warn" />}
-            {row.isManager ? (
-              <Chip icon={<Users size={10} />} text="Not in the lane" tone="muted" />
-            ) : row.disabled ? (
+            {row.isManager && <Chip icon={<Users size={10} />} text="Manager" tone="muted" />}
+            {row.disabled ? (
               <Chip text="Paused — no leads" tone="muted" />
-            ) : !row.inLane ? (
-              <Chip text="Manual only" tone="muted" />
+            ) : !row.inRotation ? (
+              <Chip text="Not in rotation" tone="muted" />
             ) : (
-              <Chip icon={<Gauge size={10} />} text={`Priority ${row.priority}`} tone="teal" />
+              <Chip
+                icon={<Gauge size={10} />}
+                text={`Priority ${row.priority} · ${row.leadsPerTurn} per turn`}
+                tone="teal"
+              />
             )}
+            {row.pinned && row.inLane && <Chip icon={<Lock size={10} />} text="Locked" tone="warn" />}
           </div>
           <p style={{ fontSize: 11.5, color: E.label, marginTop: 3 }}>{row.role}</p>
 
@@ -498,84 +536,175 @@ function LaneCard({
           </div>
         </div>
 
-        {/* A manager has no lane position, so there is nothing to pin them at. */}
-        {!isMobile && !row.isManager && (
-          <PriorityControl value={row.priority} busy={busy} pinned={row.pinned} onSave={onSave} />
-        )}
+        {!isMobile && <LaneControls row={row} busy={busy} onSave={onSave} onLane={onLane} />}
       </div>
 
-      {isMobile && !row.isManager && (
+      {isMobile && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${E.rowBorder}` }}>
-          <PriorityControl value={row.priority} busy={busy} pinned={row.pinned} onSave={onSave} full />
+          <LaneControls row={row} busy={busy} onSave={onSave} onLane={onLane} full />
         </div>
       )}
     </Card>
   );
 }
 
-function PriorityControl({
-  value,
+/**
+ * The admin's four controls for one person: in the rotation, leads per turn,
+ * priority, and the lock that keeps automatic ranking off that priority.
+ *
+ * Every select reads its value synchronously, before anything awaits. A
+ * controlled select is re-rendered back to its prop the moment an async handler
+ * yields, so an `await` first would send the *old* value — the bug recorded in
+ * CLAUDE.md's Lessons.
+ */
+function LaneControls({
+  row,
   onSave,
+  onLane,
   busy,
-  pinned,
   full,
 }: {
-  value: number;
+  row: LaneRow;
   onSave: (value: number) => void;
+  onLane: (patch: LanePatch) => void;
   busy: boolean;
-  pinned: boolean;
   full?: boolean;
 }) {
+  const selectStyle: React.CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 10,
+    border: `1px solid ${E.border}`,
+    background: E.field,
+    padding: "8px 10px",
+    // 16 on the phone, or iOS Safari zooms on focus.
+    fontSize: full ? 16 : 13,
+    fontWeight: 600,
+    color: E.ink,
+    fontFamily: "inherit",
+    cursor: busy ? "default" : "pointer",
+  };
+  // Turn size and priority only matter to somebody the lane can reach.
+  const dim = row.inLane ? 1 : 0.55;
+
   return (
     <div
       style={{
         display: "flex",
-        alignItems: "center",
+        flexDirection: "column",
         gap: 8,
         flexShrink: 0,
-        width: full ? "100%" : undefined,
+        width: full ? "100%" : 236,
       }}
     >
-      <select
-        value={value}
-        onChange={(event) => {
-          /*
-            Read synchronously, before anything awaits. A controlled select is
-            re-rendered back to its prop the moment an async handler yields, so
-            an `await` first would send the *old* value — the bug recorded in
-            CLAUDE.md's Lessons.
-          */
-          onSave(Number(event.target.value));
-        }}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={row.inRotation}
         disabled={busy}
-        aria-label="Set lane priority"
+        onClick={() => onLane({ inRotation: !row.inRotation })}
         style={{
-          flex: full ? 1 : undefined,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "8px 12px",
           borderRadius: 10,
-          border: `1px solid ${E.border}`,
-          background: E.field,
-          padding: "9px 12px",
-          // 16 on the phone, or iOS Safari zooms on focus.
-          fontSize: full ? 16 : 13.5,
-          fontWeight: 600,
-          color: E.ink,
+          border: `1px solid ${row.inRotation ? E.teal : E.border}`,
+          background: row.inRotation ? E.tealTint : E.field,
+          color: row.inRotation ? E.deep : E.muted,
+          fontSize: full ? 15 : 13,
+          fontWeight: 700,
           fontFamily: "inherit",
           cursor: busy ? "default" : "pointer",
         }}
       >
-        {Array.from({ length: MAX_PRIORITY - MIN_PRIORITY + 1 }, (_, i) => MIN_PRIORITY + i).map((n) => (
-          <option key={n} value={n}>
-            Priority {n}
-          </option>
-        ))}
-      </select>
-      <span
-        aria-hidden
-        title={pinned ? "Set by hand — automatic ranking leaves this alone" : "Ranked automatically"}
-        style={{ display: "flex", flexShrink: 0 }}
-      >
-        {pinned ? <Lock size={15} color={E.amberInk} /> : <Unlock size={15} color={E.hair} />}
-      </span>
+        {row.inRotation ? "In rotation" : "Not in rotation"}
+        <span
+          aria-hidden
+          style={{
+            position: "relative",
+            width: 34,
+            height: 20,
+            borderRadius: 999,
+            background: row.inRotation ? E.teal : E.hair,
+            flexShrink: 0,
+            transition: "background 220ms",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              top: 2,
+              left: 2,
+              width: 16,
+              height: 16,
+              borderRadius: 999,
+              background: "#fff",
+              transform: row.inRotation ? "translateX(14px)" : "none",
+              transition: "transform 220ms",
+            }}
+          />
+        </span>
+      </button>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: dim }}>
+        <select
+          value={row.leadsPerTurn}
+          onChange={(event) => onLane({ leadsPerTurn: Number(event.target.value) })}
+          disabled={busy}
+          aria-label="Leads per turn"
+          style={selectStyle}
+        >
+          {Array.from({ length: MAX_LEADS_PER_TURN }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              {n} {n === 1 ? "lead" : "leads"} per turn
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: dim }}>
+        <select
+          value={row.priority}
+          onChange={(event) => onSave(Number(event.target.value))}
+          disabled={busy}
+          aria-label="Set lane priority"
+          style={selectStyle}
+        >
+          {Array.from({ length: MAX_PRIORITY - MIN_PRIORITY + 1 }, (_, i) => MIN_PRIORITY + i).map((n) => (
+            <option key={n} value={n}>
+              Priority {n}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          aria-pressed={row.pinned}
+          aria-label={row.pinned ? "Unlock priority" : "Lock priority"}
+          title={
+            row.pinned
+              ? "Locked — automatic ranking leaves this priority alone. Click to unlock."
+              : "Ranked automatically. Click to lock this priority."
+          }
+          disabled={busy}
+          onClick={() => onLane({ locked: !row.pinned })}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: full ? 42 : 36,
+            height: full ? 42 : 36,
+            borderRadius: 10,
+            border: `1px solid ${row.pinned ? E.amberInk : E.border}`,
+            background: row.pinned ? E.amberBg : E.field,
+            cursor: busy ? "default" : "pointer",
+            flexShrink: 0,
+          }}
+        >
+          {row.pinned ? <Lock size={15} color={E.amberInk} /> : <Unlock size={15} color={E.faint} />}
+        </button>
+      </div>
     </div>
   );
 }

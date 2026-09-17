@@ -3,6 +3,7 @@
 import { adminDb, adminAuth } from "@/lib/firebase/server";
 import { requireAdmin, requireManager } from "@/lib/firebase/serverAuth";
 import { MIN_PRIORITY, MAX_PRIORITY } from "@/lib/constants/distribution";
+import { MAX_LEADS_PER_TURN } from "@/lib/distribution";
 import { normalizeJobTitle } from "@/lib/constants/roles";
 import { normalizeManagerKind, type ManagerKind, type UserRole } from "@/lib/constants/hierarchy";
 import type { KpiTargets } from "@/lib/kpi";
@@ -192,8 +193,8 @@ export async function setEmployeePriority(
 
     const userRef = adminDb.collection("users").doc(uid);
     const snap = await userRef.get();
-    if (!snap.exists || snap.data()?.role !== "employee") {
-      throw new UserFacingError("That employee no longer exists.");
+    if (!snap.exists || !isLaneRole(snap.data()?.role)) {
+      throw new UserFacingError("That person no longer exists.");
     }
 
     // Setting a priority by hand pins it. Otherwise the next KPI
@@ -213,11 +214,61 @@ export async function setEmployeeAutoPriority(
 
     const userRef = adminDb.collection("users").doc(uid);
     const snap = await userRef.get();
-    if (!snap.exists || snap.data()?.role !== "employee") {
-      throw new UserFacingError("That employee no longer exists.");
+    if (!snap.exists || !isLaneRole(snap.data()?.role)) {
+      throw new UserFacingError("That person no longer exists.");
     }
 
     await userRef.update({ autoPriority: Boolean(auto) });
+  });
+}
+
+/** Employees and managers both have a place in the lead lane; nobody else does. */
+function isLaneRole(role: unknown): boolean {
+  return role === "employee" || role === "subadmin";
+}
+
+/**
+ * The admin's lane controls for one person, from the Lead Lane screen.
+ *
+ * - `inRotation` — written as an explicit `autoAssign`, because the default
+ *   differs by role (an employee is in unless marked out, a manager is out
+ *   unless marked in — see `laneMembership`). An explicit value means the
+ *   screen and the server can never read the same person two ways.
+ * - `leadsPerTurn` — how many leads they take before the lane moves on.
+ * - `locked` — whether automatic ranking may move their priority.
+ *
+ * Setting a priority by hand still goes through `setEmployeePriority`, which
+ * locks it, so a number the admin chose is never undone by the nightly job.
+ */
+export async function updateLaneSettings(
+  token: string,
+  uid: string,
+  patch: { inRotation?: boolean; leadsPerTurn?: number; locked?: boolean }
+): Promise<ActionResult> {
+  return runAction("updateLaneSettings", async () => {
+    await requireAdmin(token);
+
+    const userRef = adminDb.collection("users").doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists || !isLaneRole(snap.data()?.role)) {
+      throw new UserFacingError("That person no longer exists.");
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (typeof patch.inRotation === "boolean") updates.autoAssign = patch.inRotation;
+    if (patch.leadsPerTurn !== undefined) {
+      const n = Math.floor(Number(patch.leadsPerTurn));
+      if (!Number.isFinite(n) || n < 1 || n > MAX_LEADS_PER_TURN) {
+        throw new UserFacingError(`Leads per turn must be between 1 and ${MAX_LEADS_PER_TURN}.`);
+      }
+      updates.leadsPerTurn = n;
+    }
+    if (typeof patch.locked === "boolean") updates.autoPriority = !patch.locked;
+
+    if (Object.keys(updates).length === 0) {
+      throw new UserFacingError("Nothing to change.");
+    }
+    await userRef.update(updates);
   });
 }
 

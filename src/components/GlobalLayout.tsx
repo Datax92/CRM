@@ -240,7 +240,9 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         {
           title: "Lead Management", short: "Leads", icon: Target,
           subItems: [
-            { title: "Team Leads", path: "/subadmin/leads", icon: ListChecks }
+            { title: "Team Leads", path: "/subadmin/leads", icon: ListChecks },
+            // Offers to the manager themselves, when an admin puts them in the rotation.
+            { title: "Meta Leads", path: "/subadmin/meta-leads", icon: Megaphone }
           ]
         },
         {

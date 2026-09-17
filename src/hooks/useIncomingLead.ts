@@ -40,20 +40,34 @@ export function useIncomingLead(
   enabled = true
 ): { offer: LeadOffer | null; loading: boolean } {
   const demoState = useDemoState();
-  // Managers and admins hand leads out; they are never in the accept window.
-  const active = enabled && role === 'employee' && Boolean(uid);
+  // Employees, and managers an admin has put in the rotation. An admin hands
+  // leads out and is never offered one.
+  const isManager = role === 'subadmin';
+  const active = enabled && (role === 'employee' || isManager) && Boolean(uid);
 
   const build = useCallback(
     () =>
-      query(
-        collection(db, 'leads'),
-        where('assignedUserId', '==', uid),
-        where('status', '==', 'ASSIGNED')
-      ),
-    [uid]
+      isManager
+        ? /*
+            A Sales manager's `leads` rule is `subAdminUid == me`, and a list
+            query must prove it or it is refused outright. A lead offered to a
+            manager files under their own uid, so the clause matches.
+          */
+          query(
+            collection(db, 'leads'),
+            where('subAdminUid', '==', uid),
+            where('assignedUserId', '==', uid),
+            where('status', '==', 'ASSIGNED')
+          )
+        : query(
+            collection(db, 'leads'),
+            where('assignedUserId', '==', uid),
+            where('status', '==', 'ASSIGNED')
+          ),
+    [uid, isManager]
   );
 
-  const live = useLive(`leads:offered:${uid ?? 'none'}`, build, !IS_DEMO && active, describeLiveError);
+  const live = useLive(`leads:offered:${isManager ? 'mgr' : 'emp'}:${uid ?? 'none'}`, build, !IS_DEMO && active, describeLiveError);
 
   /*
     A ticking clock, so the offer disappears from the screen the moment the

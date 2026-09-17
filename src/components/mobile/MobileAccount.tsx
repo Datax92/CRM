@@ -141,6 +141,7 @@ const SUBADMIN_SECTIONS: Section[] = [
       { label: "Summary Report", path: "/subadmin/reports", d: I.report },
     ],
   },
+  { title: "Meta Leads", d: I.megaphone, items: [{ label: "Meta Leads", path: "/subadmin/meta-leads", d: I.megaphone }] },
   { title: "Clients", d: I.clients, items: [{ label: "Clients", path: "/subadmin/clients", d: I.clients }] },
   { title: "Data Bank", d: I.folder, items: [{ label: "My Sources", path: "/subadmin/data-bank", d: I.folder }] },
 ];

@@ -5,6 +5,9 @@ import {
   resolveCascadeAssignee,
   readLaneEmployee,
   laneDisplayName,
+  laneMembership,
+  normalizeLeadsPerTurn,
+  MAX_LEADS_PER_TURN,
   LEADS_PER_TURN,
   type Employee,
   type CycleState,
@@ -338,4 +341,48 @@ test('an unnamed profile falls back to the email, and nothing to null — never 
   assert.equal(laneDisplayName({ name: '   ', email: 'rafia@x.pk' }), 'rafia@x.pk');
   assert.equal(laneDisplayName({ email: '' }), null);
   assert.equal(laneDisplayName(undefined), null);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Per-person turns, and managers in the lane                                 */
+/* -------------------------------------------------------------------------- */
+
+test('each person takes their own number of leads per turn, then the lane moves on', () => {
+  // Admin sets Aroosa to 2 and Rafia to 1: A, A, R, S, then back to the top.
+  const lane: Employee[] = [
+    { uid: 'aroosa', priority: 1, status: 'ACTIVE', leadsPerTurn: 2 },
+    { uid: 'rafia', priority: 2, status: 'ACTIVE', leadsPerTurn: 1 },
+    { uid: 'sundus', priority: 3, status: 'ACTIVE' },
+  ];
+  const { order } = drain(lane, 5);
+  assert.deepEqual(order, ['aroosa', 'aroosa', 'rafia', 'sundus', 'aroosa']);
+});
+
+test('a turn size outside 1 to the ceiling falls back or is capped, never zero', () => {
+  // Zero would take somebody out of the lane through a number rather than the switch.
+  assert.equal(normalizeLeadsPerTurn(0), LEADS_PER_TURN);
+  assert.equal(normalizeLeadsPerTurn(-3), LEADS_PER_TURN);
+  assert.equal(normalizeLeadsPerTurn('4'), LEADS_PER_TURN);
+  assert.equal(normalizeLeadsPerTurn(undefined), LEADS_PER_TURN);
+  assert.equal(normalizeLeadsPerTurn(2.7), 2);
+  assert.equal(normalizeLeadsPerTurn(500), MAX_LEADS_PER_TURN);
+});
+
+test('a manager is out of the lane unless an admin has put them in', () => {
+  // Reading an absent field as "in" would hand leads to every manager on deploy.
+  assert.equal(laneMembership({ role: 'subadmin' }), false);
+  assert.equal(laneMembership({ role: 'subadmin', autoAssign: false }), false);
+  assert.equal(laneMembership({ role: 'subadmin', autoAssign: true }), true);
+  // An employee keeps the opposite default.
+  assert.equal(laneMembership({ role: 'employee' }), true);
+  assert.equal(laneMembership({ role: 'employee', autoAssign: false }), false);
+});
+
+test('a manager put in the lane takes their turn in priority order like anybody else', () => {
+  const manager = readLaneEmployee('dilawar', { role: 'subadmin', autoAssign: true, priority: 2, status: 'ACTIVE' });
+  const managerOut = readLaneEmployee('tayyab', { role: 'subadmin', priority: 1, status: 'ACTIVE' });
+  const employee = readLaneEmployee('aroosa', { role: 'employee', priority: 1, status: 'ACTIVE' });
+  const { order } = drain([managerOut, manager, employee], 3);
+  assert.deepEqual(order, ['aroosa', 'dilawar', 'aroosa']);
+  assert.equal(resolveCascadeAssignee([managerOut, manager, employee], ['aroosa']).uid, 'dilawar');
 });

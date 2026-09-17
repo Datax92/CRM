@@ -38,16 +38,21 @@ const isMeta = (lead: Lead) => (lead.source ?? "").toUpperCase() === "META_ADS";
 
 export function MetaLeadsView() {
   const { user, role, getIdToken } = useAuth();
-  useProtectedRoute(["employee"]);
+  // Managers too: an admin can put a manager in the rotation.
+  useProtectedRoute(["employee", "subadmin"]);
   const isMobile = useIsMobile();
 
-  const { leads, loading, error } = useLeads(role === "employee" ? "employee" : null, user?.uid);
+  const { leads, loading, error } = useLeads(
+    role === "employee" || role === "subadmin" ? role : null,
+    user?.uid
+  );
 
   const [busy, setBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
 
   const { offers, mine } = useMemo(() => {
-    const meta = leads.filter(isMeta);
+    // A manager's query returns their whole team; this screen is their own offers.
+    const meta = leads.filter((lead) => isMeta(lead) && lead.assignedUserId === user?.uid);
     return {
       // Being offered right now: still ASSIGNED, nobody has answered.
       offers: meta
@@ -63,7 +68,7 @@ export function MetaLeadsView() {
           (a, b) => (timestampMillis(b.createdAt) ?? 0) - (timestampMillis(a.createdAt) ?? 0)
         ),
     };
-  }, [leads]);
+  }, [leads, user?.uid]);
 
   const answer = async (lead: Lead, kind: "ACCEPT" | "PASS") => {
     setBusy(lead.id);

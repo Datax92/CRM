@@ -61,7 +61,7 @@ import {
 import type { ReportOption } from '@/app/actions/reports';
 import { entryAllowance } from '@/lib/followUpKind';
 import { ADMIN_ASSIGN_WINDOW_MS, ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
-import { resolveCascadeAssignee } from '@/lib/distribution';
+import { resolveCascadeAssignee, readLaneEmployee, MAX_LEADS_PER_TURN } from '@/lib/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
 import { normalizeDealCategory } from '@/lib/constants/deals';
@@ -1085,14 +1085,18 @@ export const demo = {
     if (lead.status !== 'ASSIGNED') return fail('This lead is not waiting to be accepted.');
 
     const attempted = [...(lead.attemptedAssignees ?? []), actorUid];
+    // Employees and the managers put in the rotation, read as the server reads them.
     const roster = state.employees
-      .filter((employee) => employee.accessRole !== 'subadmin' && employee.status === 'ACTIVE')
-      .map((employee) => ({
-        uid: employee.uid,
-        priority: employee.priority,
-        status: employee.status,
-        autoAssign: employee.autoAssign,
-      }));
+      .filter((employee) => employee.status === 'ACTIVE')
+      .map((employee) =>
+        readLaneEmployee(employee.uid, {
+          role: employee.accessRole === 'subadmin' ? 'subadmin' : 'employee',
+          priority: employee.priority,
+          status: employee.status,
+          autoAssign: employee.autoAssign,
+          leadsPerTurn: employee.leadsPerTurn,
+        })
+      );
 
     const { uid: nextUid, forced } = resolveCascadeAssignee(roster, attempted);
 
@@ -1112,7 +1116,7 @@ export const demo = {
     patchLead(leadId, {
       assignedUserId: nextUid,
       assigneeName: nextPerson?.name ?? null,
-      subAdminUid: nextPerson?.subAdminUid ?? null,
+      subAdminUid: nextPerson?.accessRole === 'subadmin' ? nextPerson.uid : nextPerson?.subAdminUid ?? null,
       attemptedAssignees: attempted,
       status: forced ? 'ACCEPTED' : 'ASSIGNED',
       ...(forced
@@ -2053,6 +2057,25 @@ export const demo = {
       e.uid === uid ? { ...e, priority, autoPriority: false } : e
     );
     sortEmployees();
+    emit();
+    return ok(undefined);
+  },
+
+  /** Mirrors `updateLaneSettings`. */
+  updateLaneSettings(uid: string, patch: { inRotation?: boolean; leadsPerTurn?: number; locked?: boolean }): Result {
+    const person = state.employees.find((e) => e.uid === uid);
+    if (!person) return fail('That person no longer exists.');
+    const next: Partial<EmployeeData> = {};
+    if (typeof patch.inRotation === 'boolean') next.autoAssign = patch.inRotation;
+    if (patch.leadsPerTurn !== undefined) {
+      const n = Math.floor(Number(patch.leadsPerTurn));
+      if (!Number.isFinite(n) || n < 1 || n > MAX_LEADS_PER_TURN) {
+        return fail(`Leads per turn must be between 1 and ${MAX_LEADS_PER_TURN}.`);
+      }
+      next.leadsPerTurn = n;
+    }
+    if (typeof patch.locked === 'boolean') next.autoPriority = !patch.locked;
+    state.employees = state.employees.map((e) => (e.uid === uid ? { ...e, ...next } : e));
     emit();
     return ok(undefined);
   },

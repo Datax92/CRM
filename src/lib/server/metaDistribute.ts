@@ -32,10 +32,12 @@ import 'server-only';
  */
 
 import { adminDb } from '@/lib/firebase/server';
+import { owningSubAdminFor } from '@/lib/constants/hierarchy';
 import { FieldValue, type Transaction } from 'firebase-admin/firestore';
 import {
   getNextAssigneeAndState,
   readLaneEmployee,
+  laneDisplayName,
   type CycleState,
   type Employee,
 } from '@/lib/distribution';
@@ -88,7 +90,8 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
     const folderSnap = await t.get(folderRef);
     const folder = folderSnap.data() ?? {};
 
-    const usersSnap = await t.get(adminDb.collection('users').where('role', '==', 'employee'));
+    // Managers too — only the ones an admin has put in the rotation get a turn.
+    const usersSnap = await t.get(adminDb.collection('users').where('role', 'in', ['employee', 'subadmin']));
     const employees: Employee[] = [];
     const profiles = new Map<string, Record<string, unknown>>();
     usersSnap.forEach((doc) => {
@@ -106,7 +109,8 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
     }
 
     const profile = profiles.get(assignee) ?? {};
-    const assigneeName = (profile.name as string) ?? (profile.email as string) ?? null;
+    const assigneeName = laneDisplayName(profile);
+    const recipientIsManager = profile.role === 'subadmin';
 
     /* ---- writes ---- */
     const now = FieldValue.serverTimestamp();
@@ -154,7 +158,13 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
       status: 'ASSIGNED',
       assignedUserId: assignee,
       assigneeName,
-      subAdminUid: (profile.subAdminUid as string) ?? null,
+      // The recipient's team — their own uid for a manager, or a Sales manager
+      // could not read the lead they were just offered.
+      subAdminUid: owningSubAdminFor({
+        uid: assignee,
+        role: profile.role,
+        subAdminUid: (profile.subAdminUid as string | undefined) ?? null,
+      }),
       distributionMethod: 'AUTO',
       acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
       attemptedAssignees: [assignee],
@@ -205,7 +215,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
     t.set(adminDb.collection('notifications').doc(), {
       type: 'NEW_LEAD_ASSIGNED',
       leadId: leadRef.id,
-      targetRole: 'employee',
+      targetRole: recipientIsManager ? 'subadmin' : 'employee',
       targetUid: assignee,
       payload: {
         message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
