@@ -43,6 +43,7 @@ import {
 } from "@/lib/dataBank";
 import { applyFieldMapping, normalizeMapsTo } from "@/lib/fieldMapping";
 import { folderScopeIds } from "@/lib/dataBankAssigned";
+import { campaignForFolderLead } from "@/lib/metaIntake";
 
 const FOLDERS = "dataBankFolders";
 const RECORDS = "dataBankRecords";
@@ -384,6 +385,7 @@ async function loadFolder(folderId: string) {
     sourceFolderName?: string | null;
     handedOffCount?: number;
     deletionPending?: boolean;
+    metaSource?: { basis?: string; campaignId?: string | null } | null;
   };
   // `name` comes back here so callers never re-read the document for it —
   // promotion used to fetch this same folder a second time just for the name.
@@ -402,6 +404,8 @@ async function loadFolder(folderId: string) {
     // can skip the mirror lookup entirely when the answer is none.
     handedOffCount: data.handedOffCount ?? 0,
     deletionPending: data.deletionPending === true,
+    // Which Meta campaign the folder is, when it is one — see `campaignForFolderLead`.
+    metaSource: data.metaSource ?? null,
   };
 }
 
@@ -965,8 +969,8 @@ export async function promoteDataBankRecord(
       assignedByRole: admin.role,
       assignedByName: admin.name ?? admin.email ?? null,
       subAdminUid: target.subAdminUid,
-      campaignId: null,
-      campaignName: null,
+      // A Meta row promoted by hand still counts in its campaign.
+      ...campaignForFolderLead({ record, folder }),
       followUpCount: 0,
       callCount: 0,
       customFields,
@@ -1356,8 +1360,7 @@ export async function promoteDataBankRecords(
           assignedByRole: admin.role,
           assignedByName: admin.name ?? admin.email ?? null,
           subAdminUid: target.subAdminUid,
-          campaignId: null,
-          campaignName: null,
+          ...campaignForFolderLead({ record, folder }),
           followUpCount: 0,
           callCount: 0,
           customFields,
@@ -1881,8 +1884,8 @@ export async function addPersonalLead(
       assignedByRole: "employee",
       assignedByName: employeeName,
       subAdminUid,
-      campaignId: null,
-      campaignName: null,
+      // Added into a campaign's folder, it counts in that campaign.
+      ...campaignForFolderLead({ folder }),
       followUpCount: 0,
       callCount: 0,
       customFields: {},

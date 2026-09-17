@@ -18,7 +18,7 @@ import {
   ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
-import { resolveCascadeAssignee, type Employee } from "@/lib/distribution";
+import { resolveCascadeAssignee, laneDisplayName, type Employee } from "@/lib/distribution";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
 import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
@@ -269,6 +269,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         t.update(leadRef, {
           status: "UNASSIGNED_NO_CAPACITY",
           assignedUserId: null,
+          assigneeName: null,
           acceptDeadlineAt: FieldValue.delete(),
           attemptedAssignees: attempted,
         });
@@ -286,6 +287,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
 
       t.update(leadRef, {
         assignedUserId: nextAssignee,
+        assigneeName: laneDisplayName(rosterSnap.docs.find((doc) => doc.id === nextAssignee)?.data()),
         assignedAt: now,
         lastActivityAt: now,
         distributionMethod: "AUTO_REASSIGN",

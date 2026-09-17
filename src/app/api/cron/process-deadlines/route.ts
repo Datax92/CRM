@@ -5,6 +5,7 @@ import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
   readLaneEmployee,
+  laneDisplayName,
   type Employee,
   type CycleState,
 } from '@/lib/distribution';
@@ -133,7 +134,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     if (!leadSnap.exists || leadSnap.data()?.status !== 'NEW') return false;
 
     const lead = leadSnap.data()!;
-    const { employees, cycleState, configRef } = await readDistributionState(t);
+    const { employees, names, cycleState, configRef } = await readDistributionState(t);
 
     const { uid: assignee, newState } = getNextAssigneeAndState(employees, cycleState);
 
@@ -160,6 +161,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     const now = FieldValue.serverTimestamp();
     t.update(leadRef, {
       assignedUserId: assignee,
+      assigneeName: names.get(assignee) ?? null,
       assignedAt: now,
       lastActivityAt: now,
       distributionMethod: 'AUTO',
@@ -209,7 +211,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
         ? [previousAssignee]
         : [];
 
-    const { employees } = await readDistributionState(t);
+    const { employees, names } = await readDistributionState(t);
     // The cascade runs on priority alone and never touches the rotation
     // counters: a missed lead must not consume the turn of whoever cleans it up.
     const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
@@ -257,6 +259,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       t.update(leadRef, {
         status: 'UNASSIGNED_NO_CAPACITY',
         assignedUserId: null,
+        assigneeName: null,
         acceptDeadlineAt: FieldValue.delete(),
         adminAssignDeadlineAt: FieldValue.delete(),
       });
@@ -274,6 +277,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
     if (forced) {
       t.update(leadRef, {
         assignedUserId: nextAssignee,
+        assigneeName: names.get(nextAssignee) ?? null,
         assignedAt: now,
         acceptedAt: now,
         lastActivityAt: now,
@@ -303,6 +307,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
 
     t.update(leadRef, {
       assignedUserId: nextAssignee,
+      assigneeName: names.get(nextAssignee) ?? null,
       assignedAt: now,
       lastActivityAt: now,
       distributionMethod: 'AUTO_REASSIGN',
@@ -418,15 +423,18 @@ async function readDistributionState(t: Transaction) {
     where the tests can reach it.
   */
   const employees: Employee[] = [];
+  // Names from the same snapshot, so moving a lead never costs another read.
+  const names = new Map<string, string | null>();
   usersSnap.forEach((doc: QueryDocumentSnapshot) => {
     employees.push(readLaneEmployee(doc.id, doc.data()));
+    names.set(doc.id, laneDisplayName(doc.data()));
   });
 
   const configRef = adminDb.collection('config').doc('distribution');
   const configSnap = await t.get(configRef);
   const cycleState: CycleState = configSnap.exists ? (configSnap.data()?.cycleState ?? {}) : {};
 
-  return { employees, cycleState, configRef };
+  return { employees, names, cycleState, configRef };
 }
 
 /** FR-18 says the monitoring period is configurable; this is where it comes from. */

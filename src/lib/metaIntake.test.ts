@@ -8,6 +8,7 @@ import {
   normalizeFieldData,
   metaNotes,
   META_FIELD_KEYS,
+  campaignForFolderLead,
 } from './metaIntake.ts';
 
 /* -------------------------------------------------------------------------- */
@@ -151,4 +152,39 @@ test('extra answers become a readable note, not a mangled number', () => {
 test('a form with no extra questions produces no note at all', () => {
   assert.equal(metaNotes({ leadgenId: '1' }), null);
   assert.equal(metaNotes({ leadgenId: '1', extras: { '': 'x', 'Blank': '' } }), null);
+});
+
+/* -------------------------------------------------------------------------- */
+/* campaignForFolderLead — a lead in a campaign's folder counts in it          */
+/* -------------------------------------------------------------------------- */
+
+const ft2Folder = {
+  name: 'FASAL TOWN 2 – Pakistan',
+  metaSource: { basis: 'CAMPAIGN', campaignId: '120251649751890457' },
+};
+
+test('a lead added by hand into a campaign folder counts in that campaign', () => {
+  // Sundus's Dr haroon read 2 in the folder and 1 on the Campaigns screen.
+  assert.deepEqual(campaignForFolderLead({ folder: ft2Folder }), {
+    campaignId: '120251649751890457',
+    campaignName: 'FASAL TOWN 2 – Pakistan',
+  });
+});
+
+test("a promoted Meta row keeps its own campaign, even out of a manager's mirror", () => {
+  // A mirror carries the fields but no metaSource; the row's provenance is exact.
+  const mirror = { name: 'FASAL TOWN 2 – Pakistan', metaSource: null };
+  const record = { metaCampaignId: '120251649751890457', metaCampaignName: 'FASAL TOWN 2 – Pakistan' };
+  assert.deepEqual(campaignForFolderLead({ record, folder: mirror }), {
+    campaignId: '120251649751890457',
+    campaignName: 'FASAL TOWN 2 – Pakistan',
+  });
+});
+
+test('an ad, form or ordinary folder names no campaign, so none is invented', () => {
+  const none = { campaignId: null, campaignName: null };
+  assert.deepEqual(campaignForFolderLead({ folder: { name: 'WhatsApp ad 9', metaSource: { basis: 'AD', campaignId: null } } }), none);
+  assert.deepEqual(campaignForFolderLead({ folder: { name: 'Form 1645', metaSource: { basis: 'FORM', campaignId: null } } }), none);
+  assert.deepEqual(campaignForFolderLead({ folder: { name: 'GFS Sheet' } }), none);
+  assert.deepEqual(campaignForFolderLead({ record: { metaCampaignId: '' }, folder: null }), none);
 });

@@ -62,6 +62,21 @@ export function readLaneEmployee(uid: string, data: Record<string, unknown>): Em
   };
 }
 
+/**
+ * The name a lead carries for whoever holds it, read off their profile.
+ *
+ * **Every write that moves a lead writes this beside `assignedUserId`.** The
+ * cascade and Pass on used to move the uid and leave the name behind, so a lead
+ * that went Aroosa → Rafia still said "Aroosa" wherever the screen reads the
+ * stored name — search, and the duplicate message that tells a salesperson
+ * who already holds a number. One reader, so the lane and the manual paths
+ * cannot spell it differently.
+ */
+export function laneDisplayName(data: Record<string, unknown> | undefined): string | null {
+  const pick = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  return pick(data?.name) ?? pick(data?.email);
+}
+
 export interface CycleState {
   [uid: string]: number; // leads assigned to this employee in the current cycle
 }

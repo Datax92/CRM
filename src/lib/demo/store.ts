@@ -9,6 +9,7 @@ import type { AccountRecord } from '@/hooks/useAccounts';
 import type { DataBankFolder, DataBankRecord } from '@/hooks/useDataBank';
 import { assignedPhoneMessage, duplicatePhoneMessage, fieldKeyFor, personalDuplicateMessage, phoneKey, type DataBankStatus } from '@/lib/dataBank';
 import { folderScopeIds } from '@/lib/dataBankAssigned';
+import { campaignForFolderLead } from '@/lib/metaIntake';
 import type { CampaignRecord } from '@/hooks/useCampaigns';
 import type { ClientFolder, ClientFolderMember } from '@/hooks/useClients';
 import type { AttendanceRecord } from '@/hooks/useAttendance';
@@ -4096,8 +4097,7 @@ export const demo = {
         dataBankFolderId: folder.id,
         dataBankFolderName: folder.name,
         subAdminUid: employee?.subAdminUid ?? null,
-        campaignId: null,
-        campaignName: null,
+        ...campaignForFolderLead({ folder }),
         followUpCount: 0,
         callCount: 0,
         customFields: {},

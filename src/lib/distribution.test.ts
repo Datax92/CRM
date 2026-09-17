@@ -4,6 +4,7 @@ import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
   readLaneEmployee,
+  laneDisplayName,
   LEADS_PER_TURN,
   type Employee,
   type CycleState,
@@ -322,4 +323,19 @@ test('the cascade honours it too — a lapsed lead must not land on somebody out
     readLaneEmployee('c', { priority: 3, status: 'ACTIVE' }),
   ];
   assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', forced: true });
+});
+
+/* -------------------------------------------------------------------------- */
+/* laneDisplayName — the name a moved lead carries                            */
+/* -------------------------------------------------------------------------- */
+
+test('a moved lead is named after the person it moved to', () => {
+  // The cascade once moved the uid and kept the old name: Aroosa → Rafia still read "Aroosa".
+  assert.equal(laneDisplayName({ name: 'Rafia Afsheen', email: 'rafia@x.pk' }), 'Rafia Afsheen');
+});
+
+test('an unnamed profile falls back to the email, and nothing to null — never an empty string', () => {
+  assert.equal(laneDisplayName({ name: '   ', email: 'rafia@x.pk' }), 'rafia@x.pk');
+  assert.equal(laneDisplayName({ email: '' }), null);
+  assert.equal(laneDisplayName(undefined), null);
 });

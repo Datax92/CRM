@@ -268,3 +268,35 @@ export function normalizeFieldData(
 
   return out;
 }
+
+/**
+ * Which campaign a lead in a Meta folder belongs to, however it got there.
+ *
+ * **A lead in a campaign's folder counts in that campaign** — the owner's call,
+ * 2026-09-17. The Campaigns screen attributes by the lead's own `campaignId`,
+ * while a folder's Assigned list counts whatever sits in the folder, so a lead
+ * added by hand (Sundus's Dr haroon, in FASAL TOWN 2) or promoted by hand read
+ * 2 in the folder and 1 in the campaign.
+ *
+ * **The record's own provenance wins**, because it is exact and travels with the
+ * row into a manager's mirror, which carries no `metaSource`. The folder is
+ * the answer only for a lead with no record behind it — a personal lead — and
+ * only when the folder *is* a campaign: an ad or form folder names no campaign,
+ * and inventing one would book leads against a campaign nobody chose.
+ */
+export function campaignForFolderLead(input: {
+  record?: { metaCampaignId?: unknown; metaCampaignName?: unknown } | null;
+  folder?: { name?: string | null; metaSource?: { basis?: unknown; campaignId?: unknown } | null } | null;
+}): { campaignId: string | null; campaignName: string | null } {
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+
+  const recordId = text(input.record?.metaCampaignId);
+  const recordName = text(input.record?.metaCampaignName);
+  if (recordId || recordName) return { campaignId: recordId, campaignName: recordName };
+
+  const source = input.folder?.metaSource;
+  const folderId = source?.basis === 'CAMPAIGN' ? text(source.campaignId) : null;
+  if (folderId) return { campaignId: folderId, campaignName: text(input.folder?.name) };
+
+  return { campaignId: null, campaignName: null };
+}
