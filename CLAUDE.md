@@ -35,6 +35,7 @@ follow-ups, attendance, payroll and financial reporting.
 - The assigned employee has a **5-min accept window**. On a miss the lead cascades strictly down the priority lane, skipping anyone who already let it expire (`resolveCascadeAssignee`), and a `RED_FLAG` notification + `missedLeadsCount` increment is recorded.
 - **Passing on is not missing.** `passLead` is the employee saying no, from the arrival popup or the lead pane: it cascades by the same `resolveCascadeAssignee` and force-accepts at the floor, but writes **no `RED_FLAG` and no `missedLeadsCount`** — a red flag is for silence, and punishing somebody for answering honestly would teach them to let the window lapse instead. The cost is on the lane, where it belongs: `passes` is incremented in `kpiMonths` and costs 2 points on the next ranking, and the popup says so before the button is pressed.
 - **A Meta lead is offered to the lane the moment it lands.** `fileAndOfferMetaLead` files the record into the admin's Data Bank (unchanged) and then promotes it into a lead `ASSIGNED` to whoever holds priority 1, with the five-minute window — so the popup, the cascade and the Railway sweep finally have a source. **Straight to the lane, no admin holding window**, at the owner's instruction: these are paid leads and the first call should not wait on an admin who is probably not watching. The admin still sees it, counted under *In pipeline* rather than *To give out*, and can reassign it. **An empty lane leaves the record in the Data Bank** rather than creating a lead with no owner — a record waiting in a folder is a normal state somebody can act on, an unassigned lead is something to go and clean up. Promotion, never duplication: the row moves to `PROMOTED_FOLDER_ID` exactly as a hand-promoted one does.
+- **A Click-to-WhatsApp message is a lead only if it came from an ad** (`/api/webhooks/whatsapp-bridge`, fed by the Make scenario in `docs/integrations/make-whatsapp-scenario.md`). The number is the business's everyday WhatsApp (on Coexistence, so the phone app keeps working); a message without an ad referral answers `NOT_FROM_AD` and files nothing. **Grouped by campaign**: `resolveCampaign` looks the ad id up, so a WhatsApp lead lands in the same `meta_campaign_{id}` folder a lead-form ad in that campaign fills. The lookup needs `META_ADS_ACCESS_TOKEN` (system user, `ads_read`) — a Page token cannot read an ad — and falls back to one folder per ad rather than refusing the lead.
 - **The lane has a floor.** When one candidate remains — or everyone has had a turn — that employee is *force-accepted*: no window, no decline. A lead cannot reach `UNASSIGNED_NO_CAPACITY` while an active roster exists.
 - **Admin actions bypass the lane.** Assign, reassign and promote write `ACCEPTED` + `acceptedAt` immediately and delete `acceptDeadlineAt`. An admin handing out a lead is a decision, not an offer.
 - **The cascade never advances rotation counters.** Cleaning up a colleague's miss must not consume your turn.
@@ -413,6 +414,17 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-17 — WhatsApp ads reach the CRM, grouped by campaign, ads only
+
+*"if a person send that message it will show up in crm with the name number and also the source … folder of faisal town 2 … i only want the leads that came through ads."*
+
+**Why nothing arrived, measured rather than guessed:** the number was already on the Cloud API via Coexistence (`platform_type: CLOUD_API`, `is_on_biz_app: true`), but `GET /{WABA}/subscribed_apps` was **empty** — no app received its messages, so Make's trigger never fired. Creating the webhook in Make's WhatsApp module subscribed **"Make for Business Messaging"** and the first message arrived at once. Make's WhatsApp connection is now a Meta sign-in with a *Regular / Coexistence* choice, not a pasted token — its help page is out of date. The `Mahziyar Leads CRM` app and its system-user token (WhatsApp scopes) were made on the way; they are what the diagnosis ran on, not what Make uses.
+
+- **Ads only** — `cameFromAnAd` now gates filing, before any read.
+- **Grouped by campaign** — `whatsappSource` + `resolveCampaign`, which now prefers `META_ADS_ACCESS_TOKEN` and times out at 8s. **The CRM's Page token cannot reach the business's ad accounts** (`owned_ad_accounts` → `Unsupported get request`), so until that variable is set on Vercel, WhatsApp leads group by ad and the response says `groupedBy: "AD"`.
+- **The Make body omits `message`** for now: a first message with a line break or a quote makes Make's JSON-string body invalid, and the lead would be refused as `Malformed payload`.
+- **Validation**: typecheck 0 errors, `test` **742/742** (4 new), eslint clean on the changed files. **Not yet proven with a real ad tap**, which is the only thing that shows Make passes `referral` through.
 
 ### 2026-09-16 — Investment with X: where the round's money came from
 

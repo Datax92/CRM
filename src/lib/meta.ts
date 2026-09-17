@@ -169,14 +169,26 @@ export async function fetchLeadDetails(leadgenId: string): Promise<NormalizedLea
  */
 export async function resolveCampaign(adId: string | null | undefined): Promise<CampaignInfo> {
   const empty: CampaignInfo = { campaignId: null, campaignName: null, adsetName: null, adName: null };
-  const token = process.env.META_PAGE_ACCESS_TOKEN;
+  /*
+    **A Page token cannot read an ad.** Ads live in the ad account, which the
+    Marketing API only opens to a user or system-user token holding `ads_read`
+    — so `META_ADS_ACCESS_TOKEN` is asked first. The Page token stays as the
+    fallback so nothing that worked before stops working.
+  */
+  const token = process.env.META_ADS_ACCESS_TOKEN || process.env.META_PAGE_ACCESS_TOKEN;
   if (!adId || !token) return empty;
 
   try {
     const url = `${GRAPH_BASE}/${encodeURIComponent(adId)}?fields=name,campaign{id,name},adset{id,name}&access_token=${encodeURIComponent(token)}`;
-    const response = await fetch(url, { cache: 'no-store' });
+    // Bounded: this runs inside a webhook, and a lead must never wait on a
+    // slow Graph call longer than the intermediary is prepared to wait for us.
+    const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
     if (!response.ok) {
-      console.warn(`[meta] Could not resolve campaign for ad ${adId} (HTTP ${response.status}). Needs ads_read.`);
+      const body = await response.text().catch(() => '');
+      console.warn(
+        `[meta] Could not resolve campaign for ad ${adId} (HTTP ${response.status}). Needs a token with ads_read in META_ADS_ACCESS_TOKEN.`,
+        body.slice(0, 200)
+      );
       return empty;
     }
 

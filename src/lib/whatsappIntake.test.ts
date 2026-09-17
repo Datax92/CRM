@@ -6,7 +6,9 @@ import {
   cameFromAnAd,
   whatsappNotes,
   adLabel,
+  whatsappSource,
 } from './whatsappIntake.ts';
+import { resolveMetaSource, metaFolderId } from './metaIntake.ts';
 
 /** A real Cloud API webhook body, trimmed to what matters. */
 const cloudApiBody = {
@@ -93,4 +95,55 @@ test('a folder is labelled by the ad, and says so even when unnamed', () => {
   assert.equal(adLabel(readWhatsAppLead(cloudApiBody)!), 'FASAL TOWN 2 – Pakistan');
   assert.equal(adLabel(readWhatsAppLead({ from: '92300', ad_id: '999' })!), 'WhatsApp ad 999');
   assert.equal(adLabel(readWhatsAppLead({ from: '92300' })!), 'WhatsApp (no ad)');
+});
+
+test('an ad resolved to its campaign files under the campaign', () => {
+  // The owner reads "Faisal Town 2" as one folder, however many ads it runs.
+  const lead = readWhatsAppLead(cloudApiBody)!;
+  const source = whatsappSource(lead, {
+    campaignId: '120200000001',
+    campaignName: 'Faisal Town 2',
+    adsetName: 'Lahore 25-45',
+    adName: 'FT2 video 3',
+  });
+  const folder = resolveMetaSource({ leadgenId: 'wamid.HBg', ...source });
+  assert.equal(folder.basis, 'CAMPAIGN');
+  assert.equal(folder.label, 'Faisal Town 2');
+  assert.equal(metaFolderId(folder), 'meta_campaign_120200000001');
+});
+
+test('two ads in one campaign share a folder, and so does a form lead from it', () => {
+  const campaign = { campaignId: '120200000001', campaignName: 'Faisal Town 2', adsetName: null };
+  const first = resolveMetaSource({
+    leadgenId: 'a',
+    ...whatsappSource(readWhatsAppLead({ from: '92300', ad_id: '111', ad_headline: 'Plots from 25 lakh' })!, { ...campaign, adName: 'A' }),
+  });
+  const second = resolveMetaSource({
+    leadgenId: 'b',
+    ...whatsappSource(readWhatsAppLead({ from: '92301', ad_id: '222', ad_headline: 'Book today' })!, { ...campaign, adName: 'B' }),
+  });
+  // A lead-form ad in the same campaign, as the Meta webhook files it.
+  const form = resolveMetaSource({ leadgenId: 'c', campaignId: '120200000001', campaignName: 'Faisal Town 2', formId: '9' });
+  assert.equal(metaFolderId(first), metaFolderId(second));
+  assert.equal(metaFolderId(first), metaFolderId(form));
+});
+
+test('a campaign that cannot be looked up falls back to one folder per ad, never to no lead', () => {
+  // A token without ads_read, or a Graph timeout: the lead is still filed.
+  const lead = readWhatsAppLead(cloudApiBody)!;
+  const nothing = { campaignId: null, campaignName: null, adsetName: null, adName: null };
+  const folder = resolveMetaSource({ leadgenId: 'wamid.HBg', ...whatsappSource(lead, nothing) });
+  assert.equal(folder.basis, 'AD');
+  assert.equal(folder.label, 'FASAL TOWN 2 – Pakistan');
+  assert.equal(metaFolderId(folder), 'meta_ad_120212345');
+});
+
+test('a message typed straight to the number is not from an ad', () => {
+  // The number is the business's everyday WhatsApp; only ad taps are leads.
+  assert.equal(cameFromAnAd(readWhatsAppLead({ from: '923001234567', name: 'Supplier', text: 'Invoice attached' })!), false);
+  // Empty strings from an unmapped field must not read as an ad.
+  assert.equal(cameFromAnAd(readWhatsAppLead({ phone: '923001234567', ad_id: '', ad_headline: '' })!), false);
+  // A headline alone is not proof: Meta always sends an id, a URL or a click id with a real referral.
+  assert.equal(cameFromAnAd(readWhatsAppLead({ phone: '923001234567', ad_headline: 'Faisal Town 2' })!), false);
+  assert.equal(cameFromAnAd(readWhatsAppLead({ phone: '923001234567', ad_id: '120212345' })!), true);
 });

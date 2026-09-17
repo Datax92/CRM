@@ -4,7 +4,8 @@ import { phoneKey } from '@/lib/dataBank';
 import { karachiDayKey } from '@/lib/dates';
 import { notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
 import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
-import { readWhatsAppLead, cameFromAnAd, whatsappNotes, adLabel } from '@/lib/whatsappIntake';
+import { resolveCampaign } from '@/lib/meta';
+import { readWhatsAppLead, cameFromAnAd, whatsappNotes, whatsappSource, adLabel } from '@/lib/whatsappIntake';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -83,6 +84,21 @@ export async function POST(request: Request) {
     );
   }
 
+  /*
+    **Ads only.** Asked before any read, because this number is the business's
+    everyday WhatsApp and most of what arrives here is not a lead. 200 so the
+    intermediary records it as handled rather than retrying; the outcome is
+    what shows in its history when somebody asks why a message did not appear.
+  */
+  if (!cameFromAnAd(lead)) {
+    console.info('[whatsapp-bridge] Skipped a message with no ad referral.');
+    return NextResponse.json({
+      ok: true,
+      outcome: 'NOT_FROM_AD',
+      message: 'This message did not come from an ad, so no lead was created.',
+    });
+  }
+
   try {
     const key = phoneKey(lead.phone);
 
@@ -111,6 +127,11 @@ export async function POST(request: Request) {
       }
     }
 
+    // Best-effort by design: `resolveCampaign` returns nulls rather than
+    // throwing, and `whatsappSource` then groups by ad instead.
+    const campaign = await resolveCampaign(lead.adId);
+    const source = whatsappSource(lead, campaign);
+
     const result = await fileAndOfferMetaLead({
       // The WhatsApp message id, so a redelivery of the same message is caught
       // even before the phone rule above.
@@ -130,16 +151,11 @@ export async function POST(request: Request) {
         ...(lead.clickId ? { 'WhatsApp click id': lead.clickId } : {}),
       },
       /*
-        Grouped by **ad**, which is what `resolveMetaSource` does when there is
-        no campaign or form — one folder per ad, which is exactly how the owner
-        reads the Meta Ads panel. The headline is the only human-readable name
-        Meta attaches to a click-to-WhatsApp referral.
+        Grouped by **campaign** — the folder the owner reads as "Faisal Town 2"
+        — and by ad only when the campaign could not be looked up. See
+        `whatsappSource`.
       */
-      campaignId: null,
-      campaignName: null,
-      adId: lead.adId,
-      adName: adLabel(lead),
-      adsetName: null,
+      ...source,
       formId: null,
       formName: null,
       pageId: null,
@@ -153,9 +169,10 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       ...result,
-      // Reported rather than enforced: somebody who found the number another way
-      // is still a real lead, and the owner may want to know the difference.
-      fromAd: cameFromAnAd(lead),
+      // Shown in the intermediary's history, so a lead in a folder named after
+      // its ad rather than its campaign explains itself without a log search.
+      groupedBy: campaign.campaignId ? 'CAMPAIGN' : 'AD',
+      campaignName: campaign.campaignName,
       notes: whatsappNotes(lead),
     });
   } catch (error) {

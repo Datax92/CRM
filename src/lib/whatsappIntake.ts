@@ -107,16 +107,53 @@ export function readWhatsAppLead(body: WhatsAppBridgeBody): WhatsAppLead | null 
 }
 
 /**
- * Whether this message came from tapping an ad.
+ * Whether this message came from tapping an ad — and therefore whether it is a
+ * lead at all.
+ *
+ * **Only messages from an ad are filed**, at the owner's instruction
+ * (2026-09-17). The number is the business's everyday WhatsApp, so without this
+ * every supplier, friend and existing client who writes to it would land in the
+ * pipeline and be offered to a salesperson.
  *
  * **Only the first message of a conversation carries the referral**, so a
  * message without one is either a later message in an ad conversation — which
- * the first-contact rule already excludes — or somebody who found the number
- * some other way. The second case is a real lead and the owner may well want
- * it, so this is reported rather than used to refuse anything here.
+ * the first-contact rule would exclude anyway — or somebody who found the number
+ * some other way. Both are skipped.
  */
 export function cameFromAnAd(lead: WhatsAppLead): boolean {
   return Boolean(lead.adId || lead.sourceUrl || lead.clickId);
+}
+
+/** An ad resolved up to its campaign; every field null when Meta would not say. */
+export interface AdCampaign {
+  campaignId: string | null;
+  campaignName: string | null;
+  adsetName: string | null;
+  adName: string | null;
+}
+
+/**
+ * Which folder a WhatsApp lead files under.
+ *
+ * **Grouped by campaign**, at the owner's instruction: every lead from the
+ * "Faisal Town 2" campaign in one "Faisal Town 2" folder, however many ads or
+ * creatives it runs — and the *same* folder its lead-form ads fill, because
+ * `resolveMetaSource` keys a campaign on its id whichever door the lead came
+ * through.
+ *
+ * **When the campaign cannot be looked up** — a token without `ads_read`, a
+ * Graph timeout, a boosted post rather than an ad — it falls back to one folder
+ * per ad, named from the ad's headline. A lead in the wrong folder can be moved;
+ * a lead refused because a lookup failed is money already spent and gone.
+ */
+export function whatsappSource(lead: WhatsAppLead, campaign: AdCampaign) {
+  return {
+    campaignId: campaign.campaignId,
+    campaignName: campaign.campaignName,
+    adId: lead.adId,
+    adName: campaign.adName || adLabel(lead),
+    adsetName: campaign.adsetName,
+  };
 }
 
 /**
