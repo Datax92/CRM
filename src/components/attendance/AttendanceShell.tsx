@@ -49,7 +49,7 @@ export function AttendanceShell({
         // Cancels the <main> padding so the module owns the full frame. Every
         // child then renders in normal flow and cannot climb over the strip.
         margin: isMobile ? "-18px -16px" : "-24px -28px",
-        padding: isMobile ? "0 16px 26px" : "22px 28px 32px",
+        padding: isMobile ? "0 16px 26px" : "22px 28px 34px",
       }}
     >
       {isMobile && (
@@ -62,7 +62,7 @@ export function AttendanceShell({
 
       {/* `position: relative` and a stacking context above the content, so a
           card with its own shadow can never paint over the strip. */}
-      <div style={{ position: "relative", zIndex: 1, marginBottom: 14 }}>
+      <div style={{ position: "relative", zIndex: 1, marginBottom: 16 }}>
         <AttendanceNav tabs={tabs} />
       </div>
 

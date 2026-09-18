@@ -9,12 +9,14 @@
  * substitutes for the other, so both are here behind one toggle rather than a
  * grid squeezed into doing both jobs badly.
  *
+ * The frame is `Attendance Calendar.dc.html` (owner, 2026-09-18), drawn by
+ * `CalendarPanel` so the person's own calendar wears the same one.
+ *
  * Clicking any day opens the same `DayDetailPanel` the employee's own screen
  * uses, which is where HR corrects a day (§11).
  */
 
 import { useMemo, useState } from "react";
-import { CalendarDays, Grid3x3 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTeamAttendance } from "@/hooks/useTeamAttendance";
 import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
@@ -26,11 +28,11 @@ import {
   A,
   ATTENDANCE_TONES,
   AttendanceCalendar,
-  AttendanceCard,
+  CalendarPanel,
+  CalendarPersonPicker,
   EmptyState,
-  StatusLegend,
+  type CalendarScope,
 } from "./attendanceChrome";
-import { MonthStepper } from "./MyAttendanceView";
 import { DayDetailPanel } from "./DayDetailPanel";
 
 function resolveDay(dayKey: string, existing?: TeamAttendanceDay): TeamAttendanceDay {
@@ -87,7 +89,7 @@ function toAttendanceDay(day: TeamAttendanceDay): AttendanceDay {
 export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
   const { user } = useAuth();
   const [monthKey, setMonthKey] = useState(karachiMonthKey());
-  const [mode, setMode] = useState<"person" | "grid">("person");
+  const [mode, setMode] = useState<CalendarScope>("person");
   const [personUid, setPersonUid] = useState<string | null>(null);
   const [open, setOpen] = useState<{ uid: string; name: string; day: TeamAttendanceDay } | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
@@ -111,72 +113,59 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
     [person]
   );
 
+  // In the team view the legend counts everybody's days, and the aside says so
+  // — one person's figures beside a grid of forty rows would read as the team's.
+  const teamCounts = useMemo(
+    () =>
+      team.rows.reduce(
+        (sum, row) => ({
+          PRESENT: sum.PRESENT + row.present,
+          LATE: sum.LATE + row.late,
+          ABSENT: sum.ABSENT + row.absent,
+          LEAVE: sum.LEAVE + row.leave,
+        }),
+        { PRESENT: 0, LATE: 0, ABSENT: 0, LEAVE: 0 }
+      ),
+    [team.rows]
+  );
+
+  const counts: Partial<Record<AttendanceStatus, number>> | undefined =
+    mode === "grid"
+      ? teamCounts
+      : person
+        ? { PRESENT: person.present, LATE: person.late, ABSENT: person.absent, LEAVE: person.leave }
+        : undefined;
+
   const dayCount = daysInMonth(monthKey);
+  const today = karachiDayKey();
+
+  const aside =
+    team.rows.length === 0 ? undefined : mode === "person" ? (
+      <CalendarPersonPicker value={activeUid ?? ""} people={team.rows} onChange={setPersonUid} />
+    ) : (
+      <span style={{ fontSize: 12.5, fontWeight: 700, color: A.muted }}>
+        Whole team · {team.rows.length} {team.rows.length === 1 ? "person" : "people"}
+      </span>
+    );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <AttendanceCard
-        title="Attendance calendar"
-        action={
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", gap: 4, background: A.hair, borderRadius: 999, padding: 3 }}>
-              {(
-                [
-                  { key: "person", label: "One person", icon: CalendarDays },
-                  { key: "grid", label: "Whole team", icon: Grid3x3 },
-                ] as const
-              ).map(({ key, label, icon: Icon }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setMode(key)}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    borderRadius: 999,
-                    border: "none",
-                    background: mode === key ? A.surface : "transparent",
-                    color: mode === key ? A.teal : A.muted,
-                    padding: "5px 12px",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    boxShadow: mode === key ? "0 1px 3px rgba(31,59,57,0.12)" : "none",
-                  }}
-                >
-                  <Icon size={13} /> {label}
-                </button>
-              ))}
-            </div>
-            <MonthStepper monthKey={monthKey} onChange={setMonthKey} />
-          </div>
-        }
+      <CalendarPanel
+        monthKey={monthKey}
+        onMonthChange={setMonthKey}
+        scope={{ value: mode, onChange: setMode }}
+        counts={counts}
+        aside={aside}
       >
-        <div style={{ marginBottom: 14 }}>
-          <StatusLegend
-            counts={
-              person
-                ? {
-                    PRESENT: person.present,
-                    LATE: person.late,
-                    ABSENT: person.absent,
-                    LEAVE: person.leave,
-                  }
-                : undefined
-            }
-          />
-        </div>
-
         {banner && (
           <p
             role="status"
             style={{
               marginBottom: 12,
               borderRadius: 10,
-              border: "1px solid #bfe3d2",
-              background: "#e4f3ec",
-              color: "#1f7a52",
+              border: `1px solid ${ATTENDANCE_TONES.PRESENT.border}`,
+              background: ATTENDANCE_TONES.PRESENT.soft,
+              color: ATTENDANCE_TONES.PRESENT.text,
               padding: "9px 12px",
               fontSize: 12.5,
               fontWeight: 600,
@@ -187,7 +176,7 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
         )}
 
         {team.error && (
-          <p role="alert" style={{ fontSize: 13, color: "#a33a29", marginBottom: 12 }}>
+          <p role="alert" style={{ fontSize: 13, color: ATTENDANCE_TONES.ABSENT.text, marginBottom: 12 }}>
             {team.error}
           </p>
         )}
@@ -195,43 +184,17 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
         {team.rows.length === 0 ? (
           <EmptyState>{team.loading ? "Loading." : "Nobody is on your team yet."}</EmptyState>
         ) : mode === "person" ? (
-          <>
-            <select
-              value={activeUid ?? ""}
-              onChange={(event) => setPersonUid(event.target.value)}
-              style={{
-                marginBottom: 14,
-                borderRadius: 10,
-                border: `1px solid ${A.line}`,
-                background: "#fff",
-                color: A.ink,
-                padding: "9px 11px",
-                fontSize: 14,
-                fontWeight: 700,
-                outline: "none",
-                maxWidth: 320,
-                width: "100%",
-              }}
-            >
-              {team.rows.map((row) => (
-                <option key={row.uid} value={row.uid}>
-                  {row.name}
-                </option>
-              ))}
-            </select>
-
-            <AttendanceCalendar
-              monthKey={monthKey}
-              cells={cells}
-              today={karachiDayKey()}
-              onSelect={(dayKey) => {
-                if (!person) return;
-                const existingDay = person.days.find((entry) => entry.dayKey === dayKey);
-                const day = resolveDay(dayKey, existingDay);
-                setOpen({ uid: person.uid, name: person.name, day });
-              }}
-            />
-          </>
+          <AttendanceCalendar
+            monthKey={monthKey}
+            cells={cells}
+            today={today}
+            onSelect={(dayKey) => {
+              if (!person) return;
+              const existingDay = person.days.find((entry) => entry.dayKey === dayKey);
+              const day = resolveDay(dayKey, existingDay);
+              setOpen({ uid: person.uid, name: person.name, day });
+            }}
+          />
         ) : (
           /* One row per employee, one cell per day. Scrolls inside its own
              container so the page never scrolls sideways. */
@@ -242,18 +205,30 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
                   display: "grid",
                   gridTemplateColumns: `140px repeat(${dayCount}, 26px)`,
                   gap: 3,
-                  marginBottom: 4,
+                  marginBottom: 6,
                 }}
               >
                 <span />
-                {Array.from({ length: dayCount }, (_, index) => (
-                  <span
-                    key={index}
-                    style={{ fontSize: 9.5, fontWeight: 700, color: A.faint, textAlign: "center" }}
-                  >
-                    {index + 1}
-                  </span>
-                ))}
+                {Array.from({ length: dayCount }, (_, index) => {
+                  const isToday = `${monthKey}-${String(index + 1).padStart(2, "0")}` === today;
+                  return (
+                    <span
+                      key={index}
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 800,
+                        color: isToday ? "#fff" : "#8fa2a0",
+                        background: isToday ? "#3f8f8a" : "transparent",
+                        borderRadius: 999,
+                        textAlign: "center",
+                        fontVariantNumeric: "tabular-nums",
+                        lineHeight: "18px",
+                      }}
+                    >
+                      {index + 1}
+                    </span>
+                  );
+                })}
               </div>
 
               {team.rows.map((row) => {
@@ -271,9 +246,9 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
                   >
                     <span
                       style={{
-                        fontSize: 12,
+                        fontSize: 12.5,
                         fontWeight: 700,
-                        color: A.ink,
+                        color: "#141f1e",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
@@ -298,15 +273,16 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
                           aria-label={`${row.name} — ${dayKey}`}
                           title={`${dayKey} · ${status}`}
                           style={{
-                            height: 24,
-                            borderRadius: 6,
+                            height: 26,
+                            borderRadius: 7,
                             border: `1px solid ${tone.border}`,
                             background: tone.soft,
                             color: tone.text,
-                            fontSize: 9,
+                            fontSize: 9.5,
                             fontWeight: 800,
                             cursor: canAdjust || day ? "pointer" : "default",
                             padding: 0,
+                            fontFamily: "inherit",
                           }}
                         >
                           {tone.letter}
@@ -319,7 +295,7 @@ export function TeamCalendarView({ canAdjust }: { canAdjust: boolean }) {
             </div>
           </div>
         )}
-      </AttendanceCard>
+      </CalendarPanel>
 
       {open && (
         <DayDetailPanel

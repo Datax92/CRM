@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; font-family:'Manrope', system-ui, sans-serif; background:#eef4f3; -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
+  * { box-sizing:border-box; }
+  input, select { font-family:inherit; }
+  input::placeholder { color:#9aacaa; }
+  a { color:#2f7d78; text-decoration:none; }
+  a:hover { color:#1f5c58; }
+  ::-webkit-scrollbar { width:7px; height:7px; }
+  ::-webkit-scrollbar-thumb { background:#c3d9d6; border-radius:4px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+</style>
+</helmet>
+<div style="display:flex; flex-direction:column; height:100vh; min-height:900px; background:#eef4f3; color:#22302f;">
+
+  <div style="display:grid; grid-template-columns:1fr auto; align-items:center; gap:24px; padding:13px 28px 13px 96px; background:#fff; border-bottom:1px solid #e2ecea;">
+    <div style="display:flex; align-items:center; gap:9px; max-width:400px; background:#f4f8f7; border:1px solid #e2ecea; border-radius:999px; padding:10px 16px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8fa2a0" stroke-width="2"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg>
+      <input placeholder="Search leads or customers..." style="flex:1; min-width:0; border:none; outline:none; background:transparent; font-size:13.5px; font-weight:500; color:#22302f;">
+    </div>
+    <div style="display:flex; align-items:center; gap:18px;">
+      <div style="position:relative; width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer;" style-hover="background:#f4f8f7;">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#5b6d6b" stroke-width="1.7" stroke-linecap="round"><path d="M18 15V10a6 6 0 1 0-12 0v5l-1.5 2.5h15L18 15ZM10 20a2 2 0 0 0 4 0"></path></svg>
+        <div style="position:absolute; top:2px; right:0; min-width:20px; height:17px; padding:0 4px; border-radius:999px; background:#e05a4a; color:#fff; font-size:9.5px; font-weight:800; display:flex; align-items:center; justify-content:center; border:1.5px solid #fff;">20+</div>
+      </div>
+      <div style="width:1px; height:24px; background:#e2ecea;"></div>
+      <div style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+        <div style="width:34px; height:34px; border-radius:50%; background:#3f8f8a; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700;">M</div>
+        <span style="font-size:14px; font-weight:600; color:#22302f;">Mahziyarmktcrm</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8fa2a0" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"></path></svg>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex:1; display:grid; grid-template-columns:96px 1fr; min-height:0;">
+
+    <div style="background:#fff; border-right:1px solid #e2ecea; display:flex; flex-direction:column; align-items:center; padding:18px 0 24px; gap:6px; overflow-y:auto;">
+      <div style="width:42px; height:42px; border-radius:13px; background:#3f8f8a; display:flex; align-items:center; justify-content:center; color:#fff; font-size:17px; font-weight:800; margin-bottom:14px;">M</div>
+      <sc-for list="{{ nav }}" as="item" hint-placeholder-count="9">
+        <div onClick="{{ item.select }}" style="{{ item.style }}" style-hover="background:#f2f8f7; color:#2f7d78;">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{{ item.d }}"></path></svg>
+          <span style="font-size:10.5px; font-weight:600; text-align:center; line-height:1.2;">{{ item.label }}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="min-height:0; overflow-y:auto; padding:22px 28px 34px;">
+
+      <div style="display:inline-flex; align-items:center; gap:4px; padding:4px; border-radius:999px; background:#dceae8; margin-bottom:16px; max-width:100%; overflow-x:auto;">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="7">
+          <div onClick="{{ t.select }}" style="{{ t.style }}">{{ t.label }}</div>
+        </sc-for>
+      </div>
+
+      <div style="background:#fff; border:1px solid #e2ecea; border-radius:20px; overflow:hidden;">
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap; padding:18px 22px 16px; border-bottom:1px solid #eef4f3;">
+          <div style="display:flex; align-items:center; gap:14px; min-width:0;">
+            <div style="width:44px; height:44px; border-radius:14px; background:#e4f0ef; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#2f7d78" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="3"></rect><path d="M8 3v4M16 3v4M4 11h16M9 15l1.8 1.8L15 13"></path></svg>
+            </div>
+            <div style="min-width:0;">
+              <div style="font-size:10.5px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#6c7d7b;">Attendance Calendar</div>
+              <div style="font-size:23px; font-weight:800; letter-spacing:-0.8px; color:#141f1e; margin-top:1px;">September 2026</div>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:4px; padding:4px; border-radius:999px; background:#f0f6f5;">
+              <sc-for list="{{ scopes }}" as="s" hint-placeholder-count="2">
+                <div onClick="{{ s.select }}" style="{{ s.style }}">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ s.d }}"></path></svg>
+                  <span style="white-space:nowrap;">{{ s.label }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <div style="width:36px; height:36px; border-radius:11px; border:1px solid #e2ecea; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#5b6d6b;" style-hover="background:#f4f8f7; color:#2f7d78;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m14 6-6 6 6 6"></path></svg>
+              </div>
+              <div style="width:36px; height:36px; border-radius:11px; border:1px solid #e2ecea; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#5b6d6b;" style-hover="background:#f4f8f7; color:#2f7d78;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m10 6 6 6-6 6"></path></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap; padding:16px 22px; background:#fbfdfd; border-bottom:1px solid #eef4f3;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <sc-for list="{{ legend }}" as="l" hint-placeholder-count="4">
+              <div style="{{ l.style }}">
+                <span style="{{ l.dotStyle }}"></span>
+                <span style="white-space:nowrap;">{{ l.label }}</span>
+                <span style="{{ l.countStyle }}">{{ l.count }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+            <div style="width:32px; height:32px; border-radius:50%; background:#f2f8f7; border:1.5px solid #b6d9d5; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:#2f7d78; flex-shrink:0;">AA</div>
+            <select value="{{ person }}" onChange="{{ onPerson }}" style="border:1px solid #e2ecea; background:#fff; border-radius:10px; padding:10px 14px; font-size:13.5px; font-weight:700; color:#141f1e; outline:none; cursor:pointer; min-width:0;">
+              <option value="Aroosa Abbasi">Aroosa Abbasi</option>
+              <option value="testemployee">testemployee</option>
+              <option value="ammad">ammad</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="padding:14px 22px 22px;">
+          <div style="display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:8px; margin-bottom:8px;">
+            <sc-for list="{{ dows }}" as="d" hint-placeholder-count="7">
+              <div style="text-align:center; font-size:10px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase; color:#8fa2a0; padding-bottom:2px;">{{ d }}</div>
+            </sc-for>
+          </div>
+
+          <div style="display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:8px;">
+            <sc-for list="{{ cells }}" as="c" hint-placeholder-count="35">
+              <div style="{{ c.style }}">
+                <sc-if value="{{ c.day }}">
+                  <div style="display:flex; flex-direction:column; height:100%; min-width:0; padding:11px 12px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                      <span style="{{ c.dayStyle }}">{{ c.day }}</span>
+                      <sc-if value="{{ c.code }}">
+                        <span style="{{ c.dotStyle }}"></span>
+                      </sc-if>
+                    </div>
+                    <div style="flex:1;"></div>
+                    <sc-if value="{{ c.code }}">
+                      <div style="display:flex; flex-direction:column; align-items:flex-start; gap:5px; min-width:0;">
+                        <div style="{{ c.pillStyle }}">{{ c.statusLabel }}</div>
+                        <sc-if value="{{ c.time }}">
+                          <div style="display:flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; color:{{ c.timeColor }}; font-variant-numeric:tabular-nums; white-space:nowrap;">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="9"></circle><path d="M12 7.5V12l3.5 2"></path></svg>
+                            <span>{{ c.time }}</span>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+const NAV = [
+  { key: "dashboard", label: "Dashboard", d: "M4 11 12 4l8 7v9H4z" },
+  { key: "leads", label: "Leads", d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" },
+  { key: "data", label: "Data", d: "M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3ZM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7" },
+  { key: "team", label: "Team", d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4" },
+  { key: "clients", label: "Clients", d: "M12 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM5 20c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5" },
+  { key: "money", label: "Money", d: "M12 3v18M16 7.5c0-1.7-1.8-2.5-4-2.5s-4 .8-4 2.5S9.8 10 12 10s4 .8 4 2.8-1.8 2.7-4 2.7-4-1-4-2.5" },
+  { key: "accounts", label: "Accounts", d: "M3 10 12 4l9 6M5 10v9h14v-9M9 19v-5h6v5" },
+  { key: "time", label: "Time", d: "M4 5h16v16H4zM8 3v4M16 3v4M4 11h16M9 15l1.8 1.8L15 13" },
+  { key: "settings", label: "Settings", d: "M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4ZM19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15a2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.7 4.4a2 2 0 1 1 4 0 1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 11a2 2 0 1 1 0 4Z" }
+];
+
+const TABS = ["Dashboard", "Mine", "Calendar", "Leave", "Reports", "Late / Absence", "Settings"];
+const DOWS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const STATUS = {
+  P: { code: "P", label: "Present", color: "#2f7d78", tint: "#eaf6f4", border: "#cbe6e2", chipTint: "#e8f5f3" },
+  L: { code: "L", label: "Late", color: "#8a6321", tint: "#fdf4e6", border: "#f0e2c6", chipTint: "#fdf5e6" },
+  A: { code: "A", label: "Absent", color: "#a8483c", tint: "#fdeeec", border: "#f5d9d5", chipTint: "#fdeeec" },
+  V: { code: "V", label: "Leave", color: "#8a7a21", tint: "#fbf8e4", border: "#eee6c2", chipTint: "#fbf8e4" }
+};
+
+// Sept 2026: 30 days, the 1st falls on a Tuesday. Today is the 17th.
+const DAYS = {
+  1: { s: "A", t: "13:33" },
+  2: { s: "P" }, 3: { s: "P" }, 4: { s: "P" }, 5: { s: "P" },
+  7: { s: "P", t: "11:09" }, 8: { s: "P", t: "11:02" }, 9: { s: "P" }, 10: { s: "P" },
+  11: { s: "P", t: "10:55" }, 12: { s: "P", t: "11:01" },
+  14: { s: "P", t: "11:14" }, 15: { s: "L", t: "11:47" }, 16: { s: "P", t: "10:58" },
+  17: { s: "P", t: "11:06" }
+};
+
+const TODAY = 17;
+const FIRST_DOW = 2;
+const DAYS_IN_MONTH = 30;
+
+class Component extends DCLogic {
+  state = { navKey: "time", tab: "Calendar", scope: "One person", person: "Aroosa Abbasi" };
+
+  renderVals() {
+    const counts = { P: 0, L: 0, A: 0, V: 0 };
+    Object.keys(DAYS).forEach(k => { counts[DAYS[k].s] += 1; });
+
+    const cells = [];
+    for (let i = 0; i < FIRST_DOW; i++) cells.push({ day: null, style: "min-height:106px; border-radius:16px; background:transparent;" });
+
+    for (let d = 1; d <= DAYS_IN_MONTH; d++) {
+      const rec = DAYS[d];
+      const st = rec ? STATUS[rec.s] : null;
+      const isToday = d === TODAY;
+      const border = isToday ? "1.5px solid #3f8f8a" : "1px solid " + (st ? st.border : "#eef4f3");
+      cells.push({
+        day: String(d),
+        code: st ? st.code : null,
+        time: rec && rec.t ? rec.t : null,
+        statusLabel: st ? st.label : null,
+        timeColor: st ? st.color : "#9aacaa",
+        style: "position:relative; overflow:hidden; min-height:106px; border-radius:16px; cursor:pointer; background:" +
+          (st ? st.tint : "#fbfdfd") + "; border:" + border +
+          "; box-shadow:" + (st ? "inset 3px 0 0 " + st.color : "none") +
+          (isToday ? (st ? ", " : "") + "0 6px 18px rgba(63,143,138,0.18)" : "") + ";",
+        dayStyle: isToday
+          ? "display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; background:#3f8f8a; color:#fff; font-size:13px; font-weight:800; font-variant-numeric:tabular-nums;"
+          : "font-size:16px; font-weight:800; letter-spacing:-0.3px; font-variant-numeric:tabular-nums; color:" +
+            (st ? "#141f1e" : "#b6cbc9") + ";",
+        dotStyle: st ? "width:8px; height:8px; border-radius:50%; flex-shrink:0; background:" + st.color + ";" : null,
+        pillStyle: st
+          ? "max-width:100%; padding:3px 9px; border-radius:999px; font-size:10px; font-weight:800; letter-spacing:0.3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:#fff; border:1px solid " +
+            st.border + "; color:" + st.color + ";"
+          : null,
+        badgeStyle: st
+          ? "flex-shrink:0; width:20px; height:20px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:800; background:#fff; color:" +
+            st.color + "; border:1px solid " + st.border + ";"
+          : null
+      });
+    }
+    while (cells.length % 7 !== 0) cells.push({ day: null, style: "min-height:106px; border-radius:16px; background:transparent;" });
+
+    return {
+      dows: DOWS.map(d => d.toUpperCase()),
+      cells,
+
+      nav: NAV.map(n => {
+        const active = n.key === this.state.navKey;
+        return {
+          label: n.label, d: n.d,
+          select: () => this.setState({ navKey: n.key }),
+          style: "display:flex; flex-direction:column; align-items:center; gap:6px; width:78px; padding:11px 4px; border-radius:12px; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#7e918f") + "; background:" + (active ? "#e4f0ef" : "transparent") + ";"
+        };
+      }),
+
+      tabs: TABS.map(label => {
+        const active = this.state.tab === label;
+        return {
+          label,
+          select: () => this.setState({ tab: label }),
+          style: "flex-shrink:0; padding:9px 20px; border-radius:999px; font-size:13.5px; font-weight:700; cursor:pointer; white-space:nowrap; color:" +
+            (active ? "#2f7d78" : "#5b6d6b") + "; background:" + (active ? "#fff" : "transparent") +
+            "; box-shadow:" + (active ? "0 1px 3px rgba(31,92,88,0.14)" : "none") + ";"
+        };
+      }),
+
+      scopes: [
+        { label: "One person", d: "M12 11a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8ZM5 20c0-3.3 3.1-5.2 7-5.2s7 1.9 7 5.2" },
+        { label: "Whole team", d: "M4 5h16v14H4zM4 10h16M10 10v9" }
+      ].map(s => {
+        const active = this.state.scope === s.label;
+        return {
+          label: s.label, d: s.d,
+          select: () => this.setState({ scope: s.label }),
+          style: "display:flex; align-items:center; gap:7px; padding:8px 16px; border-radius:999px; font-size:12.5px; font-weight:700; cursor:pointer; color:" +
+            (active ? "#2f7d78" : "#5b6d6b") + "; background:" + (active ? "#fff" : "transparent") +
+            "; box-shadow:" + (active ? "0 1px 3px rgba(31,92,88,0.14)" : "none") + ";"
+        };
+      }),
+
+      legend: ["P", "L", "A", "V"].map(k => {
+        const s = STATUS[k];
+        return {
+          label: s.label,
+          count: counts[k],
+          style: "display:flex; align-items:center; gap:8px; padding:7px 14px; border-radius:999px; background:" +
+            s.chipTint + "; border:1px solid " + s.border + "; font-size:12.5px; font-weight:700; color:" + s.color + ";",
+          dotStyle: "width:8px; height:8px; border-radius:50%; flex-shrink:0; background:" + s.color + ";",
+          countStyle: "min-width:20px; padding:1px 6px; border-radius:999px; background:#fff; font-size:11.5px; font-weight:800; text-align:center; font-variant-numeric:tabular-nums; color:" + s.color + ";"
+        };
+      }),
+
+      person: this.state.person,
+      onPerson: e => this.setState({ person: e.target.value })
+    };
+  }
+}
+</script>
+</body>
+</html>

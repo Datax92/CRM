@@ -145,6 +145,7 @@ follow-ups, attendance, payroll and financial reporting.
 - `locationRestriction` absent + a marked office ⇒ **enforced**; `wifiRestriction` absent + `officeWifiNames` non-empty ⇒ **enforced**. Absent + empty ⇒ not enforced (nothing to enforce against, and refusing everybody locks the company out — the exact failure the address check produced). Explicit `true`/`false` always wins, and Settings always sends the field. Saving either restriction on with nothing behind it — no office marked, no names listed — is refused. A coordinate is kept only as a **pair**: half an office is no office, and `0,0` is in the Atlantic, which is what an unset field looks like. `ipExemptUids` keeps its stored name — renaming it would empty every existing exemption list on the next read — and means "may check in from any network".
 - Unconfigured is **`UNKNOWN` ("Unverified")**, never "Remote" — a month of "Remote" must be distinguishable from a setting nobody filled in.
 - Statuses are PRESENT / **LATE** / ABSENT / LEAVE, each carrying a letter as well as a colour. An override wins everywhere, including the deduction, and is stored *beside* the observed times.
+- **The calendar is `docs/design/Attendance Calendar.dc.html`** (owner, 2026-09-18), and so is the palette: Present **teal** `#2f7d78` (it was green), Late `#8a6321`, Absent `#a8483c`, Leave `#8a7a21`, each with the file's tint, border and chip ground in `ATTENDANCE_TONES` — which every attendance screen reads, so the dashboard moved with it. One card, `CalendarPanel`, draws the team calendar *and* a person's own: the month as the title, the One person / Whole team toggle (team only), the stepper (never past this month), a legend bar whose chips carry the month's counts — **the team's totals in Whole team**, and the aside says so — and the grid. A cell shows the check-in time (`HH:MM`, a correction winning) beside a clock, as the file does; it used to show worked hours on a person's own calendar. A weekly off, a future day and an unrecorded day are the file's **empty day** — no tint, no stripe, a pale number. The file draws the desktop only; below 820px the cell keeps its marks, the pill's word becomes its letter and the time is left to the day's panel.
 - `deriveStatus(0, true)` is `HALF_DAY` — a day checked in but not out is never graded absent. Half days count as **half** in the rate.
 - Both punch buttons stay on screen all day; a control that disappears leaves no way to see what state you are in. **There is exactly one punch control in the app: the `/home` strip.**
 - Approved leave leaves the denominator rather than counting against the employee. A request over balance is allowed to be *sent* — the form says how far over and the approver decides.
@@ -420,6 +421,14 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-18 — the attendance calendar, transcribed from its design file
+
+*"in this folder i have ui for attendence calender change the ui to exactly like this."* `Attendance Calendar.dc.html` (now copied into `docs/design/`) is transcribed into `attendanceChrome` (`ATTENDANCE_TONES`, `StatusLegend`, `AttendanceCalendar`, new `CalendarPanel` + `CalendarPersonPicker`), `AttendanceNav` (the segmented #dceae8 strip) and `AttendanceShell` (the file's 22/28/34 padding, 16px under the strip). Rule under **Attendance**. The file's top bar and 96px rail are the app's shell and were not reproduced.
+
+- **Values copied, then checked by script**: 64 values from the file — the whole status table, every frame colour, both shadows, the six SVG paths, every padding, radius and type size — all present in the source.
+- **Whole team** keeps its matrix inside the new card, with today's column marked in the file's teal circle.
+- **Validation**: typecheck 0, `test` 756/756, `eslint src` 7 errors / 33 warnings (baseline), `next build` compiles all 17 attendance routes. **Not seen rendered** — the Chrome extension was not connected.
 
 ### 2026-09-17 — WhatsApp ads reach the CRM, grouped by campaign, ads only
 

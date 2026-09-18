@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock, LogIn, LogOut, Plus } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { useAttendance } from "@/hooks/useAttendance";
+import { useAttendance, type AttendanceDay } from "@/hooks/useAttendance";
 import { useLeaveRequests } from "@/hooks/useLeave";
 import { getAttendanceSummary, getLeaveSummary, cancelLeave } from "@/lib/clientActions";
 import type { AttendanceSummary } from "@/app/actions/attendance";
@@ -30,13 +30,26 @@ import {
   A,
   AttendanceCalendar,
   AttendanceCard,
+  CalendarPanel,
   EmptyState,
   Figure,
-  StatusLegend,
   type CalendarCell,
 } from "./attendanceChrome";
 import { DayDetailPanel } from "./DayDetailPanel";
 import { LeaveRequestModal } from "./LeaveRequestModal";
+
+/** `HH:MM` in Karachi — the calendar design's check-in, in the form the team calendar's rows carry. */
+const CLOCK_24 = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+/** A corrected check-in wins, exactly as it does on the team calendar. */
+function checkInClock(day: AttendanceDay): string | null {
+  return day.record?.adjustedCheckIn ?? (day.firstAt ? CLOCK_24.format(day.firstAt) : null);
+}
 
 export function MonthStepper({
   monthKey,
@@ -153,7 +166,7 @@ export function MyAttendanceView({
         dayKey: day.dayKey,
         day: day.day,
         status: day.status,
-        hint: day.minutes > 0 ? formatWorkedHours(day.minutes) : null,
+        hint: checkInClock(day),
       })),
     [attendance.days]
   );
@@ -311,23 +324,24 @@ export function MyAttendanceView({
       {/* ---------------------------------------------------------------- */}
       {/* Calendar                                                          */}
       {/* ---------------------------------------------------------------- */}
-      <AttendanceCard
-        title="Calendar"
-        action={<MonthStepper monthKey={monthKey} onChange={setMonthKey} />}
+      {/* The team calendar's card, so a person's own month and the team's
+          look the same. The legend carries the month's counts, so it answers
+          the question somebody actually has rather than being a key. */}
+      <CalendarPanel
+        monthKey={monthKey}
+        onMonthChange={setMonthKey}
+        counts={{
+          PRESENT: summary?.present ?? 0,
+          LATE: summary?.late ?? 0,
+          ABSENT: summary?.absent ?? 0,
+          LEAVE: summary?.leave ?? 0,
+        }}
+        aside={
+          <span style={{ fontSize: 12, fontWeight: 600, color: A.faint }}>
+            Tap a date for the full record of that day.
+          </span>
+        }
       >
-        {/* The legend carries the month's counts, so it answers the question
-            somebody actually has when they look at a calendar rather than
-            being a key they have to translate. */}
-        <div style={{ marginBottom: 14 }}>
-          <StatusLegend
-            counts={{
-              PRESENT: summary?.present ?? 0,
-              LATE: summary?.late ?? 0,
-              ABSENT: summary?.absent ?? 0,
-              LEAVE: summary?.leave ?? 0,
-            }}
-          />
-        </div>
         <AttendanceCalendar
           monthKey={monthKey}
           cells={cells}
@@ -335,10 +349,7 @@ export function MyAttendanceView({
           onSelect={setSelectedDay}
           today={karachiDayKey()}
         />
-        <p style={{ marginTop: 10, fontSize: 11.5, color: A.faint }}>
-          Tap a date for the full record of that day.
-        </p>
-      </AttendanceCard>
+      </CalendarPanel>
 
       {/* ---------------------------------------------------------------- */}
       {/* Leave                                                             */}

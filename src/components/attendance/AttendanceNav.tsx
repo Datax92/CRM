@@ -11,11 +11,13 @@
  *
  * It scrolls horizontally rather than wrapping: a strip that reflows into three
  * ragged rows at 390px pushes the actual screen below the fold.
+ *
+ * The segmented pill is `Attendance Calendar.dc.html`'s (2026-09-18): a
+ * #dceae8 track with the current tab lifted onto white.
  */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { A } from "./attendanceChrome";
 
 export interface AttendanceTab {
   label: string;
@@ -49,11 +51,13 @@ export function AttendanceNav({ tabs }: { tabs: AttendanceTab[] }) {
     <nav
       aria-label="Attendance"
       style={{
-        display: "flex",
-        gap: 6,
+        display: "inline-flex",
+        gap: 4,
+        padding: 4,
+        borderRadius: 999,
+        background: "#dceae8",
+        maxWidth: "100%",
         overflowX: "auto",
-        paddingBottom: 4,
-        marginBottom: 4,
         WebkitOverflowScrolling: "touch",
       }}
     >
@@ -63,17 +67,18 @@ export function AttendanceNav({ tabs }: { tabs: AttendanceTab[] }) {
           <Link
             key={tab.path}
             href={tab.path}
+            aria-current={active ? "page" : undefined}
             style={{
               flexShrink: 0,
+              padding: "9px 20px",
               borderRadius: 999,
-              border: `1px solid ${active ? A.teal : A.line}`,
-              background: active ? A.tealSoft : A.surface,
-              color: active ? A.teal : A.muted,
-              padding: "7px 14px",
-              fontSize: 12.5,
+              fontSize: 13.5,
               fontWeight: 700,
-              textDecoration: "none",
               whiteSpace: "nowrap",
+              textDecoration: "none",
+              color: active ? "#2f7d78" : "#5b6d6b",
+              background: active ? "#fff" : "transparent",
+              boxShadow: active ? "0 1px 3px rgba(31,92,88,0.14)" : "none",
             }}
           >
             {tab.label}
