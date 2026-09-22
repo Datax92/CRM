@@ -45,9 +45,19 @@ interface Destination {
 }
 
 export function MoneyHub() {
-  const { role, user } = useAuth();
+  const { role, user, isHr } = useAuth();
   const isAdmin = role === "admin";
   const isManager = role === "admin" || role === "subadmin";
+  /**
+   * An HR manager runs payroll and records office expenses for the company.
+   *
+   * Both were reachable on the desktop sidebar and in the phone's account
+   * sheet and **missing from this hub**, which is the phone's Money tab — one
+   * of five slots, and the one chosen precisely so a person does not have to
+   * remember where the money side lives. So HR's two daily screens were the
+   * two you could only reach by going the long way round.
+   */
+  const isHrManager = role === "subadmin" && isHr;
 
   // The admin's cards carry real figures because the deals query is already
   // open for them elsewhere; nobody else's cards claim numbers they cannot
@@ -148,7 +158,31 @@ export function MoneyHub() {
             href: "/subadmin/earnings",
             d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4",
           },
+          /*
+            HR's two company-wide screens, in the same order and with the same
+            labels as the sidebar and the account sheet — three lists naming
+            one destination three ways is how somebody decides the app has two
+            different payroll pages.
+          */
+          ...(isHrManager
+            ? [
+                {
+                  label: "Salary / Payroll",
+                  detail: "Monthly payroll, salary profiles and payslips",
+                  href: "/subadmin/financials/payroll",
+                  d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M12 15a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
+                },
+                {
+                  label: "Office Expenses",
+                  detail: "What the business spent, and what you have recorded",
+                  href: "/subadmin/financials/expenses",
+                  d: "M3 8h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3zM3 8V6a2 2 0 0 1 2-2h10M16 13h2",
+                },
+              ]
+            : []),
           {
+            // HR has the company's payroll above; this is still their own
+            // payslip, which is a different question and stays for everybody.
             label: "My Salary",
             detail: "Your own payslips and salary history",
             href: "/subadmin/salary",
@@ -156,7 +190,9 @@ export function MoneyHub() {
           },
           {
             label: "Salary Deductions",
-            detail: "Your team's late arrivals and their cost",
+            detail: isHrManager
+              ? "Late arrivals across the company and their cost"
+              : "Your team's late arrivals and their cost",
             href: "/subadmin/attendance/records",
             d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3 2",
           },
