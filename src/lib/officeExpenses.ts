@@ -268,6 +268,86 @@ export function summarizeExpenses(expenses: OfficeExpense[]): ExpenseSummary {
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/* Whose expenses                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** Where an expense with no recorder on it is gathered. */
+export const UNATTRIBUTED_RECORDER = '';
+
+export interface ExpenseRecorder {
+  /** `UNATTRIBUTED_RECORDER` for records written before the field existed. */
+  uid: string;
+  label: string;
+  count: number;
+  isSelf: boolean;
+}
+
+/**
+ * Who has actually recorded expenses, for the "Recorded by" selector.
+ *
+ * **Derived from the expenses, never from the roster.** A list built from every
+ * account would offer a dozen people who have never submitted anything, and
+ * picking one would empty the screen — a choice that can only produce nothing is
+ * worse than no choice. What is here is what somebody can usefully select.
+ *
+ * **Records with no recorder are gathered rather than dropped.** A handful of
+ * expenses predate `addedByUid`, and leaving them out of the options while they
+ * still counted under *Everyone* would make the per-person figures quietly fail
+ * to add up to the total — the kind of discrepancy that costs an afternoon.
+ *
+ * Names come from the caller (`names`), because this module is dependency-free
+ * and unit-tested under the raw type-strip loader; the stored email is the
+ * fallback, and the uid itself the last resort, so an option is never blank.
+ */
+export function expenseRecorders(
+  expenses: Array<{ addedByUid?: string | null; addedByEmail?: string | null }>,
+  options: { selfUid?: string | null; names?: Record<string, string> } = {}
+): ExpenseRecorder[] {
+  const names = options.names ?? {};
+  const self = (options.selfUid ?? '').trim();
+  const buckets = new Map<string, { count: number; email: string | null }>();
+
+  for (const expense of expenses) {
+    const uid = String(expense.addedByUid ?? '').trim();
+    const bucket = buckets.get(uid) ?? { count: 0, email: null };
+    bucket.count += 1;
+    bucket.email = bucket.email ?? (expense.addedByEmail ? String(expense.addedByEmail) : null);
+    buckets.set(uid, bucket);
+  }
+
+  const rows: ExpenseRecorder[] = [];
+  for (const [uid, bucket] of buckets) {
+    const isSelf = Boolean(self) && uid === self;
+    rows.push({
+      uid,
+      count: bucket.count,
+      isSelf,
+      label: uid === UNATTRIBUTED_RECORDER
+        ? 'Not recorded'
+        : isSelf
+          ? 'Me'
+          : names[uid] || bucket.email || uid.slice(0, 8),
+    });
+  }
+
+  /*
+    Mine first — it is the one an admin opens this for — then whoever has
+    submitted most, so the person with two claims does not sit above the person
+    with two hundred. Alphabetical within a tie keeps the order stable between
+    renders, and `Not recorded` sits last because it is a residue, not a person.
+  */
+  rows.sort((a, b) => {
+    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+    const aResidue = a.uid === UNATTRIBUTED_RECORDER;
+    const bResidue = b.uid === UNATTRIBUTED_RECORDER;
+    if (aResidue !== bResidue) return aResidue ? 1 : -1;
+    return b.count - a.count || a.label.localeCompare(b.label);
+  });
+
+  return rows;
+}
+
 export interface CategoryTotal {
   category: string;
   amount: number;

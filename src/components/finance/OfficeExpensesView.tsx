@@ -26,6 +26,7 @@ import {
 import {
   EXPENSE_STATUSES,
   EXPENSE_STATUS_LABELS,
+  expenseRecorders,
   expensesByCategory,
   expensesByPeriod,
   readPaid,
@@ -34,6 +35,7 @@ import {
   type ExpenseStatus,
   type OfficeExpense,
 } from "@/lib/officeExpenses";
+import { useSubAdmins } from "@/hooks/useEmployees";
 import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
@@ -172,6 +174,18 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   const [status, setStatus] = useState<ExpenseStatus | "ALL">("ALL");
   const [category, setCategory] = useState("ALL");
   /**
+   * Whose expenses the screen is about — `ALL`, or one recorder's uid.
+   *
+   * **This is a subject, not a cut, and that is why every figure follows it.**
+   * Status and category narrow the list inside the record and deliberately
+   * leave the headline alone, because a total that fell when somebody clicked
+   * "Pending" would read as the company having spent less. "Whose are these"
+   * is a different question — the same one Reports asks with its subject
+   * selector — and the honest answer to *Tayyab's, this month* is Tayyab's
+   * totals, not the company's with his rows listed underneath.
+   */
+  const [recordedBy, setRecordedBy] = useState<string>("ALL");
+  /**
    * The expense being funded. `paidOf` reads what has already been paid
    * against it, so a part-paid expense offers "Pay balance" and the modal only
    * lets the remainder be allocated — the obligation itself never changes.
@@ -210,10 +224,43 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
     };
   }, [getIdToken, nonce]);
 
-  /** The range first — every figure on the screen belongs to the same period. */
+  /*
+    **Who may be selected, from the expenses themselves.** The admin reads
+    everybody's, so the recorders are whoever has actually submitted something —
+    usually the admin and the HR manager. Names come from the manager roster
+    (one shared listener, already open elsewhere) with the email stored on the
+    expense as the fallback, so somebody who has since left is still named.
+    For an HR manager the query is already scoped to their own uid, so there is
+    one recorder and the control hides itself.
+  */
+  const { subAdmins } = useSubAdmins(isAdmin);
+  const recorderNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const manager of subAdmins) map[manager.uid] = manager.name;
+    return map;
+  }, [subAdmins]);
+  const recorders = useMemo(
+    () => expenseRecorders(expenses, { selfUid: user?.uid, names: recorderNames }),
+    [expenses, user?.uid, recorderNames]
+  );
+  const subjectLabel =
+    recordedBy === "ALL"
+      ? null
+      : (recorders.find((person) => person.uid === recordedBy)?.label ?? "That person");
+
+  /** The subject first: every figure below describes this person's expenses. */
+  const subject = useMemo(
+    () =>
+      recordedBy === "ALL"
+        ? expenses
+        : expenses.filter((expense) => (expense.addedByUid ?? "") === recordedBy),
+    [expenses, recordedBy]
+  );
+
+  /** Then the range — every figure on the screen belongs to the same period. */
   const inRange = useMemo(
-    () => expenses.filter((expense) => expense.dayKey >= from && expense.dayKey <= to),
-    [expenses, from, to]
+    () => subject.filter((expense) => expense.dayKey >= from && expense.dayKey <= to),
+    [subject, from, to]
   );
 
   const filtered = useMemo(() => {
@@ -234,12 +281,14 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   // when somebody clicked "Pending" would read as the company having spent
   // less, which is the opposite of what happened.
   const summary = useMemo(() => summarizeExpenses(inRange), [inRange]);
+  // This month's figure follows the subject too — "This Month" beside Tayyab's
+  // totals can only mean Tayyab's month.
   const monthSummary = useMemo(
     () =>
       summarizeExpenses(
-        expenses.filter((expense) => expense.dayKey.startsWith(karachiMonthKey()))
+        subject.filter((expense) => expense.dayKey.startsWith(karachiMonthKey()))
       ),
-    [expenses]
+    [subject]
   );
   const byCategory = useMemo(() => expensesByCategory(inRange), [inRange]);
   const byPeriod = useMemo(() => expensesByPeriod(inRange, grain), [inRange, grain]);
@@ -404,7 +453,10 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   );
 
   const download = () => {
-    const header = ["Date", "Title", "Category", "Amount", "Status", "Paid by", "Method", "Notes"];
+    // **Recorded by** is a column now, because the export is the thing somebody
+    // takes away and a per-person file with no per-person column cannot be
+    // checked against the screen it came from.
+    const header = ["Date", "Title", "Category", "Amount", "Status", "Paid by", "Method", "Recorded by", "Notes"];
     const rows = filtered.map((expense) => [
       expense.dayKey,
       expense.title,
@@ -413,6 +465,9 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
       EXPENSE_STATUS_LABELS[expense.status],
       expense.paidBy ?? "",
       expense.paymentMethod ?? "",
+      recorders.find((person) => person.uid === (expense.addedByUid ?? ""))?.label ??
+        expense.addedByEmail ??
+        "",
       expense.description ?? "",
     ]);
 
@@ -425,7 +480,9 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
     const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `office-expenses-${from}-to-${to}.csv`;
+    anchor.download = `office-expenses${
+      subjectLabel ? `-${subjectLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : ""
+    }-${from}-to-${to}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -433,9 +490,23 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <ExpenseHero
-        eyebrow="Office Expenses"
+        eyebrow={subjectLabel ? `Office Expenses · ${subjectLabel}` : "Office Expenses"}
         figure={rupees(summary.spend)}
-        caption={`${isAdmin ? "approved" : "your expenses, approved"}${isMobile ? "" : " in this period"} · ${summary.count} record${summary.count === 1 ? "" : "s"}`}
+        /*
+          The caption names the subject, because the figure above it is now
+          that person's. A screen showing one person's total under a heading
+          that says nothing about them is how somebody reads a part as the
+          whole and takes it to a meeting.
+        */
+        caption={`${
+          subjectLabel
+            ? subjectLabel === "Me"
+              ? "your expenses, approved"
+              : `${subjectLabel}'s expenses, approved`
+            : isAdmin
+              ? "approved"
+              : "your expenses, approved"
+        }${isMobile ? "" : " in this period"} · ${summary.count} record${summary.count === 1 ? "" : "s"}`}
         isMobile={isMobile}
         tileIcon={ICON.receipt}
         stats={[
@@ -466,7 +537,17 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
         rows={inRange
           .filter((expense) => expense.status === "APPROVED")
           .map((expense) => ({ id: expense.id, amount: expense.amount, paid: readPaid(expense).paid }))}
-        periodLabel={from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01") ? monthLabel(from.slice(0, 7)) : `${from} → ${to}`}
+        /*
+          Named for the subject as well as the period. With one person
+          selected this pays **their** approved expenses and nobody else's —
+          the rows it covers are the ones on screen, and a button that says
+          only "this month" would not say so.
+        */
+        periodLabel={`${
+          from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01")
+            ? monthLabel(from.slice(0, 7))
+            : `${from} → ${to}`
+        }${subjectLabel ? ` · ${subjectLabel === "Me" ? "mine" : subjectLabel}` : ""}`}
         accounts={ledger.accounts}
         balances={ledger.balances}
         getIdToken={getIdToken}
@@ -491,6 +572,23 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
         */
         <>
           <MobileSearch value={search} onChange={setSearch} placeholder="Title, payee or note" />
+          {/*
+            Whose expenses, on its own row above the cuts — it changes every
+            figure on the screen, and putting it in the status/category row
+            would read as one more way to filter the list.
+          */}
+          {recorders.length > 1 && (
+            <ChipRow
+              chips={[
+                { label: "Everyone", active: recordedBy === "ALL", pick: () => setRecordedBy("ALL") },
+                ...recorders.map((person) => ({
+                  label: `${person.label} · ${person.count}`,
+                  active: recordedBy === person.uid,
+                  pick: () => setRecordedBy(person.uid),
+                })),
+              ]}
+            />
+          )}
           <ChipRow
             chips={[
               { label: "All", active: status === "ALL" && category === "ALL", pick: () => { setStatus("ALL"); setCategory("ALL"); } },
@@ -513,6 +611,22 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
           search={search} onSearch={setSearch}
           onDownload={download} canDownload={filtered.length > 0}
           selects={[
+            // Absent when there is only one person recording expenses: a
+            // selector with a single choice is furniture, not a control.
+            ...(recorders.length > 1
+              ? [
+                  {
+                    label: "Recorded by", width: "168px", value: recordedBy, onChange: setRecordedBy,
+                    options: [
+                      { value: "ALL", label: `Everyone (${expenses.length})` },
+                      ...recorders.map((person) => ({
+                        value: person.uid,
+                        label: `${person.label} (${person.count})`,
+                      })),
+                    ],
+                  },
+                ]
+              : []),
             {
               label: "Status", width: "148px", value: status,
               onChange: (next) => setStatus(next as ExpenseStatus | "ALL"),

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
   allowedExpenseTransitions,
+  expenseRecorders,
   expensesByCategory,
+  UNATTRIBUTED_RECORDER,
   expensesByPeriod,
   normalizeExpenseStatus,
   normalizePaymentStatus,
@@ -244,4 +246,64 @@ test('an absent payment status reads as unpaid, never as paid', () => {
   assert.equal(normalizePaymentStatus('nonsense'), 'UNPAID');
   assert.equal(normalizePaymentStatus('PAID'), 'PAID');
   assert.equal(normalizePaymentStatus('PARTIALLY_PAID'), 'PARTIALLY_PAID');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whose expenses (expenseRecorders)                                          */
+/* -------------------------------------------------------------------------- */
+
+test('the recorder list is built from the expenses, so no option can come back empty', () => {
+  const rows = expenseRecorders([
+    { addedByUid: 'admin', addedByEmail: 'admin@x.com' },
+    { addedByUid: 'tayyab', addedByEmail: 'tayyab@x.com' },
+    { addedByUid: 'tayyab', addedByEmail: 'tayyab@x.com' },
+  ], { selfUid: 'admin', names: { tayyab: 'Tayyab Ali' } });
+
+  assert.deepEqual(
+    rows.map((row) => [row.uid, row.label, row.count]),
+    [['admin', 'Me', 1], ['tayyab', 'Tayyab Ali', 2]]
+  );
+});
+
+test('mine sorts first, then whoever has submitted most', () => {
+  const rows = expenseRecorders([
+    { addedByUid: 'tayyab' }, { addedByUid: 'tayyab' }, { addedByUid: 'tayyab' },
+    { addedByUid: 'dilawar' },
+    { addedByUid: 'admin' },
+  ], { selfUid: 'admin' });
+  assert.deepEqual(rows.map((row) => row.uid), ['admin', 'tayyab', 'dilawar']);
+  assert.equal(rows[0].isSelf, true);
+});
+
+test('a name is never blank: roster, then the stored email, then the uid', () => {
+  const rows = expenseRecorders(
+    [{ addedByUid: 'gone', addedByEmail: 'who@x.com' }, { addedByUid: 'abcdefghijkl' }],
+    { names: {} }
+  );
+  const labels = Object.fromEntries(rows.map((row) => [row.uid, row.label]));
+  // Somebody who has left the company is still named by the email on the record.
+  assert.equal(labels.gone, 'who@x.com');
+  assert.equal(labels.abcdefghijkl, 'abcdefgh');
+});
+
+test('records with no recorder are gathered, not dropped, so the parts add up', () => {
+  // Left out of the options they would still count under Everyone, and the
+  // per-person figures would quietly fail to reconcile with the total.
+  const rows = expenseRecorders([
+    { addedByUid: 'admin' },
+    { addedByUid: null },
+    { addedByUid: '  ' },
+  ], { selfUid: 'admin' });
+
+  assert.deepEqual(rows.map((row) => [row.uid, row.label, row.count]), [
+    ['admin', 'Me', 1],
+    [UNATTRIBUTED_RECORDER, 'Not recorded', 2],
+  ]);
+  assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 3);
+});
+
+test('nobody has recorded anything: no options, so the control hides itself', () => {
+  assert.deepEqual(expenseRecorders([], { selfUid: 'admin' }), []);
+  // One recorder is also no choice — the screen only shows the selector above one.
+  assert.equal(expenseRecorders([{ addedByUid: 'admin' }], { selfUid: 'admin' }).length, 1);
 });
