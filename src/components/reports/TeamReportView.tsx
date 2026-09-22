@@ -105,12 +105,27 @@ const COLUMNS: Column[] = [
     hint: "Of the follow-ups, the calls that were answered — never the same call twice",
   },
   {
+    /*
+      **Activity, not outcome, and that placement is the point.** Aligning a
+      meeting is something the person did on a call in this range, which is why
+      it sits beside the remarks and connects that produced it. Whether it then
+      happened is the Meetings column two along, in the outcome band — and the
+      gap between the two is the number worth reading.
+    */
+    key: "meetingsAligned",
+    label: "Meetings Aligned",
+    short: "Aligned",
+    band: "WORK",
+    accent: E.teal,
+    hint: "Entries where a meeting was agreed — arranged, not yet held",
+  },
+  {
     key: "meetings",
     label: "Meetings",
     short: "Meetings",
     band: "OUTCOME",
     accent: E.blue,
-    hint: "Entries with a meeting recorded",
+    hint: "Entries with a meeting recorded as having taken place",
   },
   {
     key: "siteVisits",

@@ -47,6 +47,14 @@ export interface PersonMetrics {
   newConnects: number;
   /** Connected calls recorded on a Follow-Up — every contact after the first. */
   followUpConnects: number;
+  /**
+   * Entries in the range on which a **meeting was agreed** — arranged, not
+   * held. `meetings` below is the other half of that pair and counts the ones
+   * that actually took place, so a row reading 9 aligned and 2 meetings is a
+   * person filling a diary that is not converting, which is the thing this
+   * column exists to make visible.
+   */
+  meetingsAligned: number;
   meetings: number;
   siteVisits: number;
   dealsClosed: number;
@@ -61,6 +69,7 @@ export const METRIC_KEYS: (keyof PersonMetrics)[] = [
   'followUps',
   'newConnects',
   'followUpConnects',
+  'meetingsAligned',
   'meetings',
   'siteVisits',
   'dealsClosed',
@@ -76,6 +85,7 @@ export function blankMetrics(): PersonMetrics {
     followUps: 0,
     newConnects: 0,
     followUpConnects: 0,
+    meetingsAligned: 0,
     meetings: 0,
     siteVisits: 0,
     dealsClosed: 0,

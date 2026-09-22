@@ -270,6 +270,7 @@ export async function addFollowUp(
     callCount?: number;
     durationSeconds?: number;
     meetingHeld?: boolean;
+    meetingAligned?: boolean;
     siteVisit?: boolean;
     whatsappNote?: string;
     occurredAt?: string;
@@ -290,6 +291,7 @@ export async function updateFollowUp(
     callCount?: number;
     durationSeconds?: number;
     meetingHeld?: boolean;
+    meetingAligned?: boolean;
     siteVisit?: boolean;
     whatsappNote?: string;
   }

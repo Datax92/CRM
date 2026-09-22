@@ -1390,7 +1390,7 @@ export const demo = {
     leadId: string,
     input: {
       message: string; callMade: boolean; callCount?: number;
-      durationSeconds?: number; meetingHeld?: boolean;
+      durationSeconds?: number; meetingHeld?: boolean; meetingAligned?: boolean;
       whatsappNote?: string; occurredAt?: string; siteVisit?: boolean;
     },
     actorUid: string,
@@ -1423,12 +1423,13 @@ export const demo = {
 
     const connect = Boolean(input.callMade) && isConnect(durationSeconds);
     const meetingHeld = Boolean(input.meetingHeld);
+    const meetingAligned = Boolean(input.meetingAligned);
     const siteVisit = Boolean(input.siteVisit);
     const id = nextId('fu');
 
     state.followUps[leadId] = [
       { id, kind: allowance.kind, message: input.message, callMade: input.callMade, callCount: calls,
-        durationSeconds, connect, meetingHeld, siteVisit, dayKey,
+        durationSeconds, connect, meetingHeld, meetingAligned, siteVisit, dayKey,
         whatsappNote: input.whatsappNote || null, occurredAt: ts(occurred), createdAt: now(),
         authorUid: actorUid, authorEmail: actorEmail, creditUid: lead.assignedUserId ?? actorUid,
         revisions: [] },
@@ -1441,6 +1442,8 @@ export const demo = {
       // Same one-way flag the real transaction writes: a meeting that happened
       // stays happened, and it lifts the lead to P2.
       ...(meetingHeld ? { meetingHeld: true } : {}),
+      ...(meetingAligned ? { meetingAligned: true } : {}),
+      ...(meetingAligned ? { meetingAligned: true } : {}),
       ...(siteVisit ? { siteVisit: true } : {}),
       siteVisitCount: (lead.siteVisitCount ?? 0) + (siteVisit ? 1 : 0),
       connectCount: (lead.connectCount ?? 0) + (connect ? 1 : 0),
@@ -1456,7 +1459,7 @@ export const demo = {
     }
     addEvent(leadId, allowance.kind === 'REMARK' ? 'REMARK_ADDED' : 'FOLLOW_UP_ADDED', actorUid, {
       followUpId: id, kind: allowance.kind, callMade: input.callMade, callCount: calls,
-      durationSeconds, connect, meetingHeld, siteVisit,
+      durationSeconds, connect, meetingHeld, meetingAligned, siteVisit,
     });
 
     // §3 — the cold rule raises a review rather than writing off the lead.
@@ -1489,7 +1492,7 @@ export const demo = {
     followUpId: string,
     input: {
       message?: string; callMade?: boolean; callCount?: number;
-      durationSeconds?: number; meetingHeld?: boolean; siteVisit?: boolean; whatsappNote?: string;
+      durationSeconds?: number; meetingHeld?: boolean; meetingAligned?: boolean; siteVisit?: boolean; whatsappNote?: string;
     },
     actorUid: string,
     actorEmail: string
@@ -1523,12 +1526,14 @@ export const demo = {
 
     const connect = callMade && isConnect(durationSeconds);
     const meetingHeld = input.meetingHeld === undefined ? Boolean(entry.meetingHeld) : Boolean(input.meetingHeld);
+    const meetingAligned =
+      input.meetingAligned === undefined ? Boolean(entry.meetingAligned) : Boolean(input.meetingAligned);
     const siteVisit = input.siteVisit === undefined ? Boolean(entry.siteVisit) : Boolean(input.siteVisit);
 
     const revision = {
       message: entry.message, callMade: Boolean(entry.callMade), callCount: entry.callCount ?? 0,
       durationSeconds: entry.durationSeconds ?? 0, connect: Boolean(entry.connect),
-      meetingHeld: Boolean(entry.meetingHeld), siteVisit: Boolean(entry.siteVisit),
+      meetingHeld: Boolean(entry.meetingHeld), meetingAligned: Boolean(entry.meetingAligned), siteVisit: Boolean(entry.siteVisit),
       whatsappNote: entry.whatsappNote ?? null,
       editedByUid: actorUid, editedByEmail: actorEmail, editedAt: now(),
     };
@@ -1536,7 +1541,7 @@ export const demo = {
     state.followUps[leadId] = entries.map((f) =>
       f.id === followUpId
         ? {
-            ...f, message, callMade, callCount, durationSeconds, connect, meetingHeld, siteVisit,
+            ...f, message, callMade, callCount, durationSeconds, connect, meetingHeld, meetingAligned, siteVisit,
             whatsappNote:
               input.whatsappNote === undefined ? (f.whatsappNote ?? null) : input.whatsappNote.trim() || null,
             revisions: [...(f.revisions ?? []), revision],
@@ -1555,7 +1560,7 @@ export const demo = {
       ...(siteVisit ? { siteVisit: true } : {}),
     });
 
-    addEvent(leadId, 'FOLLOW_UP_EDITED', actorUid, { followUpId, connect, meetingHeld, siteVisit });
+    addEvent(leadId, 'FOLLOW_UP_EDITED', actorUid, { followUpId, connect, meetingHeld, meetingAligned, siteVisit });
     emit();
     return ok({ connect });
   },
@@ -1587,7 +1592,13 @@ export const demo = {
       for (const entry of entries) {
         const day = entry.dayKey ?? '';
         if (!day || day < from || day > to) continue;
-        const one = entryTally({ leadId, uid: lead.assignedUserId, kind: entry.kind, connect: entry.connect });
+        const one = entryTally({
+          leadId,
+          uid: lead.assignedUserId,
+          kind: entry.kind,
+          connect: entry.connect,
+          meetingAligned: entry.meetingAligned,
+        });
         addTally(totals, one);
         addTally((byLead[leadId] ??= { ...EMPTY_TALLY }), one);
 
@@ -1692,7 +1703,13 @@ export const demo = {
           if (!day || day < from || day > to) continue;
           // The shared classification, so demo mode cannot hold its own
           // opinion about what a Remark is either.
-          addTally(metrics, entryTally({ leadId, uid: person.uid, kind: entry.kind, connect: entry.connect }));
+          addTally(metrics, entryTally({
+            leadId,
+            uid: person.uid,
+            kind: entry.kind,
+            connect: entry.connect,
+            meetingAligned: entry.meetingAligned,
+          }));
           if (entry.meetingHeld) metrics.meetings += 1;
           if (entry.siteVisit) metrics.siteVisits += 1;
         }
@@ -1739,6 +1756,7 @@ export const demo = {
           followUps: row.followUps,
           newConnects: row.newConnects,
           followUpConnects: row.followUpConnects,
+          meetingsAligned: row.meetingsAligned,
           meetings: row.meetings,
           siteVisits: row.siteVisits,
           dealsClosed: row.dealsClosed,

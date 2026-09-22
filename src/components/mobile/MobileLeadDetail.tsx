@@ -1043,7 +1043,7 @@ function FollowUpList({
             </details>
           )}
 
-          {(note.callMade || note.meetingHeld || note.siteVisit || note.whatsappNote || note.connect) && (
+          {(note.callMade || note.meetingHeld || note.meetingAligned || note.siteVisit || note.whatsappNote || note.connect) && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
               {note.callMade && (
                 <Chip>
@@ -1054,6 +1054,7 @@ function FollowUpList({
               )}
               {note.connect && <Chip solid>Connect</Chip>}
               {note.meetingHeld && <Chip>Meeting</Chip>}
+              {note.meetingAligned && <Chip>Meeting aligned</Chip>}
               {note.siteVisit && <Chip>Site visit</Chip>}
               {note.whatsappNote && <Chip>{note.whatsappNote}</Chip>}
             </div>
@@ -1174,6 +1175,8 @@ function FollowUpSheet({
     editing?.durationSeconds ? String(editing.durationSeconds % 60) : ""
   );
   const [meetingHeld, setMeetingHeld] = useState(Boolean(editing?.meetingHeld));
+  /** A meeting was agreed on this contact — arranged, not yet held. */
+  const [meetingAligned, setMeetingAligned] = useState(Boolean(editing?.meetingAligned));
   const [siteVisit, setSiteVisit] = useState(Boolean(editing?.siteVisit));
   const [whatsappNote, setWhatsappNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1198,6 +1201,7 @@ function FollowUpSheet({
             callCount: Number(callCount) || 1,
             durationSeconds,
             meetingHeld,
+            meetingAligned,
             siteVisit,
             whatsappNote: whatsappNote.trim(),
           })
@@ -1207,6 +1211,7 @@ function FollowUpSheet({
             callCount: Number(callCount) || 1,
             durationSeconds,
             meetingHeld,
+            meetingAligned,
             siteVisit,
             whatsappNote: whatsappNote.trim(),
           });
@@ -1247,9 +1252,15 @@ function FollowUpSheet({
         />
       </label>
 
-      <div style={{ display: "flex", gap: 10 }}>
+      {/* Four of these do not fit one 390px row, so the row wraps rather than
+          shrinking the targets. */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
         <Toggle checked={callMade} onChange={setCallMade} label="Phone call" />
         <Toggle checked={meetingHeld} onChange={setMeetingHeld} label="Meeting held" />
+        {/* **Agreed, not held.** A date in the diary is the common outcome of a
+            good call, and it is counted in the range on the dossier and in
+            Reports beside the calls that produced it. */}
+        <Toggle checked={meetingAligned} onChange={setMeetingAligned} label="Meeting aligned" />
         {/* Counted separately from a meeting in Reports (§4) — a client who
             came to the site is a different signal, and often a different day. */}
         <Toggle checked={siteVisit} onChange={setSiteVisit} label="Site visit" />

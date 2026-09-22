@@ -413,13 +413,26 @@ function ActivitySummary({
   const nothing =
     !activity.loading &&
     !activity.error &&
-    totals.remarks + totals.followUps + totals.newConnects + totals.followUpConnects === 0;
+    totals.remarks +
+      totals.followUps +
+      totals.newConnects +
+      totals.followUpConnects +
+      totals.meetingsAligned ===
+      0;
 
   const figures = [
     { label: "Remarks", value: totals.remarks },
     { label: "New connects", value: totals.newConnects, sub: true },
     { label: "Follow-ups", value: totals.followUps },
     { label: "Follow-up connects", value: totals.followUpConnects, sub: true },
+    /*
+      **Not a sub-figure.** The connect columns are a subset of the entry
+      counts above them and are drawn as such; a meeting agreed is an outcome
+      of the day's work rather than a slice of it, and it can come from a
+      Remark or a follow-up. It reads as its own number for the same reason
+      Reports gives it its own column.
+    */
+    { label: "Meetings aligned", value: totals.meetingsAligned },
   ];
 
   return (

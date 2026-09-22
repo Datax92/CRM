@@ -304,6 +304,10 @@ export async function buildTeamReport(
         uid,
         kind: (entry.kind as string | undefined) ?? null,
         connect: entry.connect === true,
+        // Meetings **aligned** ride in the shared tally, because the dossier
+        // cuts on them too. Meetings *held* and site visits stay below: they
+        // are the report's own columns and the dossier does not show them.
+        meetingAligned: entry.meetingAligned === true,
       }));
 
       // Meetings and site visits are the report's own columns — the dossier
@@ -366,6 +370,7 @@ function pick(row: ReportRow): PersonMetrics {
     followUps: row.followUps,
     newConnects: row.newConnects,
     followUpConnects: row.followUpConnects,
+    meetingsAligned: row.meetingsAligned,
     meetings: row.meetings,
     siteVisits: row.siteVisits,
     dealsClosed: row.dealsClosed,

@@ -73,6 +73,12 @@ export interface Lead {
   kycUpdatedByUid?: string | null;
   /** True once any entry recorded a held meeting. */
   meetingHeld?: boolean;
+  /**
+   * True once any entry recorded a meeting being **agreed** — arranged, not
+   * held. One-way, like the two beside it. The all-time reading of the Meeting
+   * aligned cut; the period reading comes from the entries themselves.
+   */
+  meetingAligned?: boolean;
   /** True once any entry recorded a site visit. Counted in Reports (§4). */
   siteVisit?: boolean;
   /**
@@ -143,6 +149,7 @@ export interface FollowUpRevision {
   durationSeconds: number;
   connect: boolean;
   meetingHeld: boolean;
+  meetingAligned?: boolean;
   siteVisit: boolean;
   whatsappNote: string | null;
   editedByUid: string;
@@ -166,6 +173,8 @@ export interface FollowUpRecord {
   /** Computed server-side from the duration; never trusted from a client. */
   connect?: boolean;
   meetingHeld?: boolean;
+  /** A meeting was agreed on this entry — counted in the range by `entryTally`. */
+  meetingAligned?: boolean;
   /** Whether the client visited the site. Counted separately in Reports. */
   siteVisit?: boolean;
   /** `YYYY-MM-DD` in Karachi — backs the day rule and the report date range. */

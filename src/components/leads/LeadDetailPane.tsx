@@ -68,7 +68,7 @@ import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
 import { initialsOf } from "@/lib/leadDisplay";
 import {
   Phone, Mail, MapPin, UserCheck, Clock, X, Plus, MessageCircle,
-  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users, Lock,
+  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users, Lock, CalendarCheck,
 } from "lucide-react";
 
 type Tab = "FOLLOW_UPS" | "KYC" | "AUDIT_TRAIL" | "DEAL_ENTRY";
@@ -751,6 +751,8 @@ function FollowUpsPanel({
   const [callMinutes, setCallMinutes] = useState("");
   const [callSeconds, setCallSeconds] = useState("");
   const [meetingHeld, setMeetingHeld] = useState(false);
+  /** A meeting was agreed on this contact — arranged, not yet held. */
+  const [meetingAligned, setMeetingAligned] = useState(false);
   const [siteVisit, setSiteVisit] = useState(false);
   /**
    * The entry open for editing, or null when the form is adding a new one.
@@ -795,6 +797,7 @@ function FollowUpsPanel({
     setCallMinutes(String(Math.floor((entry.durationSeconds ?? 0) / 60) || ""));
     setCallSeconds(String((entry.durationSeconds ?? 0) % 60 || ""));
     setMeetingHeld(Boolean(entry.meetingHeld));
+    setMeetingAligned(Boolean(entry.meetingAligned));
     setSiteVisit(Boolean(entry.siteVisit));
     setWhatsappNote(entry.whatsappNote ?? "");
     setShowForm(true);
@@ -824,6 +827,7 @@ function FollowUpsPanel({
             callCount: Number(callCount) || 1,
             durationSeconds,
             meetingHeld,
+            meetingAligned,
             siteVisit,
             whatsappNote: whatsappNote.trim(),
           })
@@ -833,6 +837,7 @@ function FollowUpsPanel({
         callCount: Number(callCount) || 1,
         durationSeconds,
         meetingHeld,
+        meetingAligned,
         siteVisit,
         whatsappNote: whatsappNote.trim(),
       });
@@ -844,6 +849,7 @@ function FollowUpsPanel({
         setCallMinutes("");
         setCallSeconds("");
         setMeetingHeld(false);
+        setMeetingAligned(false);
         setSiteVisit(false);
         setWhatsappNote("");
         setShowForm(false);
@@ -939,6 +945,21 @@ function FollowUpsPanel({
                   className="h-4 w-4 accent-[#3f8f8a]"
                 />
                 <span>Meeting Held</span>
+              </label>
+
+              {/* **Agreed, not held** — the two are separate facts and the
+                  common day is the second one without the first: a meeting in
+                  the diary for Thursday. Counted in the range by `entryTally`,
+                  so it appears on the dossier and in Reports beside the calls
+                  that produced it. */}
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#5b6d6b]">
+                <input
+                  type="checkbox"
+                  checked={meetingAligned}
+                  onChange={(e) => setMeetingAligned(e.target.checked)}
+                  className="h-4 w-4 accent-[#3f8f8a]"
+                />
+                <span>Meeting Aligned</span>
               </label>
 
               {/* Counted separately from a meeting in Reports (§4): a client
@@ -1146,7 +1167,7 @@ function FollowUpsPanel({
                 </details>
               )}
 
-              {(fu.callMade || fu.meetingHeld || fu.siteVisit || fu.whatsappNote) && (
+              {(fu.callMade || fu.meetingHeld || fu.meetingAligned || fu.siteVisit || fu.whatsappNote) && (
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   {fu.callMade && (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
@@ -1166,6 +1187,15 @@ function FollowUpsPanel({
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
                       <Users size={12} />
                       <span>Meeting</span>
+                    </span>
+                  )}
+                  {/* A different fact from "Meeting": one is a date agreed,
+                      the other a meeting that took place. Both can be true on
+                      one entry — a meeting happened and the next was booked. */}
+                  {fu.meetingAligned && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8f5f3] px-3 py-1 text-[11.5px] text-[#2f7d78]">
+                      <CalendarCheck size={12} />
+                      <span>Meeting aligned</span>
                     </span>
                   )}
                   {fu.siteVisit && (

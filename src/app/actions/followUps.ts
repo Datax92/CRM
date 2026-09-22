@@ -23,6 +23,17 @@ export interface FollowUpInput {
   durationSeconds?: number;
   /** Whether a meeting actually took place during this contact. */
   meetingHeld?: boolean;
+  /**
+   * Whether a meeting was **agreed** on this contact — a date in the diary,
+   * not a meeting that happened.
+   *
+   * Its own field rather than a status, because it is a fact about *this
+   * entry*: it says what came out of this call, on the day the call was made,
+   * which is what makes it countable in a range. The lead-level status says
+   * where the lead stands now and cannot answer "how many meetings did she
+   * line up last week".
+   */
+  meetingAligned?: boolean;
   /** Whether the client visited the site. Counted separately in Reports (§4). */
   siteVisit?: boolean;
   whatsappNote?: string;
@@ -67,6 +78,7 @@ export async function addFollowUp(
     const callCount = callMade ? clampCallCount(input.callCount) : 0;
     const durationSeconds = callMade ? normalizeDurationSeconds(input.durationSeconds) : 0;
     const meetingHeld = Boolean(input.meetingHeld);
+    const meetingAligned = Boolean(input.meetingAligned);
     const siteVisit = Boolean(input.siteVisit);
 
     if (callMade && durationSeconds === 0) {
@@ -135,6 +147,7 @@ export async function addFollowUp(
         durationSeconds,
         connect,
         meetingHeld,
+        meetingAligned,
         siteVisit,
         whatsappNote: (input.whatsappNote ?? "").trim() || null,
         occurredAt,
@@ -162,6 +175,7 @@ export async function addFollowUp(
         callCount: FieldValue.increment(callCount),
         connectCount: FieldValue.increment(connect ? 1 : 0),
         meetingCount: FieldValue.increment(meetingHeld ? 1 : 0),
+        meetingAlignedCount: FieldValue.increment(meetingAligned ? 1 : 0),
         siteVisitCount: FieldValue.increment(siteVisit ? 1 : 0),
         // The id of the entry that is still editable (§2). Writing a new one
         // locks whatever came before by simply no longer naming it.
@@ -173,6 +187,16 @@ export async function addFollowUp(
         // later follow-up without a meeting cannot unset it: a meeting that
         // happened stays happened.
         ...(meetingHeld ? { meetingHeld: true } : {}),
+        /*
+          One-way like the two beside it, and for the same reason: a meeting
+          that was agreed was agreed, and a later entry that does not mention
+          one is not evidence it was cancelled. What it feeds is the all-time
+          reading of the Meeting aligned cut — the period reading comes from
+          the entries themselves. Deliberately **not** wired into
+          `pipelineStage`: a meeting in the diary is not a meeting held, and
+          quietly lifting a lead to P2 for one would overstate the pipeline.
+        */
+        ...(meetingAligned ? { meetingAligned: true } : {}),
         ...(siteVisit ? { siteVisit: true } : {}),
       });
 
@@ -213,6 +237,7 @@ export async function addFollowUp(
           durationSeconds,
           connect,
           meetingHeld,
+          meetingAligned,
           siteVisit,
         },
       });
@@ -291,6 +316,7 @@ export interface FollowUpEditInput {
   callCount?: number;
   durationSeconds?: number;
   meetingHeld?: boolean;
+  meetingAligned?: boolean;
   siteVisit?: boolean;
   whatsappNote?: string;
 }
@@ -383,6 +409,10 @@ export async function updateFollowUp(
 
       const meetingHeld =
         input.meetingHeld === undefined ? Boolean(entry.meetingHeld) : Boolean(input.meetingHeld);
+      const meetingAligned =
+        input.meetingAligned === undefined
+          ? Boolean(entry.meetingAligned)
+          : Boolean(input.meetingAligned);
       const siteVisit =
         input.siteVisit === undefined ? Boolean(entry.siteVisit) : Boolean(input.siteVisit);
       const connect = callMade && isConnect(durationSeconds);
@@ -395,6 +425,7 @@ export async function updateFollowUp(
         durationSeconds: Number(entry.durationSeconds ?? 0),
         connect: Boolean(entry.connect),
         meetingHeld: Boolean(entry.meetingHeld),
+        meetingAligned: Boolean(entry.meetingAligned),
         siteVisit: Boolean(entry.siteVisit),
         whatsappNote: entry.whatsappNote ?? null,
         editedByUid: auth.uid,
@@ -411,6 +442,7 @@ export async function updateFollowUp(
         durationSeconds,
         connect,
         meetingHeld,
+        meetingAligned,
         siteVisit,
         whatsappNote:
           input.whatsappNote === undefined
@@ -425,6 +457,7 @@ export async function updateFollowUp(
       const dCalls = callCount - Number(entry.callCount ?? 0);
       const dConnect = (connect ? 1 : 0) - (entry.connect ? 1 : 0);
       const dMeeting = (meetingHeld ? 1 : 0) - (entry.meetingHeld ? 1 : 0);
+      const dAligned = (meetingAligned ? 1 : 0) - (entry.meetingAligned ? 1 : 0);
       const dVisit = (siteVisit ? 1 : 0) - (entry.siteVisit ? 1 : 0);
 
       t.update(leadRef, {
@@ -432,6 +465,7 @@ export async function updateFollowUp(
         callCount: FieldValue.increment(dCalls),
         connectCount: FieldValue.increment(dConnect),
         meetingCount: FieldValue.increment(dMeeting),
+        meetingAlignedCount: FieldValue.increment(dAligned),
         siteVisitCount: FieldValue.increment(dVisit),
         // Heals a lead whose entries predate the pointer. Written only when it
         // was missing, so this never overwrites a live one, and each such lead
@@ -441,6 +475,7 @@ export async function updateFollowUp(
         // One-way, as on the write path: a meeting that happened stays
         // happened, so un-ticking it here does not erase the lead-level flag.
         ...(meetingHeld ? { meetingHeld: true } : {}),
+        ...(meetingAligned ? { meetingAligned: true } : {}),
         ...(siteVisit ? { siteVisit: true } : {}),
       });
 
@@ -463,7 +498,7 @@ export async function updateFollowUp(
         type: "FOLLOW_UP_EDITED",
         actorUid: auth.uid,
         at: FieldValue.serverTimestamp(),
-        meta: { followUpId, kind: entry.kind ?? "FOLLOW_UP", connect, meetingHeld, siteVisit },
+        meta: { followUpId, kind: entry.kind ?? "FOLLOW_UP", connect, meetingHeld, meetingAligned, siteVisit },
       });
 
       return { connect };

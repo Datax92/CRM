@@ -287,6 +287,9 @@ export const DOSSIER_LEAD_CUTS: LeadFilterKey[] = [
   "FOLLOWED_UP",
   "FOLLOWUP_CONNECTS",
   "CONNECTED",
+  // Leads where a meeting was agreed in the period. Last, as in the entry
+  // strip above it — it is where the calls were heading.
+  "MEETING_ALIGNED",
 ];
 
 

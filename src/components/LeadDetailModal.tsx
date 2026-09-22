@@ -511,6 +511,8 @@ function FollowUpsTab({
   const [callMinutes, setCallMinutes] = useState("");
   const [callSeconds, setCallSeconds] = useState("");
   const [meetingHeld, setMeetingHeld] = useState(false);
+  /** A meeting was agreed on this contact — arranged, not yet held. */
+  const [meetingAligned, setMeetingAligned] = useState(false);
   const [whatsappNote, setWhatsappNote] = useState("");
 
   const durationSeconds = (Number(callMinutes) || 0) * 60 + (Number(callSeconds) || 0);
@@ -531,6 +533,7 @@ function FollowUpsTab({
         callCount: Number(callCount) || 1,
         durationSeconds,
         meetingHeld,
+        meetingAligned,
         whatsappNote: whatsappNote.trim(),
       });
 
@@ -538,6 +541,8 @@ function FollowUpsTab({
         setMessage("");
         setCallMade(false);
         setCallCount("1");
+        setMeetingHeld(false);
+        setMeetingAligned(false);
         setWhatsappNote("");
         setShowForm(false);
         onResult({ tone: "success", text: "Follow-up logged successfully." });
@@ -625,6 +630,20 @@ function FollowUpsTab({
                   className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500/20"
                 />
                 <span>Meeting Held</span>
+              </label>
+
+              {/* Agreed, not held — see `FollowUpInput.meetingAligned`. This
+                  modal is the one Campaigns, Search and the dashboard open, so
+                  leaving it out would make the same entry form offer different
+                  facts depending on which screen reached it. */}
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={meetingAligned}
+                  onChange={(e) => setMeetingAligned(e.target.checked)}
+                  className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500/20"
+                />
+                <span>Meeting Aligned</span>
               </label>
 
               {callMade && (
@@ -729,7 +748,7 @@ function FollowUpsTab({
 
               <p className="mt-2.5 whitespace-pre-wrap text-xs text-slate-800 leading-relaxed font-normal">{fu.message}</p>
 
-              {(fu.callMade || fu.meetingHeld || fu.whatsappNote) && (
+              {(fu.callMade || fu.meetingHeld || fu.meetingAligned || fu.whatsappNote) && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {fu.callMade && (
                     <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
@@ -739,6 +758,11 @@ function FollowUpsTab({
                         {fu.durationSeconds ? ` · ${formatDuration(fu.durationSeconds)}` : ""}
                         {fu.connect ? " · Connect" : ""}
                       </span>
+                    </span>
+                  )}
+                  {fu.meetingAligned && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                      <span>Meeting aligned</span>
                     </span>
                   )}
                   {fu.whatsappNote && (

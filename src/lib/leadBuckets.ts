@@ -42,7 +42,8 @@ export type ActivityFilterKey =
   | 'FOLLOWED_UP'
   | 'NEW_CONNECTS'
   | 'FOLLOWUP_CONNECTS'
-  | 'CONNECTED';
+  | 'CONNECTED'
+  | 'MEETING_ALIGNED';
 
 /**
  * In the order the work happens: a lead is remarked on, then followed up, and
@@ -56,6 +57,10 @@ export const ACTIVITY_FILTERS: ActivityFilterKey[] = [
   'FOLLOWED_UP',
   'FOLLOWUP_CONNECTS',
   'CONNECTED',
+  // Last, because it is the outcome the calls were for: a meeting agreed is
+  // where a conversation was heading, and it sits at the end of the row the
+  // way P1 sits at the end of the stages.
+  'MEETING_ALIGNED',
 ];
 
 /**
@@ -78,6 +83,20 @@ export interface EntryTally {
   newConnects: number;
   /** Of those follow-ups, the ones where the call was answered. */
   followUpConnects: number;
+  /**
+   * Entries on which a meeting was **agreed** — arranged, not yet held.
+   *
+   * Deliberately its own figure rather than a share of the connect columns: a
+   * call that was answered and a call that produced an appointment are
+   * different outcomes, and the second is the one a sales day is judged on. It
+   * cuts across Remarks and Follow-ups — a meeting can be agreed on the first
+   * call or the tenth — so it is never disjoint from them, exactly as the
+   * connect columns are not.
+   *
+   * `meetingHeld` remains a separate question, answered by the report's
+   * Meetings column and the P2 band: aligned is a promise, held is the fact.
+   */
+  meetingsAligned: number;
 }
 
 export const EMPTY_TALLY: EntryTally = {
@@ -85,6 +104,7 @@ export const EMPTY_TALLY: EntryTally = {
   followUps: 0,
   newConnects: 0,
   followUpConnects: 0,
+  meetingsAligned: 0,
 };
 
 /** Adds `add` into `into`, in place. The report and the dossier both fold. */
@@ -93,6 +113,7 @@ export function addTally(into: EntryTally, add: EntryTally): EntryTally {
   into.followUps += add.followUps;
   into.newConnects += add.newConnects;
   into.followUpConnects += add.followUpConnects;
+  into.meetingsAligned += add.meetingsAligned;
   return into;
 }
 
@@ -168,6 +189,7 @@ export const LEAD_FILTER_LABELS: Record<LeadFilterKey, string> = {
   NEW_CONNECTS: 'New connects',
   FOLLOWUP_CONNECTS: 'Follow-up connects',
   CONNECTED: 'Connected',
+  MEETING_ALIGNED: 'Meeting aligned',
 };
 
 /**
@@ -186,6 +208,7 @@ export const ACTIVITY_FILTER_HINTS: Record<ActivityFilterKey, string> = {
   NEW_CONNECTS: 'Leads whose Remark was an answered call — 1:10 or longer',
   FOLLOWUP_CONNECTS: 'Leads where a follow-up call was answered — 1:10 or longer',
   CONNECTED: 'Leads where any call was answered in this period, Remark or follow-up',
+  MEETING_ALIGNED: 'Leads where a meeting was agreed in this period — arranged, not yet held',
 };
 
 /** True for the four chips that are a pipeline stage rather than a bucket. */
@@ -255,6 +278,8 @@ interface BucketableLead {
   temperatureOverride?: string | null;
   /** Connected calls logged against this lead — the CONNECTED cut. */
   connectCount?: number | null;
+  /** A meeting has been agreed on this lead at some point — the all-time reading. */
+  meetingAligned?: boolean | null;
 }
 
 /**
@@ -309,12 +334,16 @@ export function matchesActivityFilter(
     if (key === 'FOLLOWED_UP') return tally.followUps > 0;
     if (key === 'NEW_CONNECTS') return tally.newConnects > 0;
     if (key === 'FOLLOWUP_CONNECTS') return tally.followUpConnects > 0;
+    if (key === 'MEETING_ALIGNED') return tally.meetingsAligned > 0;
     return tally.newConnects + tally.followUpConnects > 0;
   }
 
   // The two connect cuts have no all-time reading: `connectCount` says a call
   // was answered at some point, never whether it was the opening one.
   if (key === 'NEW_CONNECTS' || key === 'FOLLOWUP_CONNECTS') return false;
+  // This one does: the flag on the lead says a meeting was agreed at some
+  // point, which is the same question asked without a period.
+  if (key === 'MEETING_ALIGNED') return lead.meetingAligned === true;
 
   // The all-time reading, from the counters denormalised on the lead. It is
   // what a caller with no entries in hand can answer, and it is a different
@@ -371,6 +400,7 @@ export function countByFilter(
     ALL: 0, TODAY: 0, NEW: 0, PENDING: 0, ACTIVE: 0, CLOSED: 0,
     COLD: 0, P3: 0, P2: 0, P1: 0,
     REMARKED: 0, FOLLOWED_UP: 0, NEW_CONNECTS: 0, FOLLOWUP_CONNECTS: 0, CONNECTED: 0,
+    MEETING_ALIGNED: 0,
   };
 
   for (const lead of leads) {
@@ -456,16 +486,21 @@ export function entryTally(entry: CountableEntry): EntryTally {
     followUps: remark ? 0 : 1,
     newConnects: remark && connected ? 1 : 0,
     followUpConnects: !remark && connected ? 1 : 0,
+    // Independent of the call: a meeting agreed over WhatsApp is still a
+    // meeting agreed, and an entry predating the field simply reads false.
+    meetingsAligned: entry.meetingAligned === true ? 1 : 0,
   };
 }
 
-/** One entry, reduced to the four things a tally needs. */
+/** One entry, reduced to the few things a tally needs. */
 export interface CountableEntry {
   leadId: string;
   /** `creditUid` where present, `authorUid` for entries written before it. */
   uid: string;
   kind?: string | null;
   connect?: boolean | null;
+  /** A meeting was agreed on this entry. Absent on every entry before it existed. */
+  meetingAligned?: boolean | null;
 }
 
 /**
