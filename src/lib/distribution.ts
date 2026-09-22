@@ -267,26 +267,38 @@ export function getNextAssigneeAndState(
 export interface CascadeResolution {
   uid: string | null;
   /**
-   * True when this employee is the end of the lane: nobody is left below them
-   * to pass the lead to, so they take it without an accept window.
+   * True when the lane came back round to the top: everybody active had already
+   * been offered this lead, so this hop starts a new lap.
+   *
+   * The caller uses it to clear `attemptedAssignees` — without that reset the
+   * exclusion list would keep growing and the second lap would find nobody.
    */
-  forced: boolean;
+  wrapped: boolean;
 }
 
 /**
  * Who receives a lead whose accept window just lapsed.
  *
  * The lane runs strictly by priority — 1 first, then 2, and so on — skipping
- * anyone who has already been offered this lead and let it expire. That
- * exclusion is what stops two employees handing a lead back and forth forever.
+ * anyone who has already been offered this lead on this lap. That exclusion is
+ * what stops two employees handing a lead back and forth inside one lap while
+ * a third never sees it.
  *
- * The lane has a floor. When only one candidate is left, they are `forced`:
- * assigned with no accept window and no chance to decline, because there is
- * nobody below them to cascade to. If every active employee has already had a
- * turn, the lowest-priority active employee is the backstop and takes it on the
- * same terms — that is the "last employee is forced to accept" rule, and it is
- * why a lead can no longer fall out of the lane into UNASSIGNED_NO_CAPACITY
- * while an active roster exists.
+ * **The lane is a loop, and has no floor** (owner, 2026-09-22). When the last
+ * person in the queue lets the window lapse, the lead goes back to priority 1
+ * and round again, for as long as it takes somebody to accept. It used to
+ * *force-accept* at the end of the lane — the last employee left got the lead
+ * with no window and no way to decline — and the owner's instruction is that
+ * a lead nobody has accepted should keep being offered rather than being
+ * parked on whoever happened to be last.
+ *
+ * **What that costs, stated plainly**: a lead nobody ever accepts is re-offered
+ * every sweep, for ever. At a five-minute sweep that is ~288 hops a day for one
+ * stuck lead — see `reassignExpiredLead`, which is why a miss is red-flagged and
+ * charged **once per person per lead** rather than once per hop.
+ *
+ * A single-person lane is the same rule taken literally: first and last are the
+ * same person, so the lead is re-offered to them with a fresh window each time.
  *
  * Rotation counters are deliberately not consulted or advanced here. A turn is
  * about sharing *incoming volume*; a cascade is about catching a miss, and
@@ -305,19 +317,16 @@ export function resolveCascadeAssignee(
     .filter(takesAutoLeads)
     .sort((a, b) => a.priority - b.priority || a.uid.localeCompare(b.uid));
 
-  if (active.length === 0) return { uid: null, forced: false };
+  // Nobody in the lane at all. The caller parks the lead for the admin rather
+  // than inventing a recipient — the one case that is not a loop.
+  if (active.length === 0) return { uid: null, wrapped: false };
 
   const eligible = active.filter((e) => !attempted.has(e.uid));
 
-  // Everyone has had a turn — the lowest-priority active employee is the floor.
-  if (eligible.length === 0) {
-    return { uid: active[active.length - 1].uid, forced: true };
-  }
+  // Still somebody further down this lap.
+  if (eligible.length > 0) return { uid: eligible[0].uid, wrapped: false };
 
-  // One candidate left: they are the end of the lane.
-  if (eligible.length === 1) {
-    return { uid: eligible[0].uid, forced: true };
-  }
-
-  return { uid: eligible[0].uid, forced: false };
+  // Everybody has had a turn — back to priority 1 and round again.
+  return { uid: active[0].uid, wrapped: true };
 }
+

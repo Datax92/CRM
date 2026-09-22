@@ -7,9 +7,9 @@
  * lead from it on one desk. The campaign already has its own folder, created by
  * the first lead that arrived; this says who that folder's leads are offered
  * to. Everything else about the offer is unchanged — priority order, each
- * person's turn size, the five-minute window, Accept and Pass on, and the floor
- * where the last person left takes it — so what is chosen here narrows the
- * lane rather than replacing it.
+ * person's turn size, the five-minute window, Accept and Pass on, and the loop
+ * back to the first person when everybody has had a turn — so what is chosen
+ * here narrows the lane rather than replacing it.
  *
  * **Nothing chosen is the absence of a rule**, not a rule that nobody gets
  * them. That is said on the screen, because the failure this control could

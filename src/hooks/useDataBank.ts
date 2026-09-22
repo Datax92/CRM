@@ -76,7 +76,7 @@ export interface DataBankFolder {
    * Absent or empty means the whole rotation — every folder that predates the
    * setting. When set, automatic distribution rotates within these people only,
    * on the same terms as the lane: priority order, each person's own turn size,
-   * the five-minute window, Pass on and the force-accept floor. Manual
+   * the five-minute window, Pass on and the loop back to the top. Manual
    * promotion and reassignment are unaffected. See `setFolderLane`.
    */
   laneUids?: string[] | null;

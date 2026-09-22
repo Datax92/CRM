@@ -179,31 +179,36 @@ const lane = (): Employee[] => [
 ];
 
 test('cascade offers the lead to the highest priority employee first', () => {
-  const { uid, forced } = resolveCascadeAssignee(lane(), []);
+  const { uid, wrapped } = resolveCascadeAssignee(lane(), []);
   assert.equal(uid, 'emp1');
-  assert.equal(forced, false);
+  assert.equal(wrapped, false);
 });
 
 test('cascade steps down one priority per miss', () => {
-  assert.deepEqual(resolveCascadeAssignee(lane(), ['emp1']), { uid: 'emp2', forced: false });
+  assert.deepEqual(resolveCascadeAssignee(lane(), ['emp1']), { uid: 'emp2', wrapped: false });
 });
 
-test('the last employee in the lane is forced to accept', () => {
-  // emp1 and emp2 have both let it lapse; emp3 is the floor.
-  assert.deepEqual(resolveCascadeAssignee(lane(), ['emp1', 'emp2']), { uid: 'emp3', forced: true });
+test('the last employee in the lane is offered it like anybody else', () => {
+  // emp1 and emp2 have both let it lapse. emp3 gets an ordinary offer with a
+  // window — the floor that used to force it on them is gone.
+  assert.deepEqual(resolveCascadeAssignee(lane(), ['emp1', 'emp2']), { uid: 'emp3', wrapped: false });
 });
 
-test('when everyone has had a turn the lowest priority employee takes it', () => {
+test('when everyone has had a turn the lane wraps back to priority 1', () => {
+  // The owner's instruction (2026-09-22): "if she is the last employee in queue
+  // it should move back to the first one".
   assert.deepEqual(
     resolveCascadeAssignee(lane(), ['emp1', 'emp2', 'emp3']),
-    { uid: 'emp3', forced: true }
+    { uid: 'emp1', wrapped: true }
   );
 });
 
-test('a sole active employee is the floor and is forced on expiry', () => {
+test('a sole active employee is offered it again rather than having it forced on them', () => {
+  // First and last are the same person, so the rule taken literally re-offers
+  // it to them with a fresh window.
   const solo: Employee[] = [{ uid: 'emp1', priority: 1, status: 'ACTIVE' }];
-  assert.deepEqual(resolveCascadeAssignee(solo, []), { uid: 'emp1', forced: true });
-  assert.deepEqual(resolveCascadeAssignee(solo, ['emp1']), { uid: 'emp1', forced: true });
+  assert.deepEqual(resolveCascadeAssignee(solo, []), { uid: 'emp1', wrapped: false });
+  assert.deepEqual(resolveCascadeAssignee(solo, ['emp1']), { uid: 'emp1', wrapped: true });
 });
 
 test('disabled employees are never offered a cascaded lead', () => {
@@ -212,32 +217,48 @@ test('disabled employees are never offered a cascaded lead', () => {
     { uid: 'emp2', priority: 2, status: 'DISABLED' },
     { uid: 'emp3', priority: 3, status: 'ACTIVE' },
   ];
-  assert.deepEqual(resolveCascadeAssignee(withDisabled, ['emp1']), { uid: 'emp3', forced: true });
-});
-
-test('an empty roster yields no assignee rather than a forced ghost', () => {
-  assert.deepEqual(resolveCascadeAssignee([], []), { uid: null, forced: false });
+  assert.deepEqual(resolveCascadeAssignee(withDisabled, ['emp1']), { uid: 'emp3', wrapped: false });
+  // And the wrap skips them too — it starts again at the first *active* person.
   assert.deepEqual(
-    resolveCascadeAssignee([{ uid: 'emp1', priority: 1, status: 'DISABLED' }], []),
-    { uid: null, forced: false }
+    resolveCascadeAssignee(withDisabled, ['emp1', 'emp3']),
+    { uid: 'emp1', wrapped: true }
   );
 });
 
-test('the cascade walks the whole lane and always terminates on a forced holder', () => {
+test('an empty roster yields no assignee rather than a ghost', () => {
+  // The one case that is not a loop: with nobody in the lane the caller parks
+  // the lead for the admin.
+  assert.deepEqual(resolveCascadeAssignee([], []), { uid: null, wrapped: false });
+  assert.deepEqual(
+    resolveCascadeAssignee([{ uid: 'emp1', priority: 1, status: 'DISABLED' }], []),
+    { uid: null, wrapped: false }
+  );
+});
+
+test('the lane goes round and round until somebody accepts', () => {
   const employees = lane();
-  const attempted: string[] = [];
+  let attempted: string[] = [];
   const visited: string[] = [];
 
-  // Simulate repeated expiries. Without the floor this loops forever.
-  for (let i = 0; i < 10; i++) {
-    const { uid, forced } = resolveCascadeAssignee(employees, attempted);
+  // Seven expiries in a row: two full laps and one more hop. Nobody is ever
+  // forced, and the lead never stops being offered.
+  for (let i = 0; i < 7; i++) {
+    const { uid, wrapped } = resolveCascadeAssignee(employees, attempted);
     assert.ok(uid, 'lane must always yield a holder while the roster is active');
     visited.push(uid!);
-    if (forced) break;
-    attempted.push(uid!);
+    // What the callers do: a wrap starts a new lap, so the exclusion list is
+    // replaced rather than added to.
+    attempted = wrapped ? [uid!] : attempted.concat(uid!);
   }
 
-  assert.deepEqual(visited, ['emp1', 'emp2', 'emp3']);
+  assert.deepEqual(visited, ['emp1', 'emp2', 'emp3', 'emp1', 'emp2', 'emp3', 'emp1']);
+});
+
+test('a lap ends only when everybody active has been offered it', () => {
+  // The exclusion is what stops two people passing it back and forth inside one
+  // lap while a third never sees it.
+  assert.equal(resolveCascadeAssignee(lane(), ['emp2']).uid, 'emp1');
+  assert.equal(resolveCascadeAssignee(lane(), ['emp1', 'emp3']).uid, 'emp2');
 });
 
 test('cascade ignores rotation counters entirely', () => {
@@ -275,7 +296,7 @@ test('the cascade skips them too — a lapsed window must not land there', () =>
     { uid: 'b', priority: 2, status: 'ACTIVE' as const, autoAssign: false },
     { uid: 'c', priority: 3, status: 'ACTIVE' as const },
   ];
-  assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', forced: true });
+  assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', wrapped: false });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -328,7 +349,7 @@ test('the cascade honours it too — a lapsed lead must not land on somebody out
     readLaneEmployee('b', { priority: 2, status: 'ACTIVE', autoAssign: false }),
     readLaneEmployee('c', { priority: 3, status: 'ACTIVE' }),
   ];
-  assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', forced: true });
+  assert.deepEqual(resolveCascadeAssignee(roster, ['a']), { uid: 'c', wrapped: false });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -427,7 +448,7 @@ test('a paused account is still skipped, however it was chosen', () => {
   const paused = readChosenLaneMember('hussain', { status: 'DISABLED', priority: 1 });
   const active = readChosenLaneMember('rafia', { status: 'ACTIVE', priority: 2 });
   assert.equal(getNextAssigneeAndState([paused, active], {}).uid, 'rafia');
-  assert.deepEqual(resolveCascadeAssignee([paused, active], []), { uid: 'rafia', forced: true });
+  assert.deepEqual(resolveCascadeAssignee([paused, active], []), { uid: 'rafia', wrapped: false });
 });
 
 test('the admin, with no priority, sorts to the back of a folder group rather than the front', () => {
@@ -438,7 +459,7 @@ test('the admin, with no priority, sorts to the back of a folder group rather th
   assert.deepEqual(order, ['aroosa', 'admin']);
 });
 
-test('a restricted folder rotates within its group and its floor stays inside it', () => {
+test('a restricted folder rotates within its group, and the loop stays inside it', () => {
   // The owner's case: this campaign's leads are for these three people, one
   // each in turn, and the last one left takes it rather than it escaping.
   const group = [
@@ -449,19 +470,22 @@ test('a restricted folder rotates within its group and its floor stays inside it
   const { order } = drain(group, 4);
   assert.deepEqual(order, ['aroosa', 'rafia', 'dilawar', 'aroosa']);
 
-  // Everybody has been offered it and let it lapse: the lowest priority in the
-  // group is forced, and nobody outside the group is ever consulted.
-  assert.deepEqual(resolveCascadeAssignee(group, ['aroosa']), { uid: 'rafia', forced: false });
-  assert.deepEqual(resolveCascadeAssignee(group, ['aroosa', 'rafia']), { uid: 'dilawar', forced: true });
+  // Everybody has been offered it and let it lapse: the group wraps back to its
+  // own first person, and nobody outside the group is ever consulted.
+  assert.deepEqual(resolveCascadeAssignee(group, ['aroosa']), { uid: 'rafia', wrapped: false });
+  assert.deepEqual(
+    resolveCascadeAssignee(group, ['aroosa', 'rafia']),
+    { uid: 'dilawar', wrapped: false }
+  );
   assert.deepEqual(
     resolveCascadeAssignee(group, ['aroosa', 'rafia', 'dilawar']),
-    { uid: 'dilawar', forced: true }
+    { uid: 'aroosa', wrapped: true }
   );
 });
 
-test('a folder group of one force-accepts rather than leaving the lead unassigned', () => {
+test('a folder group of one keeps offering it back rather than leaving the lead unassigned', () => {
   const solo = [readChosenLaneMember('aroosa', { priority: 4, status: 'ACTIVE' })];
-  assert.deepEqual(resolveCascadeAssignee(solo, ['aroosa']), { uid: 'aroosa', forced: true });
+  assert.deepEqual(resolveCascadeAssignee(solo, ['aroosa']), { uid: 'aroosa', wrapped: true });
 });
 
 test('a folder whose chosen people have all gone yields nobody, so the record waits', () => {

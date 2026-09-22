@@ -203,12 +203,14 @@ export async function reassignLeadManual(
  * driving can be honest without being punished for it. No red flag, no missed
  * count; see `lib/leadPriority`.
  *
- * The lead cascades by exactly the rule the expiry sweep uses, including its
- * floor: the passer is added to `attemptedAssignees`, so they are not offered
- * it again, and when nobody is left below, the last employee in the lane takes
- * it forced. A lead can never be passed into oblivion.
+ * The lead cascades by exactly the rule the expiry sweep uses: the passer is
+ * added to `attemptedAssignees`, so they are not offered it again on this lap,
+ * and when everybody has had a turn the lane **wraps back to priority 1** and
+ * goes round again (owner, 2026-09-22). Nobody is force-accepted at the end any
+ * more, so a lead can be passed on by everyone and simply comes back round —
+ * which is also why passing costs two points every time it happens.
  */
-export async function passLead(token: string, leadId: string): Promise<ActionResult<{ passedTo: string | null; forced: boolean }>> {
+export async function passLead(token: string, leadId: string): Promise<ActionResult<{ passedTo: string | null; wrapped: boolean }>> {
   return runAction("passLead", async () => {
     const auth = await verifyAuth(token);
 
@@ -248,7 +250,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         : [auth.uid];
       if (!attempted.includes(auth.uid)) attempted.push(auth.uid);
 
-      const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
+      const { uid: nextAssignee, wrapped } = resolveCascadeAssignee(employees, attempted);
       const now = FieldValue.serverTimestamp();
 
       // The pass itself, scored against the month it happened in.
@@ -262,7 +264,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         type: "LEAD_PASSED",
         actorUid: auth.uid,
         at: now,
-        meta: { from: auth.uid, to: nextAssignee, forced },
+        meta: { from: auth.uid, to: nextAssignee, wrapped },
       });
 
       if (!nextAssignee) {
@@ -283,7 +285,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
           createdAt: now,
           readAt: null,
         });
-        return { passedTo: null, forced: false };
+        return { passedTo: null, wrapped: false };
       }
 
       const nextProfile = profiles.get(nextAssignee);
@@ -298,10 +300,18 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         assignedAt: now,
         lastActivityAt: now,
         distributionMethod: "AUTO_REASSIGN",
-        attemptedAssignees: attempted.concat(attempted.includes(nextAssignee) ? [] : [nextAssignee]),
-        ...(forced
-          ? { status: "ACCEPTED", acceptedAt: now, acceptDeadlineAt: FieldValue.delete() }
-          : { status: "ASSIGNED", acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS) }),
+        /*
+          A wrap starts a new lap, so the exclusion list is replaced by the one
+          person now holding it. Adding to it instead would leave the whole
+          roster excluded and the next pass with nobody to go to.
+        */
+        attemptedAssignees: wrapped
+          ? [nextAssignee]
+          : attempted.concat(attempted.includes(nextAssignee) ? [] : [nextAssignee]),
+        cascadeLap: (Number(lead.cascadeLap) || 0) + (wrapped ? 1 : 0),
+        // Always an offer: the lane has no floor to force it on anybody.
+        status: "ASSIGNED",
+        acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
       });
 
       t.create(adminDb.collection("notifications").doc(), {
@@ -315,15 +325,13 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
               : "employee",
         targetUid: nextAssignee,
         payload: {
-          message: forced
-            ? `"${lead.name ?? leadId}" was passed to you and accepted automatically — it reached the end of the priority lane.`
-            : `"${lead.name ?? leadId}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+          message: `"${lead.name ?? leadId}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
         },
         createdAt: now,
         readAt: null,
       });
 
-      return { passedTo: nextAssignee, forced };
+      return { passedTo: nextAssignee, wrapped };
     });
   });
 }

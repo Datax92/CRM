@@ -1080,11 +1080,11 @@ export const demo = {
    *
    * Same three facts as the server: the pass is counted against the person who
    * passed (it costs them two points on the lane — see `lib/leadPriority`), the
-   * lead cascades to the next active employee in priority order, and the last
-   * one in the lane is force-accepted rather than the lead falling out of the
-   * system.
+   * lead cascades to the next active employee in priority order, and when
+   * everybody has had a turn the lane **wraps back to the top** and goes round
+   * again rather than forcing it on whoever was last.
    */
-  passLead(leadId: string, actorUid: string): Result<{ passedTo: string | null; forced: boolean }> {
+  passLead(leadId: string, actorUid: string): Result<{ passedTo: string | null; wrapped: boolean }> {
     const lead = state.leads.find((l) => l.id === leadId);
     if (!lead) return fail('That lead no longer exists.');
     if (lead.assignedUserId !== actorUid) return fail('This lead is not assigned to you.');
@@ -1117,12 +1117,12 @@ export const demo = {
           : readLaneEmployee(employee.uid, profile);
       });
 
-    const { uid: nextUid, forced } = resolveCascadeAssignee(roster, attempted);
+    const { uid: nextUid, wrapped } = resolveCascadeAssignee(roster, attempted);
 
     // The pass is charged whether or not anybody is left to take it: the
     // person still chose not to work the lead.
     bumpKpi(actorUid, karachiMonthKey(), { passes: 1 } as Partial<KpiCounts>);
-    addEvent(leadId, 'LEAD_PASSED', actorUid, { to: nextUid, forced });
+    addEvent(leadId, 'LEAD_PASSED', actorUid, { to: nextUid, wrapped });
 
     if (!nextUid) {
       // Nobody left in the lane. The real action leaves the lead where it is
@@ -1136,11 +1136,10 @@ export const demo = {
       assignedUserId: nextUid,
       assigneeName: nextPerson?.name ?? null,
       subAdminUid: nextPerson?.accessRole === 'subadmin' ? nextPerson.uid : nextPerson?.subAdminUid ?? null,
-      attemptedAssignees: attempted,
-      status: forced ? 'ACCEPTED' : 'ASSIGNED',
-      ...(forced
-        ? { acceptedAt: now(), acceptDeadlineAt: undefined }
-        : { acceptDeadlineAt: ts(new Date(Date.now() + ACCEPT_WINDOW_MS)) }),
+      // A wrap starts a new lap, so the exclusion list is replaced.
+      attemptedAssignees: wrapped ? [nextUid] : attempted,
+      status: 'ASSIGNED',
+      acceptDeadlineAt: ts(new Date(Date.now() + ACCEPT_WINDOW_MS)),
       lastActivityAt: now(),
     });
 
@@ -1152,9 +1151,7 @@ export const demo = {
         targetRole: 'employee',
         targetUid: nextUid,
         payload: {
-          message: forced
-            ? `"${lead.name}" was passed to you and accepted automatically — it reached the end of the priority lane.`
-            : `"${lead.name}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+          message: `"${lead.name}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
         },
         createdAt: now(),
         readAt: null,
@@ -1163,7 +1160,7 @@ export const demo = {
     ];
 
     emit();
-    return ok({ passedTo: nextUid, forced });
+    return ok({ passedTo: nextUid, wrapped });
   },
 
   setLeadStatus(leadId: string, status: Lead['status'], actorUid: string): Result {

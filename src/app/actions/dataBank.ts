@@ -230,8 +230,10 @@ export async function updateDataBankFolder(
  * campaign is restricted to those people, and the lane stops being company-wide
  * *for that folder only*. Everything else about the offer is unchanged — the
  * priority order, each person's own `leadsPerTurn`, the five-minute window, the
- * popup, Pass on, and the floor where the last one left is force-accepted. It
- * is the same lane, drawn round fewer people.
+ * popup, Pass on, and the loop back to the top when everybody has had a turn.
+ * It is the same lane, drawn round fewer people — so a lead routed to a desk
+ * goes round that desk's group for as long as it takes, and never cascades off
+ * it.
  *
  * **An empty list is the absence of a rule, not a rule that nobody gets them.**
  * Clearing the selection returns the folder to the general rotation, which is

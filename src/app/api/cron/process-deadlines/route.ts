@@ -220,9 +220,23 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
     const { employees, recipients } = await readDistributionState(t, lead);
     // The cascade runs on priority alone and never touches the rotation
     // counters: a missed lead must not consume the turn of whoever cleans it up.
-    const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
+    const { uid: nextAssignee, wrapped } = resolveCascadeAssignee(employees, attempted);
 
     const now = FieldValue.serverTimestamp();
+
+    /*
+      **A miss is flagged and charged once per person per lead, not once per
+      hop** — the change the loop forces.
+
+      The lane no longer ends: a lead nobody accepts goes round again, so at a
+      five-minute sweep the same person can let the same lead lapse ~40 times a
+      day. Red-flagging each one would bury the panel and multiply
+      `missedLeadsCount` by however long the lead went unclaimed, which is a
+      measure of the lane's luck rather than of the person. `missedAssignees`
+      is the ledger of who has already been charged for this lead.
+    */
+    const alreadyMissed: string[] = Array.isArray(lead.missedAssignees) ? lead.missedAssignees : [];
+    const firstMiss = Boolean(previousAssignee) && !alreadyMissed.includes(previousAssignee!);
 
     let employeeName = 'Unknown Employee';
     if (previousAssignee) {
@@ -231,36 +245,44 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       if (employeeSnap.exists) {
         employeeName = employeeSnap.data()?.name ?? previousAssignee;
       }
-      t.update(employeeRef, {
-        missedLeadsCount: FieldValue.increment(1),
-      });
+      if (firstMiss) {
+        t.update(employeeRef, {
+          missedLeadsCount: FieldValue.increment(1),
+        });
+      }
     }
 
-    // BR-9: every non-acceptance raises a red flag, whether or not a new
-    // assignee was found.
+    // The event is written every time: the audit trail is where "this lead has
+    // been round the lane four times" has to be legible, and an event costs
+    // one write with nobody's attention attached to it.
     t.create(leadRef.collection('events').doc(), {
       type: 'EXPIRED',
       actorUid: 'system:cron',
       at: now,
-      meta: { previousAssignee, employeeName, attemptedCount: attempted.length },
+      meta: { previousAssignee, employeeName, attemptedCount: attempted.length, wrapped, repeat: !firstMiss },
     });
 
-    createNotification(t, {
-      type: 'RED_FLAG',
-      leadId,
-      message: `"${lead.name ?? leadId}" assigned to ${employeeName} was not accepted within ${ACCEPT_WINDOW_MINUTES} minutes.`,
-      extra: {
-        employeeName,
-        employeeUid: previousAssignee,
-        leadName: lead.name ?? leadId,
-        timeAssigned: lead.assignedAt ?? null,
-        acceptanceDeadline: lead.acceptDeadlineAt ?? null,
-        reason: 'Expired',
-      },
-    });
+    // BR-9: a non-acceptance raises a red flag — the first time this person
+    // lets this lead go, and not on every later lap.
+    if (firstMiss) {
+      createNotification(t, {
+        type: 'RED_FLAG',
+        leadId,
+        message: `"${lead.name ?? leadId}" assigned to ${employeeName} was not accepted within ${ACCEPT_WINDOW_MINUTES} minutes.`,
+        extra: {
+          employeeName,
+          employeeUid: previousAssignee,
+          leadName: lead.name ?? leadId,
+          timeAssigned: lead.assignedAt ?? null,
+          acceptanceDeadline: lead.acceptDeadlineAt ?? null,
+          reason: 'Expired',
+        },
+      });
+    }
 
-    // Only reachable when the roster has no active employee at all — the
-    // cascade's floor covers every other case.
+    // Only reachable when the roster has no active employee at all. With
+    // anybody in the lane the cascade loops instead, so this is the one way a
+    // lead still reaches UNASSIGNED_NO_CAPACITY.
     if (!nextAssignee) {
       t.update(leadRef, {
         status: 'UNASSIGNED_NO_CAPACITY',
@@ -278,38 +300,13 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       return true;
     }
 
-    // End of the lane. Nobody is left below this employee, so the lead is
-    // theirs outright — accepted on assignment, no window, nothing to decline.
-    if (forced) {
-      t.update(leadRef, {
-        assignedUserId: nextAssignee,
-        ...stampFor(recipients, nextAssignee),
-        assignedAt: now,
-        acceptedAt: now,
-        lastActivityAt: now,
-        distributionMethod: 'AUTO_REASSIGN',
-        status: 'ACCEPTED',
-        acceptDeadlineAt: FieldValue.delete(),
-        attemptedAssignees: FieldValue.arrayUnion(nextAssignee),
-      });
-
-      t.create(leadRef.collection('events').doc(), {
-        type: 'FORCE_ACCEPTED',
-        actorUid: 'system:cron',
-        at: now,
-        meta: { from: previousAssignee, to: nextAssignee, reason: 'End of priority lane' },
-      });
-
-      createNotification(t, {
-        type: 'NEW_LEAD_ASSIGNED',
-        leadId,
-        targetRole: recipients.get(nextAssignee)?.targetRole ?? 'employee',
-        targetUid: nextAssignee,
-        message: `"${lead.name ?? leadId}" was assigned to you and accepted automatically — it reached the end of the priority lane.`,
-      });
-
-      return true;
-    }
+    /*
+      **Always an offer, never a forced hand-out.** The lead moves to the next
+      person with a fresh window; when the lane wrapped, `attemptedAssignees`
+      is replaced rather than added to, so the new lap starts with only the
+      person now holding it and the lane can go round again.
+    */
+    const lap = (Number(lead.cascadeLap) || 0) + (wrapped ? 1 : 0);
 
     t.update(leadRef, {
       assignedUserId: nextAssignee,
@@ -319,14 +316,21 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       distributionMethod: 'AUTO_REASSIGN',
       status: 'ASSIGNED',
       acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
-      attemptedAssignees: FieldValue.arrayUnion(nextAssignee),
+      attemptedAssignees: wrapped ? [nextAssignee] : FieldValue.arrayUnion(nextAssignee),
+      // How many complete laps of the lane this lead has been round. Nothing
+      // acts on it — it is what makes "this has been going round for hours"
+      // answerable from the record rather than from counting events.
+      cascadeLap: lap,
+      ...(firstMiss && previousAssignee
+        ? { missedAssignees: FieldValue.arrayUnion(previousAssignee) }
+        : {}),
     });
 
     t.create(leadRef.collection('events').doc(), {
       type: 'AUTO_REASSIGNED',
       actorUid: 'system:cron',
       at: now,
-      meta: { from: previousAssignee, to: nextAssignee },
+      meta: { from: previousAssignee, to: nextAssignee, wrapped, lap },
     });
 
     createNotification(t, {

@@ -794,7 +794,9 @@ const EVENT_LABELS: Record<string, string> = {
   MANUALLY_REASSIGNED: "Reassigned by Admin",
   AUTO_REASSIGNED: "Reassigned automatically",
   LEAD_ACCEPTED: "Accepted by Employee",
-  FORCE_ACCEPTED: "Force-accepted — end of priority lane",
+  // The lane no longer has a floor; the only writer left is an admin
+  // promoting or handing out a record, which is accepted on the spot.
+  FORCE_ACCEPTED: "Accepted on assignment — handed out by an admin",
   EXPIRED: "Acceptance window expired",
   AUTO_ASSIGN_FAILED: "No active employee available",
   STATUS_CHANGED: "Status changed",
