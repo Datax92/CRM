@@ -490,7 +490,13 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <ExpenseHero
-        eyebrow={subjectLabel ? `Office Expenses · ${subjectLabel}` : "Office Expenses"}
+        /*
+          The subject rides in the eyebrow on the desktop and in the caption
+          alone on the phone: at 10.5px uppercase, "OFFICE EXPENSES · TAYYAB
+          ALI" wraps to two shouty lines on a 390px screen and pushes the
+          figure down. The caption says it either way, so nothing is lost.
+        */
+        eyebrow={subjectLabel && !isMobile ? `Office Expenses · ${subjectLabel}` : "Office Expenses"}
         figure={rupees(summary.spend)}
         /*
           The caption names the subject, because the figure above it is now
@@ -573,21 +579,28 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
         <>
           <MobileSearch value={search} onChange={setSearch} placeholder="Title, payee or note" />
           {/*
-            Whose expenses, on its own row above the cuts — it changes every
-            figure on the screen, and putting it in the status/category row
-            would read as one more way to filter the list.
+            Whose expenses, on its own labelled row above the cuts — it changes
+            every figure on the screen, and an unlabelled second chip row would
+            read as one more way to filter the list. The desktop says this in
+            the select's own "Recorded by" label; the phone has no labels, so
+            it gets one here.
           */}
           {recorders.length > 1 && (
-            <ChipRow
-              chips={[
-                { label: "Everyone", active: recordedBy === "ALL", pick: () => setRecordedBy("ALL") },
-                ...recorders.map((person) => ({
-                  label: `${person.label} · ${person.count}`,
-                  active: recordedBy === person.uid,
-                  pick: () => setRecordedBy(person.uid),
-                })),
-              ]}
-            />
+            <div style={{ display: "grid", gap: 8 }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", color: "#93a5a3" }}>
+                Whose expenses
+              </span>
+              <ChipRow
+                chips={[
+                  { label: "Everyone", active: recordedBy === "ALL", pick: () => setRecordedBy("ALL") },
+                  ...recorders.map((person) => ({
+                    label: `${person.label} · ${person.count}`,
+                    active: recordedBy === person.uid,
+                    pick: () => setRecordedBy(person.uid),
+                  })),
+                ]}
+              />
+            </div>
           )}
           <ChipRow
             chips={[

@@ -439,6 +439,7 @@ out of the script.
 - The options are derived from the expenses, so the list is what can usefully be picked; names come from the manager roster with the expense's stored email as the fallback, so somebody who has left is still named rather than appearing as a uid.
 - **Records with no `addedByUid` are gathered under "Not recorded"** rather than left out — omitted, they would still count under Everyone and the per-person figures would quietly fail to reconcile.
 - *Pay period total* now names the subject in its label, since with one person selected it pays their approved expenses only.
+- **The phone gets its own labelled row**, above the status/category chips — a second unlabelled chip row would read as one more way to filter the list, and the phone has none of the desktop's field labels to say otherwise. The subject stays out of the **mobile** eyebrow and lives in the caption: at 10.5px uppercase, `OFFICE EXPENSES · TAYYAB ALI` wraps to two lines on a 390px screen and pushes the figure down.
 - **Validation**: typecheck 0 errors, `test` **769/769** (764 → 769), `eslint src` 7 errors / 33 warnings (baseline), `next build` compiles and finishes TypeScript. **Not driven in a browser** — no `.env.local` on this machine.
 
 ### 2026-09-22 — a campaign's leads can belong to particular people
