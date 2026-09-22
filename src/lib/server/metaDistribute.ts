@@ -36,11 +36,11 @@ import { owningSubAdminFor } from '@/lib/constants/hierarchy';
 import { FieldValue, type Transaction } from 'firebase-admin/firestore';
 import {
   getNextAssigneeAndState,
-  readLaneEmployee,
   laneDisplayName,
+  normalizeLaneUids,
   type CycleState,
-  type Employee,
 } from '@/lib/distribution';
+import { readLaneRoster } from './laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { PROMOTED_FOLDER_ID } from '@/lib/dataBank';
 import { fileMetaLead, type FileResult } from './metaFiling';
@@ -90,27 +90,45 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
     const folderSnap = await t.get(folderRef);
     const folder = folderSnap.data() ?? {};
 
-    // Managers too — only the ones an admin has put in the rotation get a turn.
-    const usersSnap = await t.get(adminDb.collection('users').where('role', 'in', ['employee', 'subadmin']));
-    const employees: Employee[] = [];
-    const profiles = new Map<string, Record<string, unknown>>();
-    usersSnap.forEach((doc) => {
-      employees.push(readLaneEmployee(doc.id, doc.data()));
-      profiles.set(doc.id, doc.data());
-    });
+    /*
+      **The folder may name who its leads are for.** A client running ads for
+      one project wants those leads on one desk, so `laneUids` restricts this
+      folder's rotation to the people an admin chose — employees, managers, the
+      admin themselves. Absent means the whole lane, which is every folder that
+      predates the setting.
+    */
+    const laneUids = normalizeLaneUids(folder.laneUids);
+    const { employees, profiles } = await readLaneRoster(t, laneUids);
 
     const configRef = adminDb.collection('config').doc('distribution');
     const configSnap = await t.get(configRef);
-    const cycleState: CycleState = configSnap.exists ? (configSnap.data()?.cycleState ?? {}) : {};
+    const config = configSnap.exists ? (configSnap.data() ?? {}) : {};
+    /*
+      **A restricted folder keeps its own counter.** Sharing the lane-wide one
+      would make a lead handed to the ESMR desk count as that person's turn in
+      the general rotation, so the next ordinary lead would skip them — a
+      dedicated folder would quietly cost somebody their place in the queue.
+    */
+    const folderId = String(record.folderId ?? '');
+    const cycleState: CycleState =
+      (laneUids.length > 0
+        ? (config.folderCycleState as Record<string, CycleState> | undefined)?.[folderId]
+        : (config.cycleState as CycleState | undefined)) ?? {};
 
     const { uid: assignee, newState } = getNextAssigneeAndState(employees, cycleState);
     if (!assignee) {
+      // Nobody to offer it to — including a restricted folder whose chosen
+      // people are all disabled or gone. The record stays in the Data Bank to
+      // be handed out by hand, which is a state somebody can act on.
       return { outcome: 'NO_LANE' as const, leadId: null, assignedTo: null, assigneeName: null };
     }
 
     const profile = profiles.get(assignee) ?? {};
     const assigneeName = laneDisplayName(profile);
-    const recipientIsManager = profile.role === 'subadmin';
+    // A restricted folder can name the admin, who is neither an employee nor a
+    // manager — the notification has to reach the panel they actually read.
+    const targetRole =
+      profile.role === 'admin' ? 'admin' : profile.role === 'subadmin' ? 'subadmin' : 'employee';
 
     /* ---- writes ---- */
     const now = FieldValue.serverTimestamp();
@@ -169,6 +187,14 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
       acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
       attemptedAssignees: [assignee],
       autoRotationCycleSnapshot: newState,
+      /*
+        **Stamped on the lead, so the cascade stays inside the group.** Pass on
+        and the expiry sweep read this rather than the folder: a lead already in
+        flight must not change hands because somebody edited the folder a minute
+        later, and it saves a folder read on every cascade. Absent on a lead
+        from an unrestricted folder, which means the whole lane.
+      */
+      ...(laneUids.length > 0 ? { laneUids } : {}),
 
       followUpCount: 0,
       callCount: 0,
@@ -215,7 +241,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
     t.set(adminDb.collection('notifications').doc(), {
       type: 'NEW_LEAD_ASSIGNED',
       leadId: leadRef.id,
-      targetRole: recipientIsManager ? 'subadmin' : 'employee',
+      targetRole,
       targetUid: assignee,
       payload: {
         message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
@@ -224,7 +250,14 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
       readAt: null,
     });
 
-    t.set(configRef, { cycleState: newState, updatedAt: now }, { merge: true });
+    // Merged, so one folder's counter never disturbs another's or the lane's.
+    t.set(
+      configRef,
+      laneUids.length > 0
+        ? { folderCycleState: { [folderId]: newState }, updatedAt: now }
+        : { cycleState: newState, updatedAt: now },
+      { merge: true }
+    );
 
     return {
       outcome: 'OFFERED' as const,

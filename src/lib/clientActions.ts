@@ -33,6 +33,7 @@ import { createCampaign as _createCampaign, type CreateCampaignInput } from '@/a
 import {
   createDataBankFolder as _createDataBankFolder,
   updateDataBankFolder as _updateDataBankFolder,
+  setFolderLane as _setFolderLane,
   deleteDataBankFolder as _deleteDataBankFolder,
   countFolderRecords as _countFolderRecords,
   saveColumnMap as _saveColumnMap,
@@ -590,6 +591,19 @@ export async function updateDataBankFolder(
 ): Promise<ActionResult> {
   if (IS_DEMO) return demo.updateDataBankFolder(folderId, input);
   return _updateDataBankFolder(token, folderId, input);
+}
+
+/**
+ * Who this folder's leads are given to. An empty list means the whole rotation.
+ * See `setFolderLane`.
+ */
+export async function setFolderLane(
+  token: string,
+  folderId: string,
+  uids: string[]
+): Promise<ActionResult<{ names: string[] }>> {
+  if (IS_DEMO) return demo.setFolderLane(folderId, uids);
+  return _setFolderLane(token, folderId, uids);
 }
 
 export async function deleteDataBankFolder(

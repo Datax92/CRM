@@ -12,7 +12,7 @@
  */
 
 import Link from "next/link";
-import { ChevronRight, FolderOpen, Megaphone } from "lucide-react";
+import { ChevronRight, FolderOpen, Megaphone, Users } from "lucide-react";
 import { formatBusinessDate } from "@/lib/dates";
 
 export const META_BASIS_LABEL: Record<string, string> = {
@@ -36,6 +36,8 @@ export function MetaCampaignCard({
   figures,
   lastLeadAt,
   actionLabel,
+  routedTo,
+  onEditRouting,
 }: {
   name: string;
   basis: string;
@@ -43,6 +45,15 @@ export function MetaCampaignCard({
   figures: CampaignFigure[];
   lastLeadAt: Date | null;
   actionLabel: string;
+  /**
+   * Who this folder's leads go to — names, or `null` for the whole rotation.
+   *
+   * Passed in, and only by the managing screens: an employee's Meta Leads cards
+   * are the same component and have no business seeing how the lane is drawn.
+   */
+  routedTo?: string | null;
+  /** Opens the picker. Absent on every screen that may not change the routing. */
+  onEditRouting?: () => void;
 }) {
   return (
     <div className="group overflow-hidden rounded-2xl border border-[#dceae8] bg-white transition-colors hover:border-[#8cc3bf]">
@@ -75,9 +86,23 @@ export function MetaCampaignCard({
         <p className="mt-3.5 text-[12px] text-[#9aacaa]">
           {lastLeadAt ? `Last lead ${formatBusinessDate(lastLeadAt)}` : "No leads yet"}
         </p>
+
+        {/* Only where the routing can be changed. Saying "goes to everyone" on
+            a screen with no control to change it would read as a setting the
+            reader has lost. */}
+        {onEditRouting && (
+          <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-[#5b8b87]">
+            <Users size={12} className="shrink-0" />
+            <span className="truncate">
+              {routedTo ? `Goes to ${routedTo}` : "Goes to everyone in the rotation"}
+            </span>
+          </p>
+        )}
       </Link>
 
-      <div className="flex items-center gap-1 border-t border-[#f0f6f5] px-3 py-2">
+      {/* Wraps rather than squeezing: two actions plus a 390px phone is one
+          row too many, and a clipped label is worse than a second line. */}
+      <div className="flex flex-wrap items-center gap-1 border-t border-[#f0f6f5] px-3 py-2">
         <Link
           href={href}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-[#5b6d6b] transition-colors hover:bg-[#f2f8f7]"
@@ -85,6 +110,17 @@ export function MetaCampaignCard({
           <FolderOpen size={13} />
           <span>{actionLabel}</span>
         </Link>
+
+        {onEditRouting && (
+          <button
+            type="button"
+            onClick={onEditRouting}
+            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-[#5b6d6b] transition-colors hover:bg-[#f2f8f7]"
+          >
+            <Users size={13} />
+            <span>Who gets these leads</span>
+          </button>
+        )}
       </div>
     </div>
   );

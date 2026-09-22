@@ -61,7 +61,13 @@ import {
 import type { ReportOption } from '@/app/actions/reports';
 import { entryAllowance } from '@/lib/followUpKind';
 import { ADMIN_ASSIGN_WINDOW_MS, ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES, MIN_PRIORITY, MAX_PRIORITY } from '@/lib/constants/distribution';
-import { resolveCascadeAssignee, readLaneEmployee, MAX_LEADS_PER_TURN } from '@/lib/distribution';
+import {
+  resolveCascadeAssignee,
+  readLaneEmployee,
+  readChosenLaneMember,
+  normalizeLaneUids,
+  MAX_LEADS_PER_TURN,
+} from '@/lib/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
 import { normalizeDealCategory } from '@/lib/constants/deals';
@@ -1085,18 +1091,31 @@ export const demo = {
     if (lead.status !== 'ASSIGNED') return fail('This lead is not waiting to be accepted.');
 
     const attempted = [...(lead.attemptedAssignees ?? []), actorUid];
-    // Employees and the managers put in the rotation, read as the server reads them.
+    /*
+      Employees and the managers put in the rotation, read as the server reads
+      them — unless the lead came from a folder routed to particular people, in
+      which case the pass stays inside that group. Same rule as `readLaneRoster`.
+    */
+    const restrictedTo = normalizeLaneUids(lead.laneUids);
     const roster = state.employees
-      .filter((employee) => employee.status === 'ACTIVE')
-      .map((employee) =>
-        readLaneEmployee(employee.uid, {
+      .filter(
+        (employee) =>
+          employee.status === 'ACTIVE' &&
+          (restrictedTo.length === 0 || restrictedTo.includes(employee.uid))
+      )
+      .map((employee) => {
+        const profile = {
           role: employee.accessRole === 'subadmin' ? 'subadmin' : 'employee',
           priority: employee.priority,
           status: employee.status,
           autoAssign: employee.autoAssign,
           leadsPerTurn: employee.leadsPerTurn,
-        })
-      );
+        };
+        // Being chosen for the folder overrides being out of the general lane.
+        return restrictedTo.length > 0
+          ? readChosenLaneMember(employee.uid, profile)
+          : readLaneEmployee(employee.uid, profile);
+      });
 
     const { uid: nextUid, forced } = resolveCascadeAssignee(roster, attempted);
 
@@ -3699,6 +3718,40 @@ export const demo = {
     state.dataBankFolders = [...state.dataBankFolders].sort((a, b) => a.name.localeCompare(b.name));
     emit();
     return ok(undefined);
+  },
+
+  /**
+   * Mirrors `setFolderLane`: the people this folder's leads are given to.
+   *
+   * Demo parity matters here for the same reason it did for Pass on — the
+   * control is in front of the admin on the Meta Ads screen, and one that
+   * silently forgets its selection is a feature the product appears to have and
+   * does not. An empty list clears the restriction.
+   */
+  setFolderLane: (folderId: string, uids: string[]): Result<{ names: string[] }> => {
+    const folder = state.dataBankFolders.find((f) => f.id === folderId);
+    if (!folder) return fail('That folder no longer exists.');
+
+    const chosen = normalizeLaneUids(uids);
+    const names: string[] = [];
+    for (const uid of chosen) {
+      const person = state.employees.find((employee) => employee.uid === uid);
+      // The admin is not on the employee roster and is a legitimate choice.
+      if (!person) {
+        names.push('Admin');
+        continue;
+      }
+      if (person.status === 'DISABLED') {
+        return fail(
+          `${person.name} is paused, so leads sent there would sit unworked. Reactivate the account or choose somebody else.`
+        );
+      }
+      names.push(person.name);
+    }
+
+    folder.laneUids = chosen.length > 0 ? chosen : undefined;
+    emit();
+    return ok({ names });
   },
 
   deleteDataBankFolder: (folderId: string) => {

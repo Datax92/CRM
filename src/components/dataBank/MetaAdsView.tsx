@@ -28,9 +28,11 @@ import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useDataBankFolders, type DataBankFolder } from "@/hooks/useDataBank";
+import { useEmployees, useSubAdmins } from "@/hooks/useEmployees";
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
 import { timestampMillis } from "@/lib/dates";
 import { MetaCampaignCard } from "./MetaCampaignCard";
+import { FolderLaneModal, buildLanePeople, describeLane } from "./FolderLaneModal";
 
 /**
  * A folder this screen owns — one Meta source.
@@ -65,7 +67,7 @@ const ALERT_CSS = `
 `;
 
 export function MetaAdsView() {
-  const { role } = useAuth();
+  const { role, user, getIdToken } = useAuth();
   useProtectedRoute(["admin", "subadmin"]);
   const isAdmin = role === "admin";
   const isManager = role === "admin" || role === "subadmin";
@@ -75,6 +77,28 @@ export function MetaAdsView() {
 
   const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: undefined });
   const [search, setSearch] = useState("");
+
+  /*
+    **Who each folder's leads go to.** The routing is stored as uids, and a card
+    has to print names — so the same roster the picker offers is read here and
+    passed through `describeLane`, one lookup shared by both. The folder the
+    picker is open on is held by id, not by value: the folder list is live, and
+    holding the object would leave the modal showing a stale name after a
+    rename.
+  */
+  const { employees } = useEmployees(isManager, { role, uid: user?.uid });
+  const { subAdmins } = useSubAdmins(isAdmin);
+  const people = useMemo(
+    () =>
+      buildLanePeople({
+        self: { uid: user?.uid ?? "", name: user?.email || "You", role },
+        managers: subAdmins,
+        employees,
+      }),
+    [user?.uid, user?.email, role, subAdmins, employees]
+  );
+  const [routingFolderId, setRoutingFolderId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   /*
     **Leads that arrived and could not be filed.** Almost always a Facebook form
@@ -166,6 +190,12 @@ export function MetaAdsView() {
       .sort((a, b) => b.at - a.at);
   }, [metaFolders, clock, acknowledged]);
 
+  // Resolved from the live list, so a rename or a saved selection is reflected
+  // in the open modal rather than in a copy taken when it opened.
+  const routingFolder = routingFolderId
+    ? (metaFolders.find((folder) => folder.id === routingFolderId) ?? null)
+    : null;
+
   if (loading) return <FullPageSpinner />;
 
   return (
@@ -201,6 +231,11 @@ export function MetaAdsView() {
       </header>
 
       {error && <div className="mb-4"><Banner tone="error" text={error} /></div>}
+      {notice && (
+        <div className="mb-4">
+          <Banner tone="success" text={notice} onDismiss={() => setNotice(null)} />
+        </div>
+      )}
 
       {justIn.length > 0 && (
         <div className="mb-4 space-y-2">
@@ -303,9 +338,23 @@ export function MetaAdsView() {
               ]}
               lastLeadAt={folder.lastLeadAt?.toDate?.() ?? null}
               actionLabel="Open and distribute"
+              routedTo={describeLane(folder.laneUids, people)}
+              onEditRouting={() => setRoutingFolderId(folder.id)}
             />
           ))}
         </div>
+      )}
+
+      {routingFolder && (
+        <FolderLaneModal
+          folder={routingFolder}
+          getIdToken={getIdToken}
+          onClose={() => setRoutingFolderId(null)}
+          onSaved={(message) => {
+            setNotice(message);
+            setRoutingFolderId(null);
+          }}
+        />
       )}
     </div>
   );

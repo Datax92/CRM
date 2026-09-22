@@ -112,6 +112,68 @@ export function laneDisplayName(data: Record<string, unknown> | undefined): stri
   return pick(data?.name) ?? pick(data?.email);
 }
 
+/* -------------------------------------------------------------------------- */
+/* A folder's own lane                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The most people one folder may be routed to.
+ *
+ * A routing list is a decision — "these leads are ESMR's team's" — not a copy
+ * of the roster. The cap is what stops a stray payload turning into a getAll of
+ * every user document inside a transaction that must stay small.
+ */
+export const MAX_LANE_UIDS = 25;
+
+/**
+ * The uids a folder's leads are restricted to, cleaned up.
+ *
+ * Empty means **no restriction** — the whole rotation, which is what every
+ * folder that predates this setting means and why absence can never quietly
+ * take a folder out of distribution. Junk, duplicates and blanks are dropped
+ * rather than refused: the stored list is read on the path that distributes a
+ * paid lead, and refusing there would leave the lead sitting in the Data Bank.
+ */
+export function normalizeLaneUids(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const uids: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string') continue;
+    const uid = raw.trim();
+    if (!uid || seen.has(uid)) continue;
+    seen.add(uid);
+    uids.push(uid);
+    if (uids.length >= MAX_LANE_UIDS) break;
+  }
+  return uids;
+}
+
+/**
+ * One person an admin has chosen for a folder, as that folder's lane sees them.
+ *
+ * **The choice overrides `autoAssign`, and never overrides `status`.** Being
+ * out of the general rotation is a statement about incoming volume — "do not
+ * hand me the ordinary flow" — and an admin naming somebody on this one folder
+ * is a later, narrower instruction that should win; otherwise the picker would
+ * offer people it then silently skips. A **disabled** account is different: the
+ * person has no access at all, so a lead left with them is a lead nobody can
+ * work. Managers and the admin are read by the same function as an employee —
+ * inside a folder's own lane everybody takes their turn on the same terms,
+ * which is the owner's instruction (2026-09-22).
+ */
+export function readChosenLaneMember(uid: string, data: Record<string, unknown>): Employee {
+  return {
+    uid,
+    // No priority — the admin, usually — sorts to the back of the group rather
+    // than the front. An absent field must never read as "first in line".
+    priority: typeof data.priority === 'number' ? data.priority : 99,
+    status: data.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+    autoAssign: undefined,
+    leadsPerTurn: normalizeLeadsPerTurn(data.leadsPerTurn),
+  };
+}
+
 export interface CycleState {
   [uid: string]: number; // leads assigned to this employee in the current cycle
 }

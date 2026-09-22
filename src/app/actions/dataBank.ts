@@ -42,6 +42,7 @@ import {
   type FieldRoles,
 } from "@/lib/dataBank";
 import { applyFieldMapping, normalizeMapsTo } from "@/lib/fieldMapping";
+import { normalizeLaneUids } from "@/lib/distribution";
 import { folderScopeIds } from "@/lib/dataBankAssigned";
 import { campaignForFolderLead } from "@/lib/metaIntake";
 
@@ -218,6 +219,94 @@ export async function updateDataBankFolder(
         : { subAdminUid: subAdminUid ?? FieldValue.delete() }),
       updatedAt: FieldValue.serverTimestamp(),
     });
+  });
+}
+
+/**
+ * Who this folder's leads go to — the whole rotation, or the people named here.
+ *
+ * **The case this exists for.** A client runs ads for one project and wants
+ * every lead from it on one desk: the folder the intake created for that
+ * campaign is restricted to those people, and the lane stops being company-wide
+ * *for that folder only*. Everything else about the offer is unchanged — the
+ * priority order, each person's own `leadsPerTurn`, the five-minute window, the
+ * popup, Pass on, and the floor where the last one left is force-accepted. It
+ * is the same lane, drawn round fewer people.
+ *
+ * **An empty list is the absence of a rule, not a rule that nobody gets them.**
+ * Clearing the selection returns the folder to the general rotation, which is
+ * what every folder that predates this means — so this can never be the reason
+ * a paid lead reaches nobody.
+ *
+ * **Automatic distribution only** (the owner's call). Promoting or reassigning
+ * a row by hand is a decision, and the restriction does not override it.
+ *
+ * The chosen people are validated here rather than at distribution time: a
+ * disabled account or a uid that is not a person at all must be refused at the
+ * moment somebody is choosing, not silently skipped an hour later when a lead
+ * lands. A manager may only route their own folder to their own team or to
+ * themselves — routing somebody else's staff is the admin's call.
+ */
+export async function setFolderLane(
+  token: string,
+  folderId: string,
+  uids: string[]
+): Promise<ActionResult<{ names: string[] }>> {
+  return runAction("setFolderLane", async () => {
+    const auth = await requireManager(token);
+
+    const ref = adminDb.collection(FOLDERS).doc(folderId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new UserFacingError("That folder no longer exists.");
+    assertFolderAccess(auth, {
+      subAdminUid: (snap.data()?.subAdminUid as string | undefined) ?? null,
+    });
+
+    const chosen = normalizeLaneUids(uids);
+    if (chosen.length === 0) {
+      await ref.update({
+        laneUids: FieldValue.delete(),
+        laneUidsUpdatedAt: FieldValue.serverTimestamp(),
+        laneUidsByUid: auth.uid,
+      });
+      return { names: [] };
+    }
+
+    const people = await adminDb.getAll(
+      ...chosen.map((uid) => adminDb.collection("users").doc(uid))
+    );
+
+    const names: string[] = [];
+    for (const person of people) {
+      if (!person.exists) {
+        throw new UserFacingError("One of the people you chose no longer has an account.");
+      }
+      const data = person.data()!;
+      const role = data.role;
+      if (role !== "employee" && role !== "subadmin" && role !== "admin") {
+        throw new UserFacingError("Leads can only be routed to a person in the team.");
+      }
+      if (data.status === "DISABLED") {
+        throw new UserFacingError(
+          `${data.name ?? "That account"} is paused, so leads sent there would sit unworked. Reactivate the account or choose somebody else.`
+        );
+      }
+      // A manager routes their own folder to their own people. The admin's
+      // reach is everybody, which is why this is asked of the caller's role and
+      // not of the folder.
+      if (auth.role !== "admin" && person.id !== auth.uid && data.subAdminUid !== auth.uid) {
+        throw new UserFacingError("You can only send these leads to your own team.");
+      }
+      names.push(String(data.name ?? data.email ?? person.id));
+    }
+
+    await ref.update({
+      laneUids: chosen,
+      laneUidsUpdatedAt: FieldValue.serverTimestamp(),
+      laneUidsByUid: auth.uid,
+    });
+
+    return { names };
   });
 }
 

@@ -70,6 +70,16 @@ export interface DataBankFolder {
     formId?: string | null;
     adId?: string | null;
   } | null;
+  /**
+   * Who this folder's leads are given to, if an admin has narrowed it.
+   *
+   * Absent or empty means the whole rotation — every folder that predates the
+   * setting. When set, automatic distribution rotates within these people only,
+   * on the same terms as the lane: priority order, each person's own turn size,
+   * the five-minute window, Pass on and the force-accept floor. Manual
+   * promotion and reassignment are unaffected. See `setFolderLane`.
+   */
+  laneUids?: string[] | null;
   /** When this folder last received a lead. */
   lastLeadAt?: FirestoreTimestamp | null;
   createdAt?: FirestoreTimestamp;
@@ -432,6 +442,11 @@ function folderFrom(id: string, raw: DocumentData): DataBankFolder {
       raw.metaSource && typeof raw.metaSource === "object"
         ? (raw.metaSource as DataBankFolder["metaSource"])
         : null,
+    // Read here, not merely typed above — see the note over `metaSource`. A
+    // routing list that never made it out of the snapshot would show every
+    // folder as "everyone in the rotation" while the server routed it to three
+    // people, which is the confident-default shape this project keeps shipping.
+    laneUids: Array.isArray(raw.laneUids) ? (raw.laneUids as string[]) : null,
     lastLeadAt: raw.lastLeadAt ?? null,
     createdAt: raw.createdAt,
   };

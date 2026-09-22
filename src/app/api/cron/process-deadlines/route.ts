@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase/server';
-import { FieldValue, Transaction, QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { FieldValue, Transaction } from 'firebase-admin/firestore';
 import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
-  readLaneEmployee,
   laneDisplayName,
-  type Employee,
+  normalizeLaneUids,
   type CycleState,
 } from '@/lib/distribution';
+import { readLaneRoster } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
 import { karachiDayKey } from '@/lib/dates';
@@ -135,7 +135,10 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     if (!leadSnap.exists || leadSnap.data()?.status !== 'NEW') return false;
 
     const lead = leadSnap.data()!;
-    const { employees, recipients, cycleState, configRef } = await readDistributionState(t);
+    // The lead's own routing, if it came from a folder restricted to certain
+    // people — see `lib/server/laneRoster`.
+    const { employees, recipients, cycleState, configRef, cyclePatch } =
+      await readDistributionState(t, lead);
 
     const { uid: assignee, newState } = getNextAssigneeAndState(employees, cycleState);
 
@@ -188,7 +191,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
       message: `You have been assigned a new lead: ${lead.name ?? leadId}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
     });
 
-    t.set(configRef, { cycleState: newState, updatedAt: now }, { merge: true });
+    t.set(configRef, cyclePatch(newState, now), { merge: true });
     return true;
   });
 }
@@ -212,7 +215,9 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
         ? [previousAssignee]
         : [];
 
-    const { employees, recipients } = await readDistributionState(t);
+    // Restricted to the folder's own people when the lead carries them, so a
+    // lead the admin routed to one desk never cascades off it.
+    const { employees, recipients } = await readDistributionState(t, lead);
     // The cascade runs on priority alone and never touches the rotation
     // counters: a missed lead must not consume the turn of whoever cleans it up.
     const { uid: nextAssignee, forced } = resolveCascadeAssignee(employees, attempted);
@@ -416,7 +421,8 @@ async function processStaleLeads(): Promise<number> {
 interface LeadRecipient {
   assigneeName: string | null;
   subAdminUid: string | null;
-  targetRole: 'employee' | 'subadmin';
+  /** `admin` is reachable only through a folder restricted to them by name. */
+  targetRole: 'employee' | 'subadmin' | 'admin';
 }
 
 /** The fields a lead takes on when it lands with `uid`. */
@@ -425,39 +431,60 @@ function stampFor(recipients: Map<string, LeadRecipient>, uid: string) {
   return { assigneeName: recipient?.assigneeName ?? null, subAdminUid: recipient?.subAdminUid ?? null };
 }
 
-async function readDistributionState(t: Transaction) {
-  // Managers too: an admin can put a manager in the rotation from the lane
-  // screen, and `readLaneEmployee` keeps every other manager out.
-  const usersSnap = await t.get(adminDb.collection('users').where('role', 'in', ['employee', 'subadmin']));
+/**
+ * The roster this lead moves within, and where its rotation counter lives.
+ *
+ * **`readLaneRoster`, not an inline copy.** This mapping used to be written out
+ * here and never read `autoAssign`, so every employee arrived as "in the lane"
+ * and the rule taking somebody out of distribution silently stopped existing.
+ * It now lives in one module beside the rule it feeds, where the tests can
+ * reach it — and it is the same module that applies a folder's restriction, so
+ * a lead cannot cascade out of the group it was routed to.
+ */
+async function readDistributionState(
+  t: Transaction,
+  lead?: { laneUids?: unknown; dataBankFolderId?: unknown }
+) {
+  const restrictedTo = normalizeLaneUids(lead?.laneUids);
+  const { employees, profiles } = await readLaneRoster(t, restrictedTo);
 
-  /*
-    **`readLaneEmployee`, not an inline copy.** This mapping used to be written
-    out here and never read `autoAssign`, so every employee arrived as "in the
-    lane" and the rule taking somebody out of distribution silently stopped
-    existing. It now lives in `lib/distribution` beside the rule it feeds,
-    where the tests can reach it.
-  */
-  const employees: Employee[] = [];
   // What a lead carries when it lands with somebody, from the same snapshot,
   // so moving a lead never costs another read.
   const recipients = new Map<string, LeadRecipient>();
-  usersSnap.forEach((doc: QueryDocumentSnapshot) => {
-    const data = doc.data();
-    employees.push(readLaneEmployee(doc.id, data));
-    recipients.set(doc.id, {
+  profiles.forEach((data, uid) => {
+    recipients.set(uid, {
       assigneeName: laneDisplayName(data),
       // The lead files under the recipient's team — the manager's own uid when
       // the recipient is a manager, or a Sales manager could not read it.
-      subAdminUid: owningSubAdminFor({ uid: doc.id, role: data.role, subAdminUid: data.subAdminUid ?? null }),
-      targetRole: data.role === 'subadmin' ? 'subadmin' : 'employee',
+      subAdminUid: owningSubAdminFor({ uid, role: data.role, subAdminUid: data.subAdminUid ?? null }),
+      targetRole: data.role === 'subadmin' ? 'subadmin' : data.role === 'admin' ? 'admin' : 'employee',
     });
   });
 
   const configRef = adminDb.collection('config').doc('distribution');
   const configSnap = await t.get(configRef);
-  const cycleState: CycleState = configSnap.exists ? (configSnap.data()?.cycleState ?? {}) : {};
+  const config = configSnap.exists ? (configSnap.data() ?? {}) : {};
 
-  return { employees, recipients, cycleState, configRef };
+  /*
+    **A restricted folder counts its turns separately.** Spending somebody's
+    lane turn on a lead that only ever went to their dedicated group would skip
+    them for the next ordinary lead — a dedicated folder would quietly cost them
+    their place in the general queue.
+  */
+  const folderKey = String(lead?.dataBankFolderId ?? '');
+  const restricted = restrictedTo.length > 0 && Boolean(folderKey);
+  const cycleState: CycleState =
+    (restricted
+      ? (config.folderCycleState as Record<string, CycleState> | undefined)?.[folderKey]
+      : (config.cycleState as CycleState | undefined)) ?? {};
+
+  /** The merge payload that records the advanced rotation, on the right counter. */
+  const cyclePatch = (newState: CycleState, at: FieldValue) =>
+    restricted
+      ? { folderCycleState: { [folderKey]: newState }, updatedAt: at }
+      : { cycleState: newState, updatedAt: at };
+
+  return { employees, recipients, cycleState, configRef, cyclePatch };
 }
 
 /** FR-18 says the monitoring period is configurable; this is where it comes from. */

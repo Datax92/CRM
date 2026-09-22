@@ -96,6 +96,12 @@ export interface Lead {
   coldReviewedAt?: FirestoreTimestamp;
   coldReviewedByUid?: string | null;
   attemptedAssignees?: string[];
+  /**
+   * The people this lead may go to, stamped at creation from a folder routed to
+   * particular employees. Absent means the whole rotation. Server-side routing:
+   * read by the cascade, the expiry sweep and Pass on — see `setFolderLane`.
+   */
+  laneUids?: string[] | null;
   createdAt?: FirestoreTimestamp;
   assignedAt?: FirestoreTimestamp;
   acceptedAt?: FirestoreTimestamp;

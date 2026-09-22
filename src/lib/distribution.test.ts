@@ -7,6 +7,9 @@ import {
   laneDisplayName,
   laneMembership,
   normalizeLeadsPerTurn,
+  normalizeLaneUids,
+  readChosenLaneMember,
+  MAX_LANE_UIDS,
   MAX_LEADS_PER_TURN,
   LEADS_PER_TURN,
   type Employee,
@@ -385,4 +388,83 @@ test('a manager put in the lane takes their turn in priority order like anybody 
   const { order } = drain([managerOut, manager, employee], 3);
   assert.deepEqual(order, ['aroosa', 'dilawar', 'aroosa']);
   assert.equal(resolveCascadeAssignee([managerOut, manager, employee], ['aroosa']).uid, 'dilawar');
+});
+
+/* -------------------------------------------------------------------------- */
+/* A folder's own lane (normalizeLaneUids / readChosenLaneMember)             */
+/* -------------------------------------------------------------------------- */
+
+test('an absent or junk routing list means the whole rotation, never an empty one', () => {
+  // The failure this guards is the one that matters: a folder that quietly
+  // routes a paid lead to nobody.
+  assert.deepEqual(normalizeLaneUids(undefined), []);
+  assert.deepEqual(normalizeLaneUids(null), []);
+  assert.deepEqual(normalizeLaneUids('aroosa'), []);
+  assert.deepEqual(normalizeLaneUids([]), []);
+  assert.deepEqual(normalizeLaneUids([1, {}, null, '']), []);
+});
+
+test('a routing list is deduped, trimmed and capped', () => {
+  assert.deepEqual(normalizeLaneUids([' aroosa ', 'aroosa', 'rafia']), ['aroosa', 'rafia']);
+  const many = Array.from({ length: MAX_LANE_UIDS + 5 }, (_, i) => `uid${i}`);
+  assert.equal(normalizeLaneUids(many).length, MAX_LANE_UIDS);
+});
+
+test('being chosen for a folder overrides being out of the general rotation', () => {
+  // `autoAssign: false` says "not the ordinary flow"; naming somebody on one
+  // folder is the later, narrower instruction and wins — otherwise the picker
+  // would offer people it then silently skips.
+  const chosen = readChosenLaneMember('aroosa', { autoAssign: false, priority: 3, status: 'ACTIVE' });
+  assert.equal(chosen.autoAssign, undefined);
+  assert.equal(getNextAssigneeAndState([chosen], {}).uid, 'aroosa');
+
+  // A manager, who is out of the lane by default, is in when chosen.
+  const manager = readChosenLaneMember('dilawar', { role: 'subadmin', priority: 2, status: 'ACTIVE' });
+  assert.equal(getNextAssigneeAndState([manager], {}).uid, 'dilawar');
+});
+
+test('a paused account is still skipped, however it was chosen', () => {
+  const paused = readChosenLaneMember('hussain', { status: 'DISABLED', priority: 1 });
+  const active = readChosenLaneMember('rafia', { status: 'ACTIVE', priority: 2 });
+  assert.equal(getNextAssigneeAndState([paused, active], {}).uid, 'rafia');
+  assert.deepEqual(resolveCascadeAssignee([paused, active], []), { uid: 'rafia', forced: true });
+});
+
+test('the admin, with no priority, sorts to the back of a folder group rather than the front', () => {
+  const admin = readChosenLaneMember('admin', { role: 'admin', status: 'ACTIVE' });
+  const employee = readChosenLaneMember('aroosa', { priority: 1, status: 'ACTIVE' });
+  assert.equal(admin.priority, 99);
+  const { order } = drain([admin, employee], 2);
+  assert.deepEqual(order, ['aroosa', 'admin']);
+});
+
+test('a restricted folder rotates within its group and its floor stays inside it', () => {
+  // The owner's case: this campaign's leads are for these three people, one
+  // each in turn, and the last one left takes it rather than it escaping.
+  const group = [
+    readChosenLaneMember('aroosa', { priority: 1, status: 'ACTIVE' }),
+    readChosenLaneMember('rafia', { priority: 2, status: 'ACTIVE' }),
+    readChosenLaneMember('dilawar', { role: 'subadmin', priority: 3, status: 'ACTIVE' }),
+  ];
+  const { order } = drain(group, 4);
+  assert.deepEqual(order, ['aroosa', 'rafia', 'dilawar', 'aroosa']);
+
+  // Everybody has been offered it and let it lapse: the lowest priority in the
+  // group is forced, and nobody outside the group is ever consulted.
+  assert.deepEqual(resolveCascadeAssignee(group, ['aroosa']), { uid: 'rafia', forced: false });
+  assert.deepEqual(resolveCascadeAssignee(group, ['aroosa', 'rafia']), { uid: 'dilawar', forced: true });
+  assert.deepEqual(
+    resolveCascadeAssignee(group, ['aroosa', 'rafia', 'dilawar']),
+    { uid: 'dilawar', forced: true }
+  );
+});
+
+test('a folder group of one force-accepts rather than leaving the lead unassigned', () => {
+  const solo = [readChosenLaneMember('aroosa', { priority: 4, status: 'ACTIVE' })];
+  assert.deepEqual(resolveCascadeAssignee(solo, ['aroosa']), { uid: 'aroosa', forced: true });
+});
+
+test('a folder whose chosen people have all gone yields nobody, so the record waits', () => {
+  // The record stays in the Data Bank rather than becoming a lead with no owner.
+  assert.equal(getNextAssigneeAndState([], {}).uid, null);
 });

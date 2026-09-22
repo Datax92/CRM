@@ -40,10 +40,22 @@ export function useIncomingLead(
   enabled = true
 ): { offer: LeadOffer | null; loading: boolean } {
   const demoState = useDemoState();
-  // Employees, and managers an admin has put in the rotation. An admin hands
-  // leads out and is never offered one.
+  /*
+    Employees, managers an admin has put in the rotation — **and the admin
+    themselves, when a folder is routed to them by name** (`setFolderLane`).
+
+    The admin used to be excluded on the reasoning that they hand leads out
+    rather than receive them, which was true while every automatic lead came
+    from the company-wide lane. A folder that names the admin breaks it: the
+    lead lands `ASSIGNED` with a five-minute clock and, with no popup, nobody
+    on that screen would ever know — it would lapse, raise a red flag against
+    the admin and cascade to somebody else. An admin still never sees an offer
+    they did not ask for, because a hand-assigned lead is written `ACCEPTED`
+    outright and only a lane offer is ever `ASSIGNED`.
+  */
   const isManager = role === 'subadmin';
-  const active = enabled && (role === 'employee' || isManager) && Boolean(uid);
+  const active =
+    enabled && (role === 'employee' || isManager || role === 'admin') && Boolean(uid);
 
   const build = useCallback(
     () =>

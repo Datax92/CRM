@@ -18,7 +18,8 @@ import {
   ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
-import { resolveCascadeAssignee, readLaneEmployee, laneDisplayName, type Employee } from "@/lib/distribution";
+import { resolveCascadeAssignee, laneDisplayName } from "@/lib/distribution";
+import { readLaneRoster } from "@/lib/server/laneRoster";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
 import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
@@ -234,9 +235,13 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         reads after writing, and the roster read below is what decides where
         the lead goes.
       */
-      // Managers an admin has put in the rotation are in the lane too.
-      const rosterSnap = await t.get(adminDb.collection("users").where("role", "in", ["employee", "subadmin"]));
-      const employees: Employee[] = rosterSnap.docs.map((doc) => readLaneEmployee(doc.id, doc.data()));
+      /*
+        Managers an admin has put in the rotation are in the lane too — and if
+        this lead came from a folder routed to particular people, the pass stays
+        inside that group. `readLaneRoster` answers both, so Pass on, the expiry
+        sweep and the Meta intake cannot disagree about who is eligible.
+      */
+      const { employees, profiles } = await readLaneRoster(t, lead.laneUids);
 
       const attempted: string[] = Array.isArray(lead.attemptedAssignees)
         ? lead.attemptedAssignees
@@ -281,7 +286,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         return { passedTo: null, forced: false };
       }
 
-      const nextProfile = rosterSnap.docs.find((doc) => doc.id === nextAssignee)?.data();
+      const nextProfile = profiles.get(nextAssignee);
       t.update(leadRef, {
         assignedUserId: nextAssignee,
         assigneeName: laneDisplayName(nextProfile),
@@ -302,7 +307,12 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
       t.create(adminDb.collection("notifications").doc(), {
         type: "NEW_LEAD_ASSIGNED",
         leadId,
-        targetRole: nextProfile?.role === "subadmin" ? "subadmin" : "employee",
+        targetRole:
+          nextProfile?.role === "admin"
+            ? "admin"
+            : nextProfile?.role === "subadmin"
+              ? "subadmin"
+              : "employee",
         targetUid: nextAssignee,
         payload: {
           message: forced
