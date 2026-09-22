@@ -126,8 +126,8 @@ import {
   addLeadsToClientFolder as _addLeadsToClientFolder,
   removeLeadFromClientFolder as _removeLeadFromClientFolder,
 } from '@/app/actions/clients';
-import { getMonitoringConfig as _getMonitoringConfig, setNoFollowUpHours as _setNoFollowUpHours, type MonitoringConfig } from '@/app/actions/config';
-import { DEFAULT_NO_FOLLOWUP_HOURS } from '@/lib/constants/monitoring';
+import { getMonitoringConfig as _getMonitoringConfig, setNoContactDays as _setNoContactDays, type MonitoringConfig } from '@/app/actions/config';
+import { DEFAULT_NO_CONTACT_DAYS } from '@/lib/constants/monitoring';
 import {
   createAccount as _createAccount,
   updateAccount as _updateAccount,
@@ -557,13 +557,13 @@ export async function markAllNotificationsRead(token: string): Promise<ActionRes
 }
 
 export async function getMonitoringConfig(token: string): Promise<ActionResult<MonitoringConfig>> {
-  if (IS_DEMO) return { ok: true, data: { noFollowUpHours: DEFAULT_NO_FOLLOWUP_HOURS } };
+  if (IS_DEMO) return { ok: true, data: { noContactDays: DEFAULT_NO_CONTACT_DAYS } };
   return _getMonitoringConfig(token);
 }
 
-export async function setNoFollowUpHours(token: string, hours: number): Promise<ActionResult> {
+export async function setNoContactDays(token: string, days: number): Promise<ActionResult> {
   if (IS_DEMO) return { ok: false, error: 'Settings are read-only in demo mode.' };
-  return _setNoFollowUpHours(token, hours);
+  return _setNoContactDays(token, days);
 }
 
 export async function createCampaign(

@@ -75,7 +75,11 @@ export function MetaAdsView() {
   const basePath = isAdmin ? "/admin" : "/subadmin";
   const isMobile = useIsMobile();
 
-  const { folders, loading, error } = useDataBankFolders(isManager, { role, uid: undefined });
+  // **`metaFolders`, not `folders`** — the hook hands the campaigns back
+  // separately now, because the Data Bank grid no longer lists them: they are
+  // this screen's, and one predicate decides that rather than two screens
+  // matching on the same fields and eventually disagreeing.
+  const { metaFolders: sourceFolders, loading, error } = useDataBankFolders(isManager, { role, uid: undefined });
   const [search, setSearch] = useState("");
 
   /*
@@ -146,17 +150,10 @@ export function MetaAdsView() {
   /** Ads the admin has waved away this session. */
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
 
-  /*
-    A Meta folder is one the intake created — it carries `metaSource`. Matching
-    on the id prefix as well, so a folder created before that field existed is
-    still recognised rather than disappearing from this screen.
-  */
+  /* Busiest first: the campaign with rows waiting is the one to act on. */
   const metaFolders = useMemo(
-    () =>
-      (folders as MetaFolder[])
-        .filter((folder) => folder.metaSource || folder.id.startsWith("meta_"))
-        .sort((a, b) => (b.recordCount ?? 0) - (a.recordCount ?? 0)),
-    [folders]
+    () => [...(sourceFolders as MetaFolder[])].sort((a, b) => (b.recordCount ?? 0) - (a.recordCount ?? 0)),
+    [sourceFolders]
   );
 
   const filtered = useMemo(() => {

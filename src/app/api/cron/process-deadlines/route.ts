@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase/server';
-import { FieldValue, Transaction } from 'firebase-admin/firestore';
+import { FieldValue, Transaction, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import {
   getNextAssigneeAndState,
   resolveCascadeAssignee,
@@ -12,13 +12,13 @@ import { readLaneRoster } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
 import { karachiDayKey } from '@/lib/dates';
+import { DEFAULT_NO_CONTACT_DAYS } from '@/lib/constants/monitoring';
 import { owningSubAdminFor } from '@/lib/constants/hierarchy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const DEFAULT_NO_FOLLOWUP_HOURS = 24; // FR-18 default, overridable via config
 const BATCH_LIMIT = 200;
 
 /**
@@ -45,14 +45,14 @@ export async function GET(request: Request) {
     const [autoAssigned, reassigned, reminded] = await Promise.all([
       processExpiredNewLeads(),
       processExpiredAssignments(),
-      processStaleLeads(),
+      remindUncontactedLeads(),
     ]);
 
     return NextResponse.json({
       ok: true,
       autoAssigned,
       reassigned,
-      noFollowUpAlerts: reminded,
+      noContactReminders: reminded,
       durationMs: Date.now() - startedAt,
     });
   } catch (error) {
@@ -342,80 +342,171 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
 }
 
 /**
- * FR-18 / BR-21: a lead sitting with an employee and no logged activity.
+ * FR-18 / BR-21 - **the reminder for a lead that has gone quiet.**
  *
- * `lastActivityAt` is stamped at assignment and refreshed by every follow-up,
- * so this is one indexed query rather than a subcollection read per lead.
- * The notification id is derived from the lead, so a lead that stays stale
- * across many sweeps updates a single alert instead of flooding the panel.
+ * *"If on a lead that we contacted and forgot to contact again after 7 days of
+ * no contact, a reminder should be sent to the person it is assigned to"* -
+ * the owner, 2026-09-22. That is a change of recipient as much as of interval:
+ * this swept at 24 hours and told the **admin**, which answered a management
+ * question ("which leads are going quiet") rather than prompting the one person
+ * who can pick up the phone. It now writes to the lead's owner, and the admin's
+ * panel carries the five alerts they asked for instead.
+ *
+ * **Only leads somebody has actually spoken to.** A lead with no entries has
+ * never been contacted, so it is not a forgotten one - it is waiting on its
+ * first call, which the accept window and the lane already chase.
  *
  * **It runs at most once a Karachi day, whatever the schedule.** The deadline
- * half of this route has to run every few minutes — the accept window is five —
- * but this half asks a question about the last 24 hours and rewrites one
- * document per stale lead every time it runs. Measured on the live project on
- * 2026-09-12: **165 stale leads**, so on a five-minute schedule it would spend
- * ~47,500 writes a day against a 20,000 cap and take the whole app down. That
- * is the exact failure mode the owner has already been bitten by, and a
- * deterministic id does nothing to prevent it: merging still costs a write.
+ * half of this route has to run every few minutes - the accept window is five -
+ * but this half asks a question about the last week and writes a document per
+ * quiet lead every time it runs. Measured on the live project on 2026-09-12:
+ * **165 stale leads**, so on a five-minute schedule it would spend ~47,500
+ * writes a day against a 20,000 cap and take the whole app down. The gate is a
+ * marker document rather than an hour comparison, so a missed run, a retry or a
+ * schedule change cannot make it run twice or skip a day.
  *
- * The gate is a marker document rather than an hour comparison, so a missed run,
- * a retry or a schedule change cannot make it run twice or skip a day.
+ * **And a lead is reminded about at most once per window.**
+ * `noContactRemindedAt` is what stops a seven-day silence producing seven
+ * identical alerts; the notification id is derived from the lead as well, so
+ * even a double run updates one row rather than stacking.
  */
-async function processStaleLeads(): Promise<number> {
+async function remindUncontactedLeads(): Promise<number> {
   const today = karachiDayKey();
   const marker = adminDb.collection('config').doc('cronState');
   const swept = (await marker.get()).data()?.staleSweepDayKey;
   if (swept === today) return 0;
 
-  const hours = await readMonitoringWindowHours();
-  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+  const days = await readNoContactDays();
+  const windowMs = days * 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - windowMs);
 
-  const stale = await adminDb
-    .collection('leads')
-    .where('status', 'in', ACTIVE_STATUSES)
-    .where('lastActivityAt', '<', cutoff)
-    .limit(BATCH_LIMIT)
-    .get();
+  const quiet = await readQuietLeads(cutoff);
+  const markSwept = () =>
+    marker.set({ staleSweepDayKey: today, staleSweptAt: FieldValue.serverTimestamp() }, { merge: true });
 
-  if (stale.empty) return 0;
+  if (quiet.length === 0) {
+    await markSwept();
+    return 0;
+  }
+
+  // One roster read for the whole sweep: the alert has to carry the right
+  // `targetRole`, and a manager working their own lead is a real case.
+  const roster = await adminDb.collection('users').get();
+  const roles = new Map(roster.docs.map((doc) => [doc.id, doc.data()?.role as string | undefined]));
 
   const batch = adminDb.batch();
   let count = 0;
 
-  for (const doc of stale.docs) {
+  for (const doc of quiet) {
     const lead = doc.data();
-    const ref = adminDb.collection('notifications').doc(`nofollowup_${doc.id}`);
+    const owner: string | null = lead.assignedUserId ?? null;
+
+    // Nobody to remind. An unassigned lead is the lane's problem rather than a
+    // forgotten call, and inventing a recipient for it would be worse.
+    if (!owner) continue;
+    // Never contacted - see above.
+    if ((Number(lead.followUpCount) || 0) < 1) continue;
+
+    // Re-checked here whichever query found it, so the fallback below can be a
+    // wider net without ever reminding somebody about a lead they rang today.
+    const lastContact = millisOf(lead.lastFollowUpAt);
+    if (lastContact === null || lastContact > cutoff.getTime()) continue;
+
+    // Already reminded inside this window.
+    const remindedAt = millisOf(lead.noContactRemindedAt);
+    if (remindedAt !== null && Date.now() - remindedAt < windowMs) continue;
+
+    const silentDays = Math.floor((Date.now() - lastContact) / (24 * 60 * 60 * 1000));
 
     batch.set(
-      ref,
+      adminDb.collection('notifications').doc(`nocontact_${doc.id}`),
       {
-        type: 'NO_FOLLOWUP',
+        type: 'LEAD_NO_CONTACT',
         leadId: doc.id,
-        targetRole: 'admin',
+        targetRole: roles.get(owner) === 'subadmin' ? 'subadmin' : 'employee',
+        targetUid: owner,
         payload: {
-          message: `No follow-up logged on "${lead.name ?? doc.id}" for over ${hours} hours.`,
-          // **How long it has actually been stale**, from the lead itself.
-          // `createdAt` below is rewritten by each sweep, so it says when the
-          // alert was last refreshed rather than when the lead went quiet.
-          staleSince: lead.lastActivityAt ?? null,
-          assignedUserId: lead.assignedUserId ?? null,
-          campaignName: lead.campaignName ?? null,
+          message: `${lead.name ?? doc.id} has not been contacted for ${silentDays} days. Give them a call, or log where it stands.`,
+          silentDays,
+          // When it actually went quiet, from the lead itself. `createdAt`
+          // below is rewritten by each reminder, so it says when the alert was
+          // last raised rather than when the client was last spoken to.
+          lastContactAt: lead.lastFollowUpAt ?? null,
           leadStatus: lead.status,
-          assignedAt: lead.assignedAt ?? null,
+          leadName: lead.name ?? null,
         },
         createdAt: FieldValue.serverTimestamp(),
+        // Reset, so a reminder that has come round again is unread again.
         readAt: null,
       },
       { merge: true }
     );
+    batch.update(doc.ref, { noContactRemindedAt: FieldValue.serverTimestamp() });
     count++;
   }
 
   await batch.commit();
   // Marked after the commit: a failed sweep must be retried, not recorded as
-  // done. Re-running the same day is idempotent anyway — the ids are derived.
-  await marker.set({ staleSweepDayKey: today, staleSweptAt: FieldValue.serverTimestamp() }, { merge: true });
+  // done. Re-running the same day is idempotent anyway - the ids are derived.
+  await markSwept();
   return count;
+}
+
+/**
+ * The leads that have gone quiet, by the best query this project can serve.
+ *
+ * **`lastFollowUpAt` is the right field and its index is not deployed yet**, so
+ * the ideal query is tried and a missing index degrades to the indexed
+ * `lastActivityAt` one rather than taking the sweep - and with it the whole
+ * cron route - down. The fallback is a **superset in time, never a wrong
+ * answer**: `lastActivityAt` is refreshed by everything `lastFollowUpAt` is and
+ * more, so it can miss a lead whose status was changed recently without anybody
+ * ringing the client, and the caller re-checks every row against
+ * `lastFollowUpAt` either way.
+ *
+ * `firestore.indexes.json` carries the `status, lastFollowUpAt` index - run
+ * `npm run deploy:indexes` and this stops falling back.
+ */
+async function readQuietLeads(cutoff: Date): Promise<QueryDocumentSnapshot[]> {
+  try {
+    const snap = await adminDb
+      .collection('leads')
+      .where('status', 'in', ACTIVE_STATUSES)
+      .where('lastFollowUpAt', '<', cutoff)
+      .limit(BATCH_LIMIT)
+      .get();
+    return snap.docs;
+  } catch (error) {
+    const code = (error as { code?: unknown })?.code;
+    const message = String((error as { message?: unknown })?.message ?? '');
+    const missingIndex =
+      code === 9 || code === 'failed-precondition' || /requires an index/i.test(message);
+    if (!missingIndex) throw error;
+
+    console.warn(
+      '[cron] No `status, lastFollowUpAt` index - falling back to lastActivityAt. Run npm run deploy:indexes.'
+    );
+    const snap = await adminDb
+      .collection('leads')
+      .where('status', 'in', ACTIVE_STATUSES)
+      .where('lastActivityAt', '<', cutoff)
+      .limit(BATCH_LIMIT)
+      .get();
+    return snap.docs;
+  }
+}
+
+/** A Firestore timestamp, a serialised one, or nothing - as milliseconds. */
+function millisOf(value: unknown): number | null {
+  const stamp = value as { toMillis?: () => number; toDate?: () => Date; seconds?: number } | null;
+  if (!stamp) return null;
+  if (typeof stamp.toMillis === 'function') return stamp.toMillis();
+  if (typeof stamp.toDate === 'function') {
+    const date = stamp.toDate();
+    return Number.isNaN(date.getTime()) ? null : date.getTime();
+  }
+  if (typeof stamp.seconds === 'number') return stamp.seconds * 1000;
+  return null;
 }
 
 interface LeadRecipient {
@@ -487,16 +578,17 @@ async function readDistributionState(
   return { employees, recipients, cycleState, configRef, cyclePatch };
 }
 
-/** FR-18 says the monitoring period is configurable; this is where it comes from. */
-async function readMonitoringWindowHours(): Promise<number> {
+/** FR-18 says the window is configurable; Settings writes it, this reads it. */
+async function readNoContactDays(): Promise<number> {
   try {
     const snap = await adminDb.collection('config').doc('monitoring').get();
-    const value = Number(snap.data()?.noFollowUpHours);
+    const value = Number(snap.data()?.noContactDays);
     if (Number.isFinite(value) && value > 0) return value;
   } catch {
-    // Fall through to the default.
+    // Fall through to the default: a config read that fails must neither
+    // silence the reminder nor flood anybody.
   }
-  return DEFAULT_NO_FOLLOWUP_HOURS;
+  return DEFAULT_NO_CONTACT_DAYS;
 }
 
 function createNotification(

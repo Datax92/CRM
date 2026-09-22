@@ -47,7 +47,13 @@ export default function DataBankPage() {
   // on the surface actually rendering so the two do not both subscribe.
   const isMobile = useIsMobile();
 
-  const { folders, mirrors, loading, error } = useDataBankFolders(isManager && !isMobile, {
+  /*
+    **The Meta campaign folders are not in this grid.** They are listed on Meta
+    Ads, which is where their figures and their routing control live; the count
+    is read here only to point at them, so an admin whose FASAL TOWN 2 folder
+    "disappeared" is told where it went instead of going looking.
+  */
+  const { folders, metaFolders, mirrors, loading, error } = useDataBankFolders(isManager && !isMobile, {
     role,
     uid: user?.uid,
   });
@@ -135,6 +141,18 @@ export default function DataBankPage() {
             </p>
           </div>
         </div>
+
+        {metaFolders.length > 0 && (
+          <Link
+            href={`${isAdmin ? "/admin" : "/subadmin"}/meta-ads`}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#dceae8] bg-white px-4 py-2 text-[12.5px] text-[#5b6d6b] transition-colors hover:border-[#8cc3bf]"
+          >
+            <span>
+              {metaFolders.length} Facebook campaign{metaFolders.length === 1 ? "" : "s"} in Meta Ads
+            </span>
+            <ChevronRight size={14} className="text-[#a9cfcc]" />
+          </Link>
+        )}
 
         {isManager && (
           <button

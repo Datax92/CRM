@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
-import { getMonitoringConfig, setNoFollowUpHours, getAttendanceConfig } from "@/lib/clientActions";
+import { getMonitoringConfig, setNoContactDays, getAttendanceConfig } from "@/lib/clientActions";
+import { DEFAULT_NO_CONTACT_DAYS, MAX_NO_CONTACT_DAYS } from "@/lib/constants/monitoring";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import Link from "next/link";
 import { Settings as SettingsIcon, Clock, Wifi } from "lucide-react";
@@ -14,8 +15,10 @@ export default function SettingsPage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [hours, setHours] = useState<number>(24);
-  const [savedHours, setSavedHours] = useState<number>(24);
+  // Days without contact before the lead's owner is reminded. See
+  // `lib/constants/monitoring` — it was hours, and it flagged to the admin.
+  const [days, setDays] = useState<number>(DEFAULT_NO_CONTACT_DAYS);
+  const [savedDays, setSavedDays] = useState<number>(DEFAULT_NO_CONTACT_DAYS);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
 
   // Shown for reference only. The address is recorded on every punch and never
@@ -30,8 +33,8 @@ export default function SettingsPage() {
         const res = await getMonitoringConfig(token);
         if (cancelled) return;
         if (res.ok) {
-          setHours(res.data.noFollowUpHours);
-          setSavedHours(res.data.noFollowUpHours);
+          setDays(res.data.noContactDays);
+          setSavedDays(res.data.noContactDays);
         } else {
           setBanner({ tone: "error", text: res.error });
         }
@@ -51,16 +54,16 @@ export default function SettingsPage() {
 
   if (authLoading || loading) return <FullPageSpinner />;
 
-  const dirty = hours !== savedHours;
+  const dirty = days !== savedDays;
 
   const handleSave = async () => {
     setSaving(true);
     setBanner(null);
     try {
       const token = await getIdToken();
-      const res = await setNoFollowUpHours(token, hours);
+      const res = await setNoContactDays(token, days);
       if (res.ok) {
-        setSavedHours(hours);
+        setSavedDays(days);
         setBanner({ tone: "success", text: "Saved. Takes effect on the next cron run." });
       } else {
         setBanner({ tone: "error", text: res.error });
@@ -88,10 +91,13 @@ export default function SettingsPage() {
         <div className="flex items-start gap-3">
           <Clock size={18} className="text-slate-400 mt-0.5" />
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">No-follow-up monitoring window (FR-18)</h2>
+            <h2 className="text-sm font-semibold text-slate-900">Reminder for leads going quiet (FR-18)</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              How many hours a lead can go without a follow-up before the cron job flags it and
-              notifies Admin. Default is 24 hours.
+              How many days a lead that has already been contacted can go without another contact
+              before a reminder is sent <strong className="font-semibold">to the person it is
+              assigned to</strong>. Default is {DEFAULT_NO_CONTACT_DAYS} days. A lead nobody has
+              contacted yet is not reminded about — it is waiting on the first call, not a
+              forgotten one.
             </p>
           </div>
         </div>
@@ -100,14 +106,14 @@ export default function SettingsPage() {
           <input
             type="number"
             min={1}
-            max={720}
+            max={MAX_NO_CONTACT_DAYS}
             step={1}
-            value={hours}
-            onChange={(e) => setHours(Number(e.target.value))}
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
             disabled={saving}
             className="w-28 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 focus:ring-2 focus:ring-primary outline-none disabled:opacity-50"
           />
-          <span className="text-sm text-slate-500">hours</span>
+          <span className="text-sm text-slate-500">days</span>
         </div>
 
         <div className="flex items-center gap-3 pt-1">
@@ -119,7 +125,7 @@ export default function SettingsPage() {
             {saving ? "Saving..." : "Save"}
           </button>
           {dirty && !saving && (
-            <span className="text-xs text-slate-500">Unsaved change — currently live value is {savedHours}h.</span>
+            <span className="text-xs text-slate-500">Unsaved change — the live value is {savedDays} days.</span>
           )}
         </div>
       </div>

@@ -94,6 +94,7 @@ export function MobileDataBankFolders() {
 
   // A sub admin sees the folders assigned to them; the query and the Security
   // Rule agree on that, so nothing is filtered afterwards.
+  // Meta campaign folders are listed on Meta Ads, not here — see `useDataBank`.
   const { folders, mirrors, loading, error } = useDataBankFolders(isManager, {
     role,
     uid: user?.uid,

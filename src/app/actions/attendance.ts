@@ -446,6 +446,9 @@ export async function punchAttendance(
         alreadyDone,
         late: openingLate,
         raisedLate: firstIsNew && verdict.late,
+        // The punch that opened the day, on time. A late one is announced by
+        // `notifyLate` instead, so a single arrival is never two alerts.
+        openedOnTime: firstIsNew && !verdict.late,
       };
     });
 
@@ -454,6 +457,8 @@ export async function punchAttendance(
     // late: a second tap must not send a second alert.
     if (saved.raisedLate) {
       await notifyLate(auth, dayKey, verdict.lateByMinutes, verdict.lateAfter, policy);
+    } else if (saved.openedOnTime) {
+      await notifyCheckIn(auth, dayKey, saved.firstAt, saved.network);
     }
 
     return {
@@ -572,6 +577,57 @@ async function recordRefusedCheckIn(
   }
 
   await batch.commit();
+}
+
+/**
+ * Tells the admin that somebody has started their day.
+ *
+ * **The admin only, and only the punch that opened the day** (owner,
+ * 2026-09-22). It is one of the five alerts their panel now carries, and the
+ * question behind it is "who is in" — so a second tap at 4pm, which keeps the
+ * earlier time, must not send a second alert, and a *late* arrival is announced
+ * by `notifyLate` instead. One arrival, one alert, whichever it was.
+ *
+ * Not sent to the managers: they already receive the late and absent alerts,
+ * which are the two that need a decision. A manager's bell filling with seven
+ * on-time check-ins every morning is how the useful two get missed.
+ *
+ * One write, outside the punch transaction — a failure here must never cost
+ * somebody their check-in.
+ */
+async function notifyCheckIn(
+  auth: DecodedAuth,
+  dayKey: string,
+  at: Date,
+  network: AttendanceNetwork
+): Promise<void> {
+  const profile = await adminDb.collection("users").doc(auth.uid).get();
+  const name = (profile.data()?.name as string) ?? auth.email ?? "An employee";
+  const clock = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Karachi",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(at);
+
+  await adminDb.collection("notifications").add({
+    type: "ATTENDANCE_CHECK_IN",
+    leadId: null,
+    attendanceId: attendanceDocId(auth.uid, dayKey),
+    targetRole: "admin",
+    targetUid: null,
+    payload: {
+      message: `${name} checked in at ${clock}.`,
+      uid: auth.uid,
+      dayKey,
+      at: clock,
+      // Office / remote / unverified, as the server judged it. The admin's one
+      // reason to look twice at an otherwise unremarkable arrival.
+      network,
+    },
+    createdAt: FieldValue.serverTimestamp(),
+    readAt: null,
+  });
 }
 
 /**

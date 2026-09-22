@@ -35,7 +35,7 @@ import {
 import { db } from "@/lib/firebase/client";
 import { describeFirestoreError, type FirestoreTimestamp } from "./useLeads";
 import { IS_DEMO, useDemoState } from "@/lib/demo/store";
-import { phoneKey, type DataBankField, type DataBankStatus, type FieldRoles, type ColumnMap } from "@/lib/dataBank";
+import { isMetaFolder, phoneKey, type DataBankField, type DataBankStatus, type FieldRoles, type ColumnMap } from "@/lib/dataBank";
 
 export interface DataBankFolder {
   id: string;
@@ -159,10 +159,16 @@ export function useDataBankFolders(
   }, [ready, teamOf]);
 
   if (IS_DEMO) {
-    const folders = teamOf
+    const visible = teamOf
       ? demoState.dataBankFolders.filter((folder) => folder.subAdminUid === teamOf)
       : demoState.dataBankFolders;
-    return { folders: enabled ? folders : [], mirrors: [], loading: false, error: null };
+    return {
+      folders: enabled ? visible.filter((folder) => !isMetaFolder(folder)) : [],
+      metaFolders: enabled ? visible.filter((folder) => isMetaFolder(folder)) : [],
+      mirrors: [],
+      loading: false,
+      error: null,
+    };
   }
 
   const all = ready ? (state?.folders ?? []) : [];
@@ -181,10 +187,25 @@ export function useDataBankFolders(
     `subAdminUid`, and the mirror is genuinely theirs.
   */
   const mirrors = teamOf ? [] : all.filter((folder) => Boolean(folder.sourceFolderId));
-  const folders = teamOf ? all : all.filter((folder) => !folder.sourceFolderId);
+  const own = teamOf ? all : all.filter((folder) => !folder.sourceFolderId);
+
+  /*
+    **The campaigns are handed back separately, and are not in `folders`.**
+
+    One folder appears here per Meta campaign the moment its first lead lands,
+    and they are listed — with their own figures and their own routing control
+    — on Meta Ads. Leaving them in the Data Bank grid as well put rows nobody
+    files by hand beside the sources people do build, and a reader had no way
+    to tell which screen owned which. Nothing about the folders changed; only
+    the list they appear in. `MetaAdsView` reads `metaFolders`, so the split is
+    made once rather than by each screen guessing at the same predicate.
+  */
+  const metaFolders = own.filter((folder) => isMetaFolder(folder));
+  const folders = own.filter((folder) => !isMetaFolder(folder));
 
   return {
     folders,
+    metaFolders,
     mirrors,
     loading: ready && state === null,
     error: ready ? (state?.error ?? null) : null,

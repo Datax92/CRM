@@ -135,6 +135,18 @@ follow-ups, attendance, payroll and financial reporting.
 - **Mahziyar Group** (`lib/groupFinance`): **Group Expense** is one month — office (approved) + personal + lines added by hand, the month's income, and a **closing** that computes the figures *on the server* and freezes them on `groupMonths/{YYYY-MM}`. **Group Income** is the year as the owner's `MAHZIYAR PERFORMANCE` sheet. Both read `useGroupFigures`, so they cannot disagree. **Income is the income modules' ledger rows** (Marketing, Car Sale, StateLife, Investment with X) plus manual INCOME movements — never transfers, committee pots or reimbursements; **spending is read from the obligation records**, so an unpaid bill still counts as spent. Every income line and every cell can be edited over the automatic figure (stored beside it, reset brings it back); fields are added in `groupFinanceConfig/main` and removed ones are archived, not deleted. A closed month refuses its own edits **and** create/edit/decide/delete of office and personal expenses dated in it (`lib/groupMonthGuard`) — paying is still allowed. Reopen is the admin's. The screens are admin-only.
 - **Receivables & Payables** (`lib/receivableSheet`, `receivableEntries`): the owner's two sheets, in named groups. **Just a sheet — no account moves.** `AMOUNT PENDING` is derived; settling adds to `settled` and refuses more than is pending. The 10 rows on the old Receivable screen are brought in by a button on the new one (`importLegacyReceivables` — copies and marks `migratedTo`, never deletes).
 
+## Alerts
+
+- **The admin's panel is an allow-list of five** (owner, 2026-09-22): **check-in · late arrival · absent · deal closed (profit to split) · a lead promoted to P2 or P1**. `lib/adminAlerts` holds it and `useNotifications` applies it to `targetRole: 'admin'` rows only — an employee's and a manager's bells are untouched. An allow-list, not a block-list, because the opposite shape leaks by default, which is how the panel became a log of everything the system does.
+  - **Filtered after the read, not in the query.** A `type in [...]` clause needs a composite index this project cannot deploy from a dev machine, and a query with a missing index is **refused outright** — the bell would render empty, which is this codebase's most-repeated symptom. The admin's window is 60 rows instead of 20 to pay for what is discarded, and the badge reads the same filtered list as the panel, or a bell saying 12 over an empty list reads as broken.
+  - **The other alerts are still written and still reach the people they are about.** A red flag, a cold review, a leave request, an expense awaiting approval: all unchanged for managers and employees, and all still in `notifications` as the record they always were.
+  - **Two new types.** `ATTENDANCE_CHECK_IN` — the admin only, and only the punch that *opened* the day, so a second tap sends nothing and a late arrival is announced by `ATTENDANCE_LATE` instead: one arrival, one alert. `LEAD_PROMOTED` — written by `setLeadStatus` when a lead **climbs** into P2 or P1 (`stageRank` compares the bands), so Token Received → Deal Closed is silent and a lead falling back is not reported as progress.
+  - **"Mark all as read" is the admin's own now.** It used to clear every unread row in the collection, so one press emptied seven employees' bells — losing a red flag or a leave decision somebody was waiting on. Scoped to `targetRole: 'admin'`, which is also what clears the backlog of types the panel no longer shows.
+- **A lead that has gone quiet reminds the person holding it, not the admin** (owner, 2026-09-22). `remindUncontactedLeads` (the cron's third sweep): a lead **already contacted at least once** whose last entry is older than `config/monitoring.noContactDays` (default **7**, set in Settings, 1–90) writes `LEAD_NO_CONTACT` to its assignee — employee or manager, by their role. A lead nobody has contacted yet is never reminded about: it is waiting on its first call, which the accept window and the lane already chase.
+  - It replaced a 24-hour sweep that flagged the same leads to the **admin** — a management question that reached an inbox where nobody was going to ring anybody. `noFollowUpHours` is retired and deliberately **not** reinterpreted as days: reading 24 as 24 days would have silenced the reminder for the better part of a month.
+  - **Once a Karachi day** (the `staleSweepDayKey` marker, unchanged — 165 stale leads on a 5-minute schedule is ~47,500 writes against a 20,000 cap) **and once per window per lead** (`noContactRemindedAt`), with a derived notification id so even a double run updates one row.
+  - `status, lastFollowUpAt` is the right query and **its index is owed**; a missing one degrades to the indexed `lastActivityAt` query with a warning rather than taking the whole cron route down, and every row is re-checked against `lastFollowUpAt` either way.
+
 ## Attendance
 
 - **Presence is declared** (Check In / Check Out). **Location has two checks, and they are not equally strong.** Both are judged on the server; a client-side verdict would be bypassed by editing one response.
@@ -211,6 +223,7 @@ follow-ups, attendance, payroll and financial reporting.
 
 ## Data Bank & Clients
 
+- **A Meta campaign's folder is listed on Meta Ads and nowhere else** (owner, 2026-09-22). One folder appears per campaign the moment its first lead lands, so the Data Bank — a list of cold lists somebody *built* — was filling with folders nobody files by hand, sitting beside the sources they do. `useDataBankFolders` now hands them back as `metaFolders`, out of `folders`, by one predicate (`isMetaFolder`: the `metaSource` stamp, or a `meta_` id for folders older than it) so two screens cannot disagree about which owns what. Nothing about the folders, their records or their routes changed — `/admin/data-bank/{id}` still opens one, which is where Meta Ads links. The Data Bank header carries a count linking to Meta Ads, so a "disappeared" folder answers itself. **`listPersonalLeadFolders` is deliberately untouched**: an employee filing a personal lead into a campaign folder is the documented case above.
 - Cold lists live apart from the pipeline: `leads` is a small live working set, a source export is 20,000+ rows. Mixing them would slow every pipeline query.
 - **Both managing roles build folders.** Create, rename and delete are a manager's as well as the admin's — a walk-in sheet or an event sign-up is a manager's own cold list, and refusing it left their Data Bank holding nothing but the mirrors an admin had handed them. What stays the admin's is *whose* folder it is: `createDataBankFolder` takes the owner from the caller's **token** for a manager, and `updateDataBankFolder` ignores the owner field for them entirely, so a folder cannot be filed under — or taken from — somebody else. Adding and importing records were already `requireManager`; only folder creation was not, which is why a manager appeared to be able to do neither.
 - **A Client folder is not created by hand.** It holds leads that already exist, so an empty one is a container with no way to fill it; every route in is a promotion from the Data Bank. "New Folder" was removed from the Clients screen for that reason — it was the one of the two screens where the button led nowhere. Rename and delete stay.
@@ -430,6 +443,22 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-22 (fourth round) — the Data Bank stops listing campaigns, the admin's bell gets five types, and a quiet lead reminds its owner
+
+Three instructions in one round; the rules are under **Data Bank & Clients** and the new **Alerts** section.
+
+**1 · Meta folders left the Data Bank grid.** One predicate, in the hook, so the Data Bank and Meta Ads cannot disagree about which screen owns a folder. The folders themselves, their records and their URLs are unchanged, and the Data Bank header now links to the campaigns rather than leaving somebody hunting for a folder that "disappeared".
+
+**2 · The admin's panel became an allow-list of five.** Filtered after the read rather than in the query, because the index a `type in [...]` clause needs cannot be deployed from here and a missing index empties the bell. Two new alerts were needed to satisfy the list — an on-time check-in and a lead climbing into P2/P1 — and *climbing* is the word: `stageRank` makes Token Received → Deal Closed silent.
+
+**Found while doing it:** `markAllNotificationsRead` cleared **every** unread row in the collection, not the admin's. An admin pressing "Mark all as read" was silently emptying the bells of seven employees who had never opened them. Scoped, on both the real path and the demo one.
+
+**3 · The stale-lead sweep changed recipient, not just interval.** It ran at 24 hours and told the admin; it now runs at 7 days and tells whoever holds the lead, which is the only person who can act on it. Leads never contacted are excluded — a first call is the lane's job, not a forgotten one. `noFollowUpHours` is retired rather than reinterpreted, and Settings now reads days.
+
+- **Validation**: typecheck 0 errors, `test` **782/782** (775 → 782), `eslint src` 7 errors / 33 warnings (baseline), `next build` compiles and finishes TypeScript. **Not driven in a browser or against the live project** — no `.env.local` on this machine.
+- **Owed:** `npm run deploy:indexes` for the new `leads (status, lastFollowUpAt)` index. Until it lands the reminder runs its `lastActivityAt` fallback and says so in the log — it works, it just cannot see a lead whose status moved recently without anybody ringing the client.
+- **The admin should press "Mark all as read" once**, which is what clears the backlog of types the panel no longer shows. It clears up to 400 rows per press.
 
 ### 2026-09-22 (third round) — Meeting Aligned, from the entry form to the report
 

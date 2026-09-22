@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import {
   Bell, Check, AlertTriangle, Clock, UserX, PieChart, Wallet,
-  CalendarClock, CalendarCheck, CalendarX, Snowflake, PencilLine,
+  CalendarClock, CalendarCheck, CalendarX, Snowflake, PencilLine, TrendingUp,
 } from "lucide-react";
 import { useNotifications } from "@/hooks/useFinancials";
 import { markNotificationRead, markAllNotificationsRead } from "@/lib/clientActions";
@@ -13,8 +13,11 @@ import { formatBusinessDateTime } from "@/lib/dates";
 const ALERT_META: Record<string, { label: string; icon: typeof AlertTriangle; tone: string }> = {
   RED_FLAG: { label: "Not accepted in time", icon: AlertTriangle, tone: "text-red-700 bg-red-50 border-red-200" },
   NO_FOLLOWUP: { label: "No follow-up logged", icon: Clock, tone: "text-amber-700 bg-amber-50 border-amber-200" },
+  // The 7-day reminder, to whoever holds the lead. See `remindUncontactedLeads`.
+  LEAD_NO_CONTACT: { label: "Not contacted for a while", icon: Clock, tone: "text-amber-700 bg-amber-50 border-amber-200" },
   UNASSIGNED_LEAD: { label: "Needs manual assignment", icon: UserX, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   NEW_LEAD_ASSIGNED: { label: "New lead assigned", icon: Bell, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+  LEAD_PROMOTED: { label: "Lead moved up", icon: TrendingUp, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   DEAL_CLOSED_REVIEW: { label: "Deal closed — profit to distribute", icon: PieChart, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   PROFIT_SHARE_ASSIGNED: { label: "Your share of a closed deal", icon: Wallet, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   COLD_REVIEW_REQUIRED: { label: "Lead may be cold — needs a decision", icon: Snowflake, tone: "text-sky-700 bg-sky-50 border-sky-200" },
@@ -22,6 +25,7 @@ const ALERT_META: Record<string, { label: string; icon: typeof AlertTriangle; to
 
   // Attendance (§8). Late and absent are the admin's and HR's; the four
   // leave alerts and the adjustment go to the employee they are about.
+  ATTENDANCE_CHECK_IN: { label: "Checked in", icon: CalendarCheck, tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
   ATTENDANCE_LATE: { label: "Late arrival", icon: Clock, tone: "text-amber-800 bg-amber-50 border-amber-200" },
   ATTENDANCE_ABSENT: { label: "Marked absent", icon: CalendarX, tone: "text-red-700 bg-red-50 border-red-200" },
   ATTENDANCE_ADJUSTED: { label: "Your attendance was corrected", icon: PencilLine, tone: "text-sky-700 bg-sky-50 border-sky-200" },

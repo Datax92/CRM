@@ -3,7 +3,7 @@
 import { adminDb } from "@/lib/firebase/server";
 import { requireAdmin } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
-import { DEFAULT_NO_FOLLOWUP_HOURS } from "@/lib/constants/monitoring";
+import { DEFAULT_NO_CONTACT_DAYS, MAX_NO_CONTACT_DAYS } from "@/lib/constants/monitoring";
 
 export interface IntegrationsConfig {
   whatsapp: {
@@ -41,42 +41,47 @@ export async function getIntegrationsConfig(): Promise<IntegrationsConfig> {
 }
 
 export interface MonitoringConfig {
-  noFollowUpHours: number;
+  /** Days without contact before the lead's owner is reminded. */
+  noContactDays: number;
 }
 
 /**
- * Reads the FR-18 monitoring window (hours with no follow-up before a lead is
- * flagged). Read-only, admin-gated view of the same config/monitoring doc the
- * cron job consults — lets Settings show the live value without duplicating
- * the cron's fallback logic.
+ * Reads the reminder window. Read-only, admin-gated view of the same
+ * `config/monitoring` document the cron consults, so Settings shows the live
+ * value without restating the cron's fallback.
+ *
+ * The retired `noFollowUpHours` is deliberately **not** read: it was a
+ * different question in a different unit (hours before the *admin* was told),
+ * and quietly reinterpreting 24 as 24 days would have silenced the reminder
+ * for the better part of a month.
  */
 export async function getMonitoringConfig(token: string): Promise<ActionResult<MonitoringConfig>> {
   return runAction("getMonitoringConfig", async () => {
     await requireAdmin(token);
     const snap = await adminDb.collection("config").doc("monitoring").get();
-    const value = Number(snap.data()?.noFollowUpHours);
+    const value = Number(snap.data()?.noContactDays);
     return {
-      noFollowUpHours: Number.isFinite(value) && value > 0 ? value : DEFAULT_NO_FOLLOWUP_HOURS,
+      noContactDays: Number.isFinite(value) && value > 0 ? value : DEFAULT_NO_CONTACT_DAYS,
     };
   });
 }
 
 /**
- * Sets the FR-18 monitoring window. Admin-only (BR: only Admin configures
- * distribution/monitoring behavior). Writes via the Admin SDK, so this bypasses
+ * Sets the reminder window. Admin-only: only the admin configures distribution
+ * and monitoring behaviour. Written with the Admin SDK, which bypasses
  * firestore.rules the same way every other write action here does.
  */
-export async function setNoFollowUpHours(token: string, hours: number): Promise<ActionResult> {
-  return runAction("setNoFollowUpHours", async () => {
+export async function setNoContactDays(token: string, days: number): Promise<ActionResult> {
+  return runAction("setNoContactDays", async () => {
     await requireAdmin(token);
 
-    const value = Number(hours);
-    if (!Number.isFinite(value) || value <= 0 || value > 720) {
-      throw new UserFacingError("Enter a follow-up window between 1 and 720 hours.");
+    const value = Number(days);
+    if (!Number.isFinite(value) || value < 1 || value > MAX_NO_CONTACT_DAYS) {
+      throw new UserFacingError(`Enter a reminder window between 1 and ${MAX_NO_CONTACT_DAYS} days.`);
     }
 
     await adminDb.collection("config").doc("monitoring").set(
-      { noFollowUpHours: Math.round(value) },
+      { noContactDays: Math.round(value) },
       { merge: true }
     );
   });

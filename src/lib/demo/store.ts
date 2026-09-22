@@ -3363,11 +3363,19 @@ export const demo = {
     return ok(undefined);
   },
 
+  /**
+   * Mirrors `markAllNotificationsRead`: **the admin's own, not everybody's.**
+   *
+   * The real action used to clear every unread row in the collection, so an
+   * admin pressing this emptied seven employees' bells as well. Both sides are
+   * scoped now, and the demo has to agree or it demonstrates behaviour the
+   * product does not have.
+   */
   markAllNotificationsRead(): Result<{ cleared: number }> {
-    const cleared = state.notifications.length;
-    state.notifications = [];
+    const mine = state.notifications.filter((n) => n.targetRole === 'admin');
+    state.notifications = state.notifications.filter((n) => n.targetRole !== 'admin');
     emit();
-    return ok({ cleared });
+    return ok({ cleared: mine.length });
   },
   
   addReceivable(input: { title: string; size: string; amount: number; date?: string }, actorUid: string): Result<{ receivableId: string }> {

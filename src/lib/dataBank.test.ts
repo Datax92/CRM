@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isMetaFolder,
   parseCsv,
   toSheet,
   phoneKey,
@@ -419,4 +420,26 @@ test('skip note: silent when nothing was skipped, and says why when it can', () 
     ' 1 already assigned from this folder, so not assigned again; 2 skipped — already promoted or removed.'
   );
   assert.equal(promotionSkipNote(1, 5), ' 1 already assigned from this folder, so not assigned again.');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Meta folders live in Meta Ads, not the Data Bank                           */
+/* -------------------------------------------------------------------------- */
+
+test('a folder the Meta intake created is recognised by its stamp', () => {
+  assert.equal(isMetaFolder({ id: 'meta_campaign_120', metaSource: { basis: 'CAMPAIGN' } }), true);
+});
+
+test('and by its id, so folders older than the stamp are still recognised', () => {
+  // These predate `metaSource`. Reading them as hand-made would put them back
+  // in the Data Bank grid and leave them off Meta Ads — the one screen that
+  // now shows their figures and their routing.
+  assert.equal(isMetaFolder({ id: 'meta_form_164549619699490' }), true);
+});
+
+test('a folder somebody built is never mistaken for one', () => {
+  assert.equal(isMetaFolder({ id: 'aB3xY', name: 'FAISAL TOWN 2 LEADS' } as { id: string }), false);
+  assert.equal(isMetaFolder({ id: 'metabolic-list' }), false);
+  assert.equal(isMetaFolder({}), false);
+  assert.equal(isMetaFolder({ id: null, metaSource: null }), false);
 });

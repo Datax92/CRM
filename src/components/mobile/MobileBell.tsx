@@ -29,6 +29,14 @@ const TYPE_LABELS: Record<string, string> = {
   NEW_LEAD_ASSIGNED: "New lead assigned",
   DATA_BANK_ASSIGNED: "Data Bank records handed to you",
   COLD_REVIEW_REQUIRED: "Lead may be cold — needs a decision",
+  // The admin's five (`lib/adminAlerts`). The rest of this table is what an
+  // employee or a manager sees, and is unchanged.
+  ATTENDANCE_CHECK_IN: "Checked in",
+  ATTENDANCE_LATE: "Late arrival",
+  ATTENDANCE_ABSENT: "Marked absent",
+  DEAL_CLOSED_REVIEW: "Deal closed — profit to distribute",
+  LEAD_PROMOTED: "Lead moved up",
+  LEAD_NO_CONTACT: "Not contacted for a while",
 };
 
 export function MobileBell({

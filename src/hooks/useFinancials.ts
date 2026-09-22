@@ -11,10 +11,18 @@ import { useLive } from './useLive';
  * badge says "20+" beyond that. Measured on 2026-09-11 there were 291 unread,
  * so the old cap pulled a hundred documents on **every screen** and displayed
  * a handful of them.
+ *
+ * **The admin's window is wider, because theirs is filtered after the read.**
+ * Only five types reach their panel (`lib/adminAlerts`) and the rest are
+ * discarded here, so a window of twenty could be twenty rows of red flags and
+ * an empty bell. Sixty is still a third of what this used to pull, and it is
+ * read once per screen, not per row.
  */
 const NOTIFICATION_PAGE = 20;
+const ADMIN_NOTIFICATION_PAGE = 60;
 import { withinRange, type DateRange } from '@/lib/dates';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
+import { isAdminAlert } from '@/lib/adminAlerts';
 
 export interface ExpenseRecord {
   id: string;
@@ -410,7 +418,7 @@ export function useNotifications(uid: string | undefined, role: string | undefin
         scopeKey === 'admin' ? where('targetRole', '==', 'admin') : where('targetUid', '==', uid),
         where('readAt', '==', null),
         orderBy('createdAt', 'desc'),
-        limit(NOTIFICATION_PAGE)
+        limit(scopeKey === 'admin' ? ADMIN_NOTIFICATION_PAGE : NOTIFICATION_PAGE)
       ),
     // `uid` is encoded in `scopeKey`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -428,15 +436,33 @@ export function useNotifications(uid: string | undefined, role: string | undefin
       notifications:
         enabled && role
           ? demoState.notifications.filter((n) =>
-              isAdmin ? n.targetRole === 'admin' : n.targetUid === uid
+              isAdmin
+                ? n.targetRole === 'admin' && isAdminAlert(n.type)
+                : n.targetUid === uid
             )
           : [],
       loading: false,
     };
   }
 
+  /*
+    **The admin's five, filtered here rather than in the query.**
+
+    Here, because a `type in [...]` clause would need a composite index this
+    project cannot deploy from a developer machine, and a query whose index is
+    missing is **refused outright** — the bell would render empty, which is this
+    codebase's most-repeated symptom. Filtering the page we already read costs
+    nothing and cannot fail.
+
+    One place for both the list and the badge: filtering only the panel would
+    leave a bell reading 12 over an empty list, which reads as a broken screen.
+    The window is larger for an admin than it was, because the rows that do not
+    qualify are read and discarded — see `NOTIFICATION_PAGE`.
+  */
+  const rows = enabled ? (live.rows as unknown as AppNotification[]) : [];
+
   return {
-    notifications: enabled ? (live.rows as unknown as AppNotification[]) : [],
+    notifications: isAdmin ? rows.filter((row) => isAdminAlert(row.type)) : rows,
     loading: enabled && live.loading,
   };
 }

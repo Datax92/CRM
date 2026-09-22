@@ -9,7 +9,7 @@ import {
 } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { dealAmounts } from "@/lib/dealAmounts";
-import { isTerminal, isUserSettable, type LeadStatus } from "@/lib/leadStatus";
+import { isTerminal, isUserSettable, stageForStatus, LEAD_STATUS_LABELS, type LeadStatus } from "@/lib/leadStatus";
 import { PIPELINE_STAGES, type PipelineStage } from "@/lib/pipelineStage";
 import { toE164Digits } from "@/lib/phone";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
@@ -447,8 +447,55 @@ export async function setLeadStatus(
         at: FieldValue.serverTimestamp(),
         meta: { from: lead.status, to: status },
       });
+
+      /*
+        **A lead climbing into P2 or P1 tells the admin** (owner, 2026-09-22),
+        and is one of the five alerts their panel carries.
+
+        *Climbing*, not merely landing there: `stageRank` compares the band the
+        lead was in with the one it is moving to, so Token Received → Deal
+        Closed is silent (both P1) and a lead falling back from P1 to P2 does
+        not read as progress. A lead with no band at all — accepted, nothing
+        written on it — ranks below P3, so its first real status still counts as
+        the climb it is.
+
+        The stage is derived from the status by the same table every screen
+        reads (`stageForStatus`), so this can never announce a band the lead
+        does not display.
+      */
+      const before = stageRank(stageForStatus(lead.status));
+      const after = stageRank(stageForStatus(status));
+      if (after > before && (after === stageRank("P2") || after === stageRank("P1"))) {
+        const band = stageForStatus(status)!;
+        t.create(adminDb.collection("notifications").doc(), {
+          type: "LEAD_PROMOTED",
+          leadId,
+          targetRole: "admin",
+          targetUid: null,
+          payload: {
+            message: `${lead.name ?? leadId} moved up to ${band} — ${LEAD_STATUS_LABELS[status] ?? status}${
+              lead.assigneeName ? `, with ${lead.assigneeName}` : ""
+            }.`,
+            stage: band,
+            status,
+            leadName: lead.name ?? null,
+            assignedUserId: lead.assignedUserId ?? null,
+            assigneeName: lead.assigneeName ?? null,
+          },
+          createdAt: FieldValue.serverTimestamp(),
+          readAt: null,
+        });
+      }
     });
   });
+}
+
+/** Cold/none < P3 < P2 < P1 — so "moved up" is a comparison, not a list of pairs. */
+function stageRank(stage: string | null | undefined): number {
+  if (stage === "P1") return 3;
+  if (stage === "P2") return 2;
+  if (stage === "P3") return 1;
+  return 0;
 }
 
 /**

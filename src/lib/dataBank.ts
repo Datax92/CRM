@@ -194,6 +194,26 @@ export const RECORD_STATUS_LABELS: Record<DataBankStatus, string> = {
  */
 export const PROMOTED_FOLDER_ID = "__promoted";
 
+/**
+ * A folder the Meta intake created, rather than one a person made.
+ *
+ * **These live in the Meta Ads section and nowhere else** (owner, 2026-09-22).
+ * One folder appears per campaign the moment its first lead lands, so the Data
+ * Bank — which is a list of *cold lists somebody built* — was filling up with
+ * rows nobody files by hand, sitting beside the sources they do. The folders
+ * are unchanged and so are their records; only which screen lists them moved.
+ *
+ * `metaSource` is what the intake stamps. The id prefix is checked as well, so
+ * a folder created before that field existed is still recognised — the same
+ * pair `MetaAdsView` has always matched on, defined once now that two screens
+ * depend on the answer and must not disagree about it.
+ */
+export function isMetaFolder(folder: { id?: string | null; metaSource?: unknown }): boolean {
+  if (folder.metaSource) return true;
+  return typeof folder.id === "string" && folder.id.startsWith("meta_");
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Field keys                                                                  */
 /* -------------------------------------------------------------------------- */
