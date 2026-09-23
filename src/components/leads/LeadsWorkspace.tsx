@@ -43,6 +43,7 @@ import { STAGE_TONES, StageIcon, StagePill } from "./StageChrome";
 import { useOpenedLeads } from "@/hooks/useOpenedLeads";
 import { LEAD_STATUS_LABELS } from "@/lib/leadStatus";
 import { FullPageSpinner, Banner } from "@/components/admin/AdminShared";
+import { LeadWindowNotice } from "@/components/leads/LeadWindowNotice";
 import { AssignModal } from "@/components/admin/AssignModal";
 import { LeadDetailPane } from "./LeadDetailPane";
 import { PersonalLeadModal } from "./PersonalLeadModal";
@@ -145,7 +146,10 @@ export function LeadsWorkspace({
 
   // Admins read the whole pipeline; employees are scoped to their own uid, which
   // Security Rules enforce independently of anything this component does.
-  const { leads, loading: leadsLoading, error: leadsError } = useLeads(
+  // `truncated` says the window came back full, so there are probably older
+  // leads it does not hold — and when this workspace is `scope`d to a folder,
+  // those leads are members the folder will silently fail to show.
+  const { leads, loading: leadsLoading, error: leadsError, truncated } = useLeads(
     roleReady ? workspaceRole : null,
     user?.uid,
     companyWide
@@ -508,6 +512,9 @@ export function LeadsWorkspace({
         {/* Errors */}
         {(leadsError || employeesError || banner) && (
           <div className="shrink-0 px-4 pb-2">
+            {truncated && (
+              <LeadWindowNotice subject={scope ? "This folder's leads" : "This list"} />
+            )}
             {leadsError && <Banner tone="error" text={leadsError} />}
             {employeesError && <Banner tone="error" text={employeesError} />}
             {banner && <Banner tone={banner.tone} text={banner.text} onDismiss={() => setBanner(null)} />}

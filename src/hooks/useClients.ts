@@ -265,6 +265,13 @@ export function useOwnClientMembers(
  *
  * Reads the shared `useLeads` subscription the leads screens already hold, so
  * asking "is this lead still assigned to me" costs nothing extra.
+ *
+ * **That subscription is a capped window, and the cap is why this hook now
+ * reports `truncated`.** A member whose lead is older than the window simply
+ * is not in `assignee`, so it reads as "assigned to somebody else" and is left
+ * out of both the count and the folder. On 2026-09-23 that hid 20 of the
+ * admin's 34 Personal Clients. The window is bigger now; the flag is what
+ * makes the next time visible instead of silent.
  */
 export function useOwnClientLeads(
   enabled: boolean,
@@ -274,7 +281,7 @@ export function useOwnClientLeads(
 ) {
   const role = scope.role === 'admin' || scope.role === 'subadmin' ? scope.role : null;
   const uid = scope.uid ?? '';
-  const { leads, loading: leadsLoading } = useLeads(
+  const { leads, loading: leadsLoading, truncated } = useLeads(
     enabled ? role : null,
     uid || undefined,
     role === 'subadmin' && scope.managerKind === 'HR'
@@ -295,5 +302,11 @@ export function useOwnClientLeads(
     /** Lead id → current assignee, for `ownClientLeadIds`. */
     assignee,
     loading: enabled && (leadsLoading || membersLoading),
+    /**
+     * The leads window is full, so a member whose lead sits outside it is
+     * absent from `assignee` and is counted as somebody else's — which
+     * understates the folder without saying so. The screens say so.
+     */
+    truncated,
   };
 }

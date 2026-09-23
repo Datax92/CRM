@@ -29,6 +29,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useClientFolders, useOwnClientLeads, type ClientFolder } from "@/hooks/useClients";
+import { LeadWindowNotice } from "@/components/leads/LeadWindowNotice";
 import { createClientFolder, updateClientFolder, deleteClientFolder } from "@/lib/clientActions";
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { ImportFromDataBankModal } from "./ImportFromDataBankModal";
@@ -49,7 +50,9 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
   // What each folder actually shows: its leads still assigned to the viewer.
   // The stored `leadCount` also counts leads since reassigned to somebody else,
   // which is why a card read 43 over a folder showing 4.
-  const { counts } = useOwnClientLeads(isManager && !isMobile, {
+  // `truncated` is the cap saying it is holding leads back. Without it a folder
+  // whose leads are older than the window simply counts short, in silence.
+  const { counts, truncated } = useOwnClientLeads(isManager && !isMobile, {
     role,
     uid: user?.uid,
     managerKind,
@@ -132,6 +135,8 @@ export function ClientFoldersView({ basePath }: { basePath: string }) {
           */}
         </div>
       </header>
+
+      {truncated && <LeadWindowNotice subject="These folder counts" />}
 
       {(error || banner) && (
         <div className="mb-4 space-y-2.5">

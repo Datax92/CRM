@@ -353,6 +353,11 @@ FOR CHANGES IN THE CODE
 - **Probe the running process, not a copy of it.** A throwaway API route doing one Admin SDK read answers "what does the *server* see" in seconds; a standalone script answers a different question and sent this project down the wrong path once already.
 - A folder under `src/app` whose name starts with `_` is a **private folder** and is excluded from routing — a route placed in one 404s with no warning.
 
+**A capped read is a silent lie about the data**
+- `useLeads` holds the newest `LEAD_PAGE_SIZE` leads and nothing else, and **every screen that answers a question *about* a lead answers it from that array**. A lead outside the window does not read as old, it reads as **absent**. Client folders were where it bit: a folder shows the members still assigned to its owner, and `assignee` is built from those rows, so a member older than the window was dropped from the folder *and* from its count. Measured 2026-09-23 — `leads` crossed 500 on **2026-09-21** and stood at 536; the admin's "Personal Clients" folder held 34 rows, all 34 still assigned to the admin, **none deleted and none reassigned**, and the screen showed **14**.
+- **The cap was doing its job; what it never did was say so.** That is the whole bug class: a `limit()` that silently truncates is indistinguishable from data loss, and it is reported as data loss. `useLeads` now returns **`truncated`** (the window came back full), surfaced by `LeadWindowNotice` on the leads workspace, the Clients grid and the phone's Clients screen.
+- **2000 is headroom, not a fix** — about two months at ~25 leads a day. The permanent answer is paging, or a query scoped to the leads a screen actually needs. Raising the number again without keeping the notice just resets the clock on the same silent failure.
+
 **React, and the shapes that look right**
 - **Read `event.target.value` before the first `await`, never after.** A controlled `<select>` is re-rendered back to its prop the moment the handler yields, so `async () => act(await getIdToken(), …, e.target.value)` reads the **old** value — the server is asked for the status the lead already has, returns without writing, and the control snaps back. No error, nothing in the log, and it looks exactly like a dead dropdown. The phone's Pipeline Status had this; the desktop's did not, because it passed the value in synchronously.
 
@@ -447,6 +452,21 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-23 — 34 clients became 14, and nothing had been deleted
+
+*"in his personal clients folder there were 34 clients now only 14 its very important and confidential."*
+
+**Nothing was lost.** Measured against the live project before changing a line: the folder held **34 membership rows**, all **34** leads still assigned to the admin, **0 deleted**, **0 reassigned**. The screen could only see 14 of them.
+
+`useLeads` reads `orderBy('createdAt','desc').limit(500)`, and a Client folder's visible leads are its members intersected with *that array* (`useOwnClientLeads` → `countOwnClientLeads`). The `leads` collection crossed 500 on **2026-09-21** and stood at 536, so the 36 oldest leads stopped being loaded — and 20 of them were in that folder. A lead outside the window does not read as old; it reads as assigned to nobody, which is the one thing that removes it from a Client folder.
+
+- **Yesterday's pushes are not the cause.** The collection crossed the cap the day *before* them, and none of the five commits touches `useLeads`, `useClients` or `clientFolderScope`. It is volume, and the intake the lane and the WhatsApp bridge now feed is why volume moved.
+- **Fixed at the cap, not at the symptom**, because the same window truncates the admin's leads workspace, dashboard and every dossier count — Clients is only where it was visible. 500 → **2000**, which restores the folder to 34/34 and covers the whole 537-lead pipeline. `persistentLocalCache` is already wired, so the extra reads are paid once per cold session, not per navigation.
+- **The flag is the part that matters.** `useLeads` now returns `truncated`, and `LeadWindowNotice` says so on the leads workspace, the Clients grid and the phone. A number that is quietly short reads as deleted data; this is the difference between an incident and a sentence on a screen.
+- **Not a bug, and worth saying before it is reported as one:** the admin's *Faisal town 2 Gulf* shows **4** of 43 rows, ESMR shows 6 of 7. Those leads were reassigned to employees, and a Client folder deliberately shows only what is still the owner's (rule under **Data Bank & Clients**, measured the same way on 2026-09-13). The membership rows are kept, so reassigning one back restores it.
+- **Validation**: typecheck 0 errors, `test` **783/783**, `eslint src` 7 errors / 33 warnings (baseline), `next build` compiles every route. The before-and-after was **measured against the live project read-only** — 20 hidden before, **0 hidden after**, across all 12 Client folders. No writes; the probe script was deleted.
+- **Owed: this is local only.** The client keeps seeing 14 until the commit is pushed and Vercel redeploys.
 
 ### 2026-09-22 (fifth round) — the lane loops instead of forcing the last person to accept
 

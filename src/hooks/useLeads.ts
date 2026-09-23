@@ -200,8 +200,35 @@ export interface AuditEventRecord {
   meta?: Record<string, unknown>;
 }
 
-/** Guards against unbounded reads on the admin dashboard. */
-const LEAD_PAGE_SIZE = 500;
+/**
+ * Guards against unbounded reads on the admin dashboard.
+ *
+ * **It is a window over the newest leads, and when the pipeline outgrows it the
+ * oldest leads stop being loaded at all.** That is not only a shorter leads
+ * list: every screen that asks a question *about* a lead answers it from this
+ * array, so a lead outside the window reads as absent rather than as old. The
+ * Client section is where that bit first — a folder shows the members still
+ * assigned to its owner, and `assignee` is built from these rows, so a member
+ * whose lead had fallen out of the window was silently dropped from the folder
+ * and from its count.
+ *
+ * Measured 2026-09-23 on the live project: `leads` crossed 500 on 2026-09-21
+ * and stood at 536, and the admin's "Personal Clients" folder — 34 membership
+ * rows, all 34 still assigned to the admin, none deleted, none reassigned —
+ * displayed **14**. The other 20 were simply older than the 500th newest lead.
+ * Nothing was lost; the screen could not see them.
+ *
+ * 2000 is headroom, not a solution: at the current intake (~25 leads a day)
+ * this is about two months. What makes the next time survivable is
+ * `truncated` below — the cap now says when it is holding leads back instead
+ * of quietly answering as though the missing ones do not exist. The permanent
+ * answer is paging, or a query scoped to the leads a screen actually needs.
+ *
+ * The read cost of raising it is paid once: `persistentLocalCache` is wired up
+ * in `firebase/client`, so a warm re-subscribe is served from IndexedDB and
+ * only changed documents are billed.
+ */
+const LEAD_PAGE_SIZE = 2000;
 
 /**
  * Every lead the signed-in person is entitled to see.
@@ -263,13 +290,25 @@ export function useLeads(
       : demoState.leads.filter((lead) =>
           role === 'subadmin' ? lead.subAdminUid === uid : lead.assignedUserId === uid
         );
-    return { leads, loading: false, error: null };
+    return { leads, loading: false, error: null, truncated: false };
   }
 
+  const rows = live.rows as unknown as Lead[];
+
   return {
-    leads: live.rows as unknown as Lead[],
+    leads: rows,
     loading: key !== 'idle' && live.loading,
     error: live.error,
+    /**
+     * The window is full, so there are probably older leads it does not hold.
+     *
+     * A full page cannot prove more exist — the pipeline may be exactly
+     * `LEAD_PAGE_SIZE` long — which is why every reader words this as a
+     * possibility. It is deliberately not answered with a `count()` query:
+     * that is a second round trip on every screen, to sharpen a warning that
+     * is already actionable.
+     */
+    truncated: !live.loading && rows.length >= LEAD_PAGE_SIZE,
   };
 }
 

@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useClientFolders, useOwnClientLeads, type ClientFolder } from "@/hooks/useClients";
+import { LeadWindowNotice } from "@/components/leads/LeadWindowNotice";
 import { createClientFolder, updateClientFolder, deleteClientFolder } from "@/lib/clientActions";
 import { MobileHeader, HeaderCircle, M } from "./mobileChrome";
 import { AccountButton } from "./MobileAccount";
@@ -42,7 +43,8 @@ export function MobileClientFolders({ basePath }: { basePath: string }) {
 
   const { folders, loading, error } = useClientFolders(isManager, { role, uid: user?.uid });
   // What each folder actually shows — its leads still assigned to the viewer.
-  const { counts } = useOwnClientLeads(isManager, { role, uid: user?.uid, managerKind });
+  // See `LeadWindowNotice` — a full leads window counts folders short in silence.
+  const { counts, truncated } = useOwnClientLeads(isManager, { role, uid: user?.uid, managerKind });
 
   const [formFor, setFormFor] = useState<{ folder: ClientFolder | null } | null>(null);
   const [confirming, setConfirming] = useState<ClientFolder | null>(null);
@@ -135,6 +137,7 @@ export function MobileClientFolders({ basePath }: { basePath: string }) {
       </MobileHeader>
 
       <div style={LIST_BODY}>
+        {truncated && <LeadWindowNotice subject="These folder counts" />}
         {error && <Note tone="error">{error}</Note>}
         {banner && <Note tone={banner.tone}>{banner.text}</Note>}
 
