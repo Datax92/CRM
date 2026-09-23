@@ -7,7 +7,12 @@ import {
   checkRoundFunding,
   fundingDeltas,
   fundingLegs,
+  isRoundOverdue,
+  isRoundReceived,
   possibleFundingLegIds,
+  postedEffect,
+  receivedDayFor,
+  roundProfitEffect,
   readFunding,
   normalizeShareColumns,
   parseAmount,
@@ -172,4 +177,54 @@ test('stored funding is read back strictly', () => {
     { accountId: 'a', amount: 5 },
   ]);
   assert.deepEqual(readFunding(undefined), []);
+});
+
+test('a round saved before Received existed reads as received — its money was already posted', () => {
+  assert.equal(isRoundReceived({}), true);
+  assert.equal(isRoundReceived({ received: undefined }), true);
+  assert.equal(isRoundReceived({ received: true }), true);
+  assert.equal(isRoundReceived({ received: false }), false);
+  assert.equal(isRoundReceived(null), true);
+});
+
+test('the received day falls back to the return date, the day an older round was posted on', () => {
+  assert.equal(receivedDayFor({ receivedDayKey: '2026-09-20', returnDayKey: '2026-09-18', dayKey: '2026-08-31' }), '2026-09-20');
+  assert.equal(receivedDayFor({ returnDayKey: '2026-09-18', dayKey: '2026-08-31' }), '2026-09-18');
+  assert.equal(receivedDayFor({ receivedDayKey: 'junk', dayKey: '2026-08-31' }), '2026-08-31');
+});
+
+test('a round not received has banked no profit — a loss included', () => {
+  assert.equal(roundProfitEffect(82_000, false), 0);
+  assert.equal(roundProfitEffect(-5_000, false), 0);
+  assert.equal(roundProfitEffect(82_000, true), 82_000);
+  assert.equal(roundProfitEffect(-5_000, true), -5_000);
+});
+
+test('what is posted is read with its sign, and only when posted', () => {
+  assert.equal(postedEffect({ status: 'POSTED', direction: 'IN', amount: 82_000 }), 82_000);
+  assert.equal(postedEffect({ status: 'POSTED', direction: 'OUT', amount: 5_000 }), -5_000);
+  assert.equal(postedEffect({ status: 'VOID', direction: 'IN', amount: 82_000 }), 0);
+  assert.equal(postedEffect(null), 0);
+});
+
+test('not received: the capital stays out; received: it comes back on the received day', () => {
+  const lines = [{ accountId: 'investorA', amount: 407_000 }];
+  const pending = fundingLegs('r1', lines, '2026-09-19', null);
+  assert.deepEqual(pending.map((leg) => leg.kind), ['OUT']);
+
+  const received = fundingLegs('r1', lines, '2026-09-19', '2026-10-09');
+  const back = received.find((leg) => leg.kind === 'BACK');
+  assert.equal(back?.dayKey, '2026-10-09');
+
+  // Marking it received puts the whole amount back into the account it left.
+  assert.deepEqual([...fundingDeltas(pending, received)], [['investorA', 407_000]]);
+  // And undoing it takes it back out again.
+  assert.deepEqual([...fundingDeltas(received, pending)], [['investorA', -407_000]]);
+});
+
+test('overdue means past the return date and still not received', () => {
+  assert.equal(isRoundOverdue({ received: false, returnDayKey: '2026-09-18' }, '2026-09-23'), true);
+  assert.equal(isRoundOverdue({ received: false, returnDayKey: '2026-09-23' }, '2026-09-23'), false);
+  assert.equal(isRoundOverdue({ received: true, returnDayKey: '2026-09-18' }, '2026-09-23'), false);
+  assert.equal(isRoundOverdue({ received: false, returnDayKey: null }, '2026-09-23'), false);
 });

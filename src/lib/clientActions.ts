@@ -1284,6 +1284,7 @@ import {
   deleteInvestmentBook as _deleteInvestmentBook,
   saveInvestmentRound as _saveInvestmentRound,
   deleteInvestmentRound as _deleteInvestmentRound,
+  setInvestmentRoundReceived as _setInvestmentRoundReceived,
   type InvestmentBookInput,
   type InvestmentRoundInput,
 } from '@/app/actions/investmentWithX';
@@ -1326,6 +1327,9 @@ export async function saveInvestmentRound(token: string, input: InvestmentRoundI
 }
 export async function deleteInvestmentRound(token: string, roundId: string) {
   return _deleteInvestmentRound(token, roundId);
+}
+export async function setInvestmentRoundReceived(token: string, roundId: string, received: boolean, dayKey?: string | null) {
+  return _setInvestmentRoundReceived(token, roundId, received, dayKey);
 }
 
 export async function saveGroupConfig(

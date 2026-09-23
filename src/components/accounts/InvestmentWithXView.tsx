@@ -16,7 +16,9 @@
  * can be paid like any other account.
  *
  * **A round's amount is taken from an account** — any account in Accounts, the
- * Capital Investment ones first — and goes back into it on the return date.
+ * Capital Investment ones first — and goes back into it when the round is
+ * **received**. Until somebody presses Received the return date is only an
+ * expectation: the net is not income and the amount is still with the partner.
  */
 
 import { useMemo, useState } from "react";
@@ -34,8 +36,11 @@ import {
   bookTotals,
   calculateRound,
   checkRoundFunding,
+  isRoundOverdue,
+  isRoundReceived,
   parseAmount,
   readFunding,
+  receivedDayFor,
   type FundingLine,
   type NetBasis,
   type RoundFigures,
@@ -46,6 +51,7 @@ import {
   deleteInvestmentBook,
   saveInvestmentRound,
   deleteInvestmentRound,
+  setInvestmentRoundReceived,
 } from "@/lib/clientActions";
 import {
   ChipRow,
@@ -79,6 +85,9 @@ interface Round extends RoundFigures {
   description: string | null;
   /** Where the amount was taken from. Empty on rounds saved before it was asked. */
   funding: Array<FundingLine & { accountName: string | null }>;
+  /** The partner has paid it back: the net is banked and the amount is home. */
+  received: boolean;
+  receivedDayKey: string | null;
 }
 
 const money = (n: number) => formatMoney(n);
@@ -123,6 +132,9 @@ export function InvestmentWithXView() {
   const [bookForm, setBookForm] = useState<{ book: InvestmentBook | null } | null>(null);
   const [roundForm, setRoundForm] = useState<{ round: Round | null } | null>(null);
   const [deleting, setDeleting] = useState<Round | null>(null);
+  /** The round being marked received (or, to undo a mistake, not received). */
+  const [receiving, setReceiving] = useState<Round | null>(null);
+  const [receivedOn, setReceivedOn] = useState(karachiDayKey());
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -150,6 +162,8 @@ export function InvestmentWithXView() {
         returnDayKey: typeof raw.returnDayKey === "string" && raw.returnDayKey ? raw.returnDayKey : null,
         description: typeof raw.description === "string" && raw.description ? raw.description : null,
         funding: readRoundFunding(raw.funding),
+        received: isRoundReceived({ received: raw.received }),
+        receivedDayKey: isRoundReceived({ received: raw.received }) ? receivedDayFor({ receivedDayKey: raw.receivedDayKey, returnDayKey: raw.returnDayKey, dayKey: raw.dayKey }) : null,
       }))
       // The sheet reads oldest first, top to bottom.
       .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
@@ -181,11 +195,18 @@ export function InvestmentWithXView() {
 
   const periodLabel = !from && !to ? "All rounds" : !from ? `Up to ${to}` : !to ? `From ${from}` : `${from} → ${to}`;
 
-  /** Taken from an account and not back yet — money currently with the partner. */
-  const stillOut = useMemo(
-    () => inRange.filter((round) => round.funding.length > 0 && !round.returnDayKey).reduce((sum, round) => sum + round.amount, 0),
-    [inRange]
-  );
+  /** Not received yet — money currently with the partner, and profit not yet income. */
+  const pending = useMemo(() => {
+    const open = inRange.filter((round) => !round.received);
+    return {
+      rounds: open.length,
+      amount: open.reduce((sum, round) => sum + round.amount, 0),
+      net: open.reduce((sum, round) => sum + round.netProfit, 0),
+      overdue: open.filter((round) => isRoundOverdue(round, karachiDayKey())).length,
+    };
+  }, [inRange]);
+  const stillOut = pending.amount;
+  const receivedNet = totals.netProfit - pending.net;
 
   const statCards = useMemo<StatCard[]>(() => {
     const pct = (n: number, of: number) => (of ? Math.max(0, Math.min(100, Math.round((n / of) * 100))) : 0);
@@ -196,9 +217,11 @@ export function InvestmentWithXView() {
         pill: `${totals.rounds}`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.wallet,
       },
       {
-        label: "Profit", value: money(totals.profit),
-        note: `${money(totals.grossProfit)} gross`,
-        pill: `${pct(totals.profit, totals.amount)}%`, tone: "good", pct: pct(totals.profit, totals.amount),
+        label: "Net Received", value: money(receivedNet),
+        note: pending.rounds > 0
+          ? `${money(pending.net)} still to come from ${pending.rounds} round${pending.rounds === 1 ? "" : "s"}${pending.overdue ? ` · ${pending.overdue} overdue` : ""}`
+          : "every round received",
+        pill: `${pct(receivedNet, totals.netProfit)}%`, tone: pending.overdue ? "warn" : "good", pct: pct(receivedNet, totals.netProfit),
         color: "#2f7d78", accent: "#4fa39c", icon: ICON.bars,
       },
       {
@@ -214,12 +237,13 @@ export function InvestmentWithXView() {
         color: balance < 0 ? "#a8483c" : "#2f7d78", accent: "#4fa39c", icon: ICON.wallet,
       },
     ];
-  }, [totals, balance, spent, book, stillOut]);
+  }, [totals, balance, spent, book, stillOut, pending, receivedNet]);
 
   const figuresFor = (round: Round): Figure[] => [
     { label: "Amount", value: money(round.amount), strong: true, hint: round.dayKey },
     { label: "From", value: round.funding.length ? fundingNames(round, ledger.accounts) : "—", tone: "muted" },
     { label: "Return", value: round.returnDayKey ?? "—", tone: "muted" },
+    { label: "Received", value: round.received ? round.receivedDayKey ?? "Yes" : "Not yet", tone: round.received ? "good" : "warn" },
     { label: "Profit", value: money(round.profit), tone: "ink" },
     { label: "Gross", value: money(round.grossProfit), tone: "muted" },
     ...(book?.columns ?? [])
@@ -227,6 +251,32 @@ export function InvestmentWithXView() {
       .map((column) => ({ label: column.label, value: money(round.shares[column.key]), tone: "warn" as const })),
     { label: "Net profit", value: money(round.netProfit), tone: round.netProfit < 0 ? "bad" : "good", strong: true },
   ];
+
+  const askReceive = (round: Round) => {
+    setReceivedOn(karachiDayKey());
+    setReceiving(round);
+  };
+  const confirmReceive = async () => {
+    if (!receiving) return;
+    const marking = !receiving.received;
+    setBusy(true);
+    const result = await setInvestmentRoundReceived(await getIdToken(), receiving.id, marking, marking ? receivedOn : null);
+    setBusy(false);
+    setReceiving(null);
+    if (!result.ok) {
+      setBanner({ ok: false, text: result.error });
+      return;
+    }
+    const back = receiving.funding.length ? ` ${money(receiving.amount)} back into ${fundingNames(receiving, ledger.accounts)}.` : "";
+    setBanner({
+      ok: true,
+      text: marking
+        ? `Received on ${result.data.receivedDayKey} — ${money(result.data.netProfit)} net banked into ${book?.name}.${back}`
+        : `Moved back to awaiting — ${money(result.data.netProfit)} taken back out of ${book?.name}.${
+            receiving.funding.length ? ` ${money(receiving.amount)} is out with the partner again.` : ""
+          }`,
+    });
+  };
 
   const askDelete = (round: Round) => setDeleting(round);
   const confirmDelete = async () => {
@@ -270,6 +320,10 @@ export function InvestmentWithXView() {
     },
     { key: "date", header: "Date", render: (r) => r.dayKey },
     { key: "return", header: "Return date", render: (r) => r.returnDayKey ?? <span style={{ color: "#c3d5d3" }}>–</span> },
+    {
+      key: "received", header: "Received",
+      render: (r) => <ReceivedCell round={r} onToggle={() => askReceive(r)} />,
+    },
     { key: "profit", header: "Profit", align: "right", tone: book?.netBasis === "PROFIT" ? "income" : undefined, render: (r) => money(r.profit), total: money(listedTotals.profit) },
     { key: "gross", header: "Gross profit", align: "right", tone: book?.netBasis === "GROSS" ? "income" : undefined, render: (r) => money(r.grossProfit), total: money(listedTotals.grossProfit) },
     ...shareColumns,
@@ -300,12 +354,15 @@ export function InvestmentWithXView() {
     amount: round.amount,
     category: book?.name ?? "Investment",
     status: { label: `${money(round.netProfit)} net`, tone: round.netProfit < 0 ? TONE.bad : TONE.good },
-    payment: null,
+    payment: receivedPill(round),
     notes: round.description ? (
       <div style={{ marginTop: 6, fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{round.description}</div>
     ) : null,
     detail: <FigureStrip figures={figuresFor(round)} isMobile={isMobile} />,
     actions: [
+      round.received
+        ? { key: "unreceive", label: "Move back to awaiting", shortLabel: "Awaiting", d: ICON.clock, tone: "quiet", onClick: () => askReceive(round) }
+        : { key: "receive", label: "Received", d: ICON.check, tone: "good", onClick: () => askReceive(round) },
       { key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setRoundForm({ round }) },
       { key: "delete", label: "Delete", d: ICON.trash, tone: "bad", onClick: () => askDelete(round) },
     ],
@@ -469,10 +526,52 @@ export function InvestmentWithXView() {
           {deleting.netProfit !== 0 && (
             <> That {deleting.netProfit > 0 ? "profit comes back out of" : "loss is put back into"} {book?.name}&rsquo;s account.</>
           )}
-          {deleting.funding.length > 0 && !deleting.returnDayKey && (
+          {deleting.funding.length > 0 && !deleting.received && (
             <> The {money(deleting.amount)} goes back into {fundingNames(deleting, ledger.accounts)}.</>
           )}{" "}
           This cannot be undone.
+        </ConfirmPanel>
+      )}
+
+      {receiving && (
+        <ConfirmPanel
+          title={receiving.received ? "Move back to awaiting?" : "Mark this round received?"}
+          confirmLabel={receiving.received ? "Move to awaiting" : "Mark received"}
+          danger={false}
+          busy={busy}
+          onCancel={() => setReceiving(null)}
+          onConfirm={() => void confirmReceive()}
+        >
+          {receiving.received ? (
+            <>
+              The <strong style={{ color: X.ink }}>{money(receiving.netProfit)}</strong> net comes back out of {book?.name}&rsquo;s account
+              {receiving.funding.length > 0 && (
+                <> and the <strong style={{ color: X.ink }}>{money(receiving.amount)}</strong> is taken back out of {fundingNames(receiving, ledger.accounts)}, as money still with the partner</>
+              )}
+              . You can mark it received again at any time.
+            </>
+          ) : (
+            <>
+              <strong style={{ color: X.ink }}>{money(receiving.netProfit)}</strong> net{" "}
+              {receiving.netProfit < 0 ? "comes out of" : "is banked into"} {book?.name} as income
+              {receiving.funding.length > 0 ? (
+                <>, and the <strong style={{ color: X.ink }}>{money(receiving.amount)}</strong> goes back into {fundingNames(receiving, ledger.accounts)}, ready to use again.</>
+              ) : (
+                <>.</>
+              )}
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14, fontSize: 12, fontWeight: 700, color: X.muted }}>
+                Received on
+                <input
+                  type="date"
+                  value={receivedOn}
+                  min={receiving.dayKey}
+                  max={karachiDayKey()}
+                  onChange={(e) => { const v = e.target.value; setReceivedOn(v); }}
+                  style={fieldStyle(isMobile)}
+                />
+              </label>
+            </>
+          )}
         </ConfirmPanel>
       )}
     </div>
@@ -481,10 +580,62 @@ export function InvestmentWithXView() {
 
 /* -------------------------------------------------------------------------- */
 
+/** The received state as a pill: received, awaited, or past its return date. */
+function receivedPill(round: Round): { label: string; tone: (typeof TONE)[keyof typeof TONE] } {
+  if (round.received) return { label: `Received${round.receivedDayKey ? ` ${round.receivedDayKey}` : ""}`, tone: TONE.good };
+  if (isRoundOverdue(round, karachiDayKey())) return { label: "Overdue", tone: TONE.bad };
+  return { label: "Awaiting", tone: TONE.warn };
+}
+
+/**
+ * The sheet's Received cell: the date it came back, or the button that says it
+ * has. A button rather than a pill because pressing it is what banks the money.
+ */
+function ReceivedCell({ round, onToggle }: { round: Round; onToggle: () => void }) {
+  const pill = receivedPill(round);
+  // A two-way switch, so moving a round back is as plain as moving it forward.
+  // The side already lit does nothing; the other side asks to confirm.
+  const sides = [
+    { on: !round.received, label: round.received ? "Awaiting" : pill.label, d: ICON.clock, tone: round.received ? TONE.warn : pill.tone },
+    { on: round.received, label: round.received ? pill.label : "Received", d: ICON.check, tone: TONE.good },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Received"
+      onClick={(event) => event.stopPropagation()}
+      style={{ display: "inline-flex", gap: 2, padding: 2, borderRadius: 999, background: "#eef4f3", whiteSpace: "nowrap" }}
+    >
+      {sides.map((side) => (
+        <button
+          key={side.d}
+          type="button"
+          aria-pressed={side.on}
+          disabled={side.on}
+          onClick={onToggle}
+          title={side.on ? undefined : side.d === ICON.check ? "Mark this round received" : "Move this round back to awaiting"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700, fontFamily: "inherit",
+            border: "none", cursor: side.on ? "default" : "pointer",
+            background: side.on ? side.tone.tint : "transparent",
+            color: side.on ? side.tone.color : "#8a9a98",
+            boxShadow: side.on ? "0 1px 2px rgba(20,31,30,0.08)" : "none",
+          }}
+        >
+          <Glyph d={side.d} size={12} width={2.4} />
+          {side.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function downloadSheet(book: InvestmentBook, rounds: Round[], accounts: readonly AccountDoc[]) {
-  const header = ["AMOUNT", "FROM", "DATE", "RETURN DATE", "PROFIT", "GROSS PROFIT", ...book.columns.map((c) => c.label), "NET PROFIT", "DESCRIPTION"];
+  const header = ["AMOUNT", "FROM", "DATE", "RETURN DATE", "RECEIVED", "PROFIT", "GROSS PROFIT", ...book.columns.map((c) => c.label), "NET PROFIT", "DESCRIPTION"];
   const rows = rounds.map((round) => [
-    round.amount, fundingNames(round, accounts), round.dayKey, round.returnDayKey ?? "", round.profit, round.grossProfit,
+    round.amount, fundingNames(round, accounts), round.dayKey, round.returnDayKey ?? "",
+    round.received ? round.receivedDayKey ?? "YES" : "NO", round.profit, round.grossProfit,
     ...book.columns.map((c) => round.shares[c.key] ?? 0), round.netProfit, round.description ?? "",
   ]);
   const csv = [header, ...rows]
@@ -521,6 +672,8 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
     profit: round ? String(round.profit) : "",
     grossProfit: round ? String(round.grossProfit) : "",
     description: round?.description ?? "",
+    received: round?.received ?? false,
+    receivedDayKey: round?.receivedDayKey ?? karachiDayKey(),
   });
   const [shares, setShares] = useState<Record<string, string>>(
     Object.fromEntries(book.columns.map((c) => [c.key, round && round.shares[c.key] ? String(round.shares[c.key]) : ""]))
@@ -583,15 +736,22 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
           shares: Object.fromEntries(Object.entries(shares).map(([k, v]) => [k, parseAmount(v)])),
           description: form.description,
           funding: lines,
+          received: form.received,
+          receivedDayKey: form.received ? form.receivedDayKey : null,
         },
         round?.id
       );
       if (result.ok) {
         const from = funding.lines.map((line) => nameOf(line.accountId)).join(", ");
+        const net = formatMoney(result.data.netProfit);
         onSaved(
-          `${round ? "Round updated" : "Round added"} — ${formatMoney(result.data.netProfit)} net ${result.data.netProfit < 0 ? "taken out of" : "banked into"} ${book.name}.${
-            from ? ` ${formatMoney(parseAmount(form.amount))} ${form.returnDayKey ? `taken from and back into ${from}` : `taken from ${from}, until it comes back`}.` : ""
-          }`
+          result.data.received
+            ? `${round ? "Round updated" : "Round added"} — received, ${net} net ${result.data.netProfit < 0 ? "taken out of" : "banked into"} ${book.name}.${
+                from ? ` ${formatMoney(parseAmount(form.amount))} taken from and back into ${from}.` : ""
+              }`
+            : `${round ? "Round updated" : "Round added"} — ${net} net expected, banked once you mark it received.${
+                from ? ` ${formatMoney(parseAmount(form.amount))} taken from ${from} until then.` : ""
+              }`
         );
       } else {
         setError(result.error);
@@ -633,10 +793,23 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
           <Field label="Date">
             <input type="date" value={form.dayKey} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, dayKey: v })); }} style={field} />
           </Field>
-          <Field label="Return date" hint="When the money and profit come back. The amount goes back into its account and the net is banked on this date.">
+          <Field label="Return date" hint="When the money and profit are expected back. Nothing moves until the round is marked received.">
             <input type="date" value={form.returnDayKey} min={form.dayKey} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, returnDayKey: v })); }} style={field} />
           </Field>
-          <div />
+          <Field label="Received" hint={form.received ? "The net is banked and the amount goes back into its account on this date." : "Tick once the partner has actually paid back."}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 700, color: X.ink, cursor: "pointer", flexShrink: 0 }}>
+                <input type="checkbox" checked={form.received}
+                  onChange={(e) => { const v = e.target.checked; setForm((f) => ({ ...f, received: v })); }}
+                  style={{ width: 18, height: 18, accentColor: X.deep }} />
+                Received
+              </label>
+              {form.received && (
+                <input type="date" aria-label="Received on" value={form.receivedDayKey} min={form.dayKey} max={karachiDayKey()}
+                  onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, receivedDayKey: v })); }} style={{ ...field, flex: 1, minWidth: 0 }} />
+              )}
+            </div>
+          </Field>
           <Field label="Profit">
             <input inputMode="decimal" value={form.profit} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, profit: v })); }} placeholder="82,000" style={field} />
           </Field>
@@ -646,7 +819,7 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
         </FormGrid>
       </OverlayCard>
 
-      <OverlayCard title="Taken from" hint="Leaves the account on the date, goes back in on the return date">
+      <OverlayCard title="Taken from" hint="Leaves the account on the date, goes back in when the round is received">
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {lines.map((line, index) => (
             <div key={index} style={{ display: "grid", gap: 8, alignItems: "center", gridTemplateColumns: split ? `minmax(0, 1fr) ${isMobile ? 112 : 140}px 38px` : "minmax(0, 1fr)" }}>
@@ -707,7 +880,9 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
               ? "Not taken from any account — the amount is a figure on the sheet only."
               : <>
                   {formatMoney(parseAmount(form.amount))} leaves {funding.lines.map((l) => nameOf(l.accountId)).join(" and ")} on {form.dayKey || "the date"}
-                  {form.returnDayKey ? ` and goes back in on ${form.returnDayKey}.` : " and stays out until a return date is filled in."}
+                  {form.received
+                    ? ` and goes back in on ${form.receivedDayKey || "the received date"}.`
+                    : " and stays out until the round is marked received."}
                 </>}
         </div>
       </OverlayCard>

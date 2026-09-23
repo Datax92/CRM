@@ -371,3 +371,51 @@ export function fundingDeltas(
   for (const [accountId, delta] of deltas) if (delta === 0) deltas.delete(accountId);
   return deltas;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Received — when the round actually pays                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether a round has been **received** (owner, 2026-09-23): the partner has
+ * actually paid back the amount and the profit.
+ *
+ * Until then the RETURN DATE is only when the money is *expected*: the profit is
+ * not income yet and the capital is still out with the partner. Pressing
+ * Received is what banks the net into the book's account and puts the amount
+ * back into the accounts it was taken from, both dated the day it arrived.
+ *
+ * **Absent reads as received.** Every round saved before this existed had its
+ * profit and its capital posted the moment it was saved; reading them as
+ * pending would describe a ledger that is not what was written. Such a round
+ * can be marked not received, which takes both back out.
+ */
+export function isRoundReceived(raw: { received?: unknown } | null | undefined): boolean {
+  return raw?.received !== false;
+}
+
+/**
+ * The day a received round's money is dated. A round received before this
+ * field existed was posted on its return date, so that is its fallback.
+ */
+export function receivedDayFor(raw: { receivedDayKey?: unknown; returnDayKey?: unknown; dayKey?: unknown }): string | null {
+  const day = (value: unknown) => (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null);
+  return day(raw.receivedDayKey) ?? day(raw.returnDayKey) ?? day(raw.dayKey);
+}
+
+/** What a round's net does to the book's account: nothing until it is received. */
+export function roundProfitEffect(netProfit: number, received: boolean): number {
+  return received ? roundMoney(netProfit) : 0;
+}
+
+/** The signed effect a posted ledger row has on its account; 0 when absent or not posted. */
+export function postedEffect(raw: { status?: unknown; direction?: unknown; amount?: unknown } | null | undefined): number {
+  if (!raw || raw.status !== 'POSTED') return 0;
+  const amount = parseAmount(raw.amount);
+  return raw.direction === 'OUT' ? -amount : amount;
+}
+
+/** Past its return date and not received yet. */
+export function isRoundOverdue(round: { received: boolean; returnDayKey: string | null }, today: string): boolean {
+  return !round.received && Boolean(round.returnDayKey) && (round.returnDayKey as string) < today;
+}
