@@ -15,6 +15,7 @@ import { readLaneRoster, type RosterShare } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
 import { karachiDayKey } from '@/lib/dates';
+import { isQuotaExhausted } from '@/lib/quotaError';
 import { DEFAULT_NO_CONTACT_DAYS } from '@/lib/constants/monitoring';
 import { owningSubAdminFor } from '@/lib/constants/hierarchy';
 
@@ -66,6 +67,18 @@ async function handleGET(request: Request) {
       durationMs: Date.now() - startedAt,
     });
   } catch (error) {
+    /*
+      **A spent daily quota is not a crash** (owner, 2026-09-23). Railway runs
+      this every five minutes and emails on every non-2xx, so the evening the
+      free read quota ran out it sent an email every five minutes until noon
+      for a condition nothing here can fix. Answered 200 with `skipped`: the
+      next run tries again, and it runs normally the moment the quota resets.
+      Any other failure is still a 500 and still emails.
+    */
+    if (isQuotaExhausted(error)) {
+      console.warn('[cron:process-deadlines] skipped — Firestore daily quota exhausted');
+      return NextResponse.json({ ok: false, skipped: 'QUOTA_EXHAUSTED' });
+    }
     console.error('[cron:process-deadlines]', error);
     return NextResponse.json({ ok: false, error: 'Sweep failed' }, { status: 500 });
   }
