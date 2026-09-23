@@ -68,6 +68,7 @@ import {
   normalizeLaneUids,
   MAX_LEADS_PER_TURN,
   acceptDeadlineFrom,
+  acceptWindowPhrase,
 } from '@/lib/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
@@ -1152,7 +1153,7 @@ export const demo = {
         targetRole: 'employee',
         targetUid: nextUid,
         payload: {
-          message: `"${lead.name}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+          message: `"${lead.name}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
         },
         createdAt: now(),
         readAt: null,

@@ -45,6 +45,8 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { pipelineStage } from "@/lib/pipelineStage";
 import { addTally, entryTally } from "@/lib/leadBuckets";
 import { loadEntries } from "@/lib/reportEntries";
+import { ACTIVITY_DAYS, ACTIVITY_FIELDS, readCounts, splitRange } from "@/lib/activityDays";
+import { readActivityTotalsFrom } from "@/lib/server/activityDays";
 import {
   blankMetrics,
   describeSubject,
@@ -280,7 +282,19 @@ export async function buildTeamReport(
     }
 
     const readsMs = since();
-    const { entries, warning } = await loadEntries(from, to, leadIds, uids);
+    /*
+      **Day totals where they exist, entries only before them** (2026-09-23,
+      the day the free read quota ran out). `activityDays` holds one small
+      document per person per day, kept in step with the entries by the same
+      transaction that writes them; a month for five people is ~150 of those
+      instead of every entry the team wrote. Days before
+      `config/activityTotals.from` predate the documents and are folded from
+      the entries as before. See `lib/activityDays`.
+    */
+    const range = splitRange(from, to, await readActivityTotalsFrom());
+    const { entries, warning } = range.entries
+      ? await loadEntries(range.entries.from, range.entries.to, leadIds, uids)
+      : { entries: [] as FirebaseFirestore.QueryDocumentSnapshot[], warning: null };
     const activityMs = since();
 
     for (const doc of entries) {
@@ -315,6 +329,27 @@ export async function buildTeamReport(
       // tally, which holds exactly the four figures both screens show.
       if (entry.meetingHeld) row.meetings += 1;
       if (entry.siteVisit) row.siteVisits += 1;
+    }
+
+    if (range.totals) {
+      const daySnaps = await Promise.all(
+        chunk(uids).map((slice) =>
+          adminDb
+            .collection(ACTIVITY_DAYS)
+            .where("uid", "in", slice)
+            .where("dayKey", ">=", range.totals!.from)
+            .where("dayKey", "<=", range.totals!.to)
+            .get()
+        )
+      );
+      for (const snap of daySnaps) {
+        for (const doc of snap.docs) {
+          const row = tally.get(doc.get("uid") as string);
+          if (!row) continue;
+          const counts = readCounts(doc.data());
+          for (const field of ACTIVITY_FIELDS) row[field] += counts[field];
+        }
+      }
     }
 
     /* ---------------------------------------------------------------- */

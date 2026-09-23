@@ -18,7 +18,7 @@ import {
   ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
-import { resolveCascadeAssignee, laneDisplayName, acceptDeadlineFrom } from "@/lib/distribution";
+import { resolveCascadeAssignee, laneDisplayName, acceptDeadlineFrom, acceptWindowPhrase } from "@/lib/distribution";
 import { readLaneRoster } from "@/lib/server/laneRoster";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
@@ -325,7 +325,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
               : "employee",
         targetUid: nextAssignee,
         payload: {
-          message: `"${lead.name ?? leadId}" has been passed to you. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+          message: `"${lead.name ?? leadId}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
         },
         createdAt: now,
         readAt: null,

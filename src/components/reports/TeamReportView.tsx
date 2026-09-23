@@ -265,12 +265,55 @@ function describeRange(from: string, to: string): string {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * **A report is remembered for ten minutes** (owner, 2026-09-23, the day the
+ * free read quota ran out). Switching presets back and forth, changing person
+ * and coming back, or leaving the screen and returning re-read everything the
+ * report is built from each time — a few thousand reads for "All employees ·
+ * This month". Held here, at module level, so it survives navigating away and
+ * back within the session; keyed by who is asking, so two people on one
+ * browser never see each other's. **Run always fetches fresh**, and the header
+ * says when figures are from earlier.
+ */
+const REPORT_CACHE_MS = 10 * 60_000;
+const reportCache = new Map<string, { at: number; data: TeamReport }>();
+
+function reportKey(uid: string, from: string, to: string, subject: string | null): string {
+  return `${uid}|${from}|${to}|${subject ?? "*"}`;
+}
+
+async function fetchReport(
+  token: string,
+  uid: string,
+  from: string,
+  to: string,
+  subject: string | null,
+  fresh: boolean
+): Promise<{ ok: true; data: TeamReport; at: number } | { ok: false; error: string }> {
+  const key = reportKey(uid, from, to, subject);
+  const hit = reportCache.get(key);
+  if (!fresh && hit && Date.now() - hit.at < REPORT_CACHE_MS) return { ok: true, data: hit.data, at: hit.at };
+  const result = await buildTeamReport(token, from, to, subject);
+  if (!result.ok) return result;
+  const at = Date.now();
+  reportCache.set(key, { at, data: result.data });
+  // Also under the subject the server resolved, so the first report (asked
+  // for with no subject) is found again when the same subject is picked.
+  reportCache.set(reportKey(uid, from, to, result.data.subject), { at, data: result.data });
+  return { ok: true, data: result.data, at };
+}
+
 export function TeamReportView() {
-  const { getIdToken } = useAuth();
+  const { getIdToken, user } = useAuth();
+  const uid = user?.uid ?? "";
   const isMobile = useIsMobile();
 
-  const [from, setFrom] = useState(monthStart());
+  // **Opens on today** (owner, 2026-09-23): "This month" is one tap away on
+  // the presets, and today is a few hundred reads where the month is thousands.
+  const [from, setFrom] = useState(karachiDayKey());
   const [to, setTo] = useState(karachiDayKey());
+  /** When the figures on screen were fetched — shown once they are not fresh. */
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   /**
    * Null until the first report comes back and names the default. The server
    * owns which subject a reader lands on, so an employee — who has exactly one
@@ -282,7 +325,7 @@ export function TeamReportView() {
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(
-    async (nextFrom: string, nextTo: string, nextSubject: string | null) => {
+    async (nextFrom: string, nextTo: string, nextSubject: string | null, fresh = false) => {
       setLoading(true);
       setError(null);
 
@@ -293,11 +336,12 @@ export function TeamReportView() {
         return;
       }
 
-      const result = await buildTeamReport(token, nextFrom, nextTo, nextSubject);
+      const result = await fetchReport(token, uid, nextFrom, nextTo, nextSubject, fresh);
       setLoading(false);
 
       if (result.ok) {
         setReport(result.data);
+        setFetchedAt(result.at);
         // Echoed back rather than assumed: the server may have fallen back to
         // a subject this reader can actually see.
         setSubject(result.data.subject);
@@ -306,7 +350,7 @@ export function TeamReportView() {
         setError(result.error);
       }
     },
-    [getIdToken]
+    [getIdToken, uid]
   );
 
   useEffect(() => {
@@ -322,12 +366,14 @@ export function TeamReportView() {
         return;
       }
 
-      const result = await buildTeamReport(token, monthStart(), karachiDayKey(), null);
+      const today = karachiDayKey();
+      const result = await fetchReport(token, uid, today, today, null, false);
       if (cancelled) return;
 
       setLoading(false);
       if (result.ok) {
         setReport(result.data);
+        setFetchedAt(result.at);
         setSubject(result.data.subject);
       } else setError(result.error);
     })();
@@ -335,7 +381,7 @@ export function TeamReportView() {
     return () => {
       cancelled = true;
     };
-  }, [getIdToken]);
+  }, [getIdToken, uid]);
 
   const rows = report?.rows ?? [];
   const totals = report?.totals;
@@ -452,6 +498,7 @@ export function TeamReportView() {
                 {report?.subjectLabel ?? "—"}
                 <span style={{ color: E.hair }}> · </span>
                 <span style={{ color: E.tealInk }}>{describeRange(from, to)}</span>
+                {fetchedAt !== null && <AsOf at={fetchedAt} />}
               </>
             )}
           </p>
@@ -549,7 +596,7 @@ export function TeamReportView() {
 
           <button
             type="button"
-            onClick={() => void run(from, to, subject)}
+            onClick={() => void run(from, to, subject, true)}
             disabled={loading}
             style={{
               borderRadius: 10,
@@ -1322,5 +1369,31 @@ function Empty() {
         themselves, so an empty report means nothing was logged — not that something is missing.
       </p>
     </div>
+  );
+}
+
+/**
+ * "as of 14:05 · Run to refresh" once the figures are over a minute old —
+ * nothing while they are fresh, so the ordinary case reads exactly as before.
+ * The clock is read from a timer, never in render (the lint rule), and only
+ * after the first render, so it cannot differ between server and browser.
+ */
+function AsOf({ at }: { at: number }) {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const first = setTimeout(tick, 0);
+    const timer = setInterval(tick, 30_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, []);
+  if (now === 0 || now - at < 60_000) return null;
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", hour: "2-digit", minute: "2-digit" }).format(new Date(at));
+  return (
+    <span style={{ color: E.muted, fontWeight: 500 }}>
+      {" "}· as of {time} · Run to refresh
+    </span>
   );
 }

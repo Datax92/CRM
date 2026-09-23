@@ -388,3 +388,18 @@ export function formatTimeLeft(seconds: number): string {
   }
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
+
+/**
+ * The sentence an offer's notification ends with. By day it is the window; in
+ * quiet hours the deadline is the morning (`acceptDeadlineFrom`), and saying
+ * "5 minutes" at 23:00 would send somebody scrambling for a lead that waits
+ * until 09:05.
+ */
+export function acceptWindowPhrase(nowMs: number, windowMinutes: number): string {
+  const resume = laneResumesAt(nowMs);
+  if (resume === null) return `You have ${windowMinutes} minutes to accept.`;
+  const by = new Date(resume + windowMinutes * 60_000 + KARACHI_OFFSET_MS);
+  const hh = String(by.getUTCHours()).padStart(2, "0");
+  const mm = String(by.getUTCMinutes()).padStart(2, "0");
+  return `You can accept it until ${hh}:${mm}.`;
+}

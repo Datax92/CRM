@@ -40,6 +40,7 @@ import {
   normalizeLaneUids,
   type CycleState,
   acceptDeadlineFrom,
+  acceptWindowPhrase,
 } from '@/lib/distribution';
 import { readLaneRoster } from './laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
@@ -245,7 +246,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
       targetRole,
       targetUid: assignee,
       payload: {
-        message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+        message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
       },
       createdAt: now,
       readAt: null,

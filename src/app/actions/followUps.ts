@@ -7,6 +7,7 @@ import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { isConnect, normalizeDurationSeconds } from "@/lib/kpi";
 import { meetsColdRule } from "@/lib/pipelineStage";
 import { entryAllowance } from "@/lib/followUpKind";
+import { writeActivityDelta } from "@/lib/server/activityDays";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 
 export interface FollowUpInput {
@@ -198,6 +199,17 @@ export async function addFollowUp(
         */
         ...(meetingAligned ? { meetingAligned: true } : {}),
         ...(siteVisit ? { siteVisit: true } : {}),
+      });
+
+      // The day's Reports totals, in the same transaction so the two can never
+      // disagree — credited to the same person and day as the entry's own
+      // `creditUid` and `dayKey`. See `lib/activityDays`.
+      writeActivityDelta(t, lead.assignedUserId ?? auth.uid, dayKey, null, {
+        kind: allowance.kind,
+        connect,
+        meetingAligned,
+        meetingHeld,
+        siteVisit,
       });
 
       // KPI counters are credited to whoever works the lead, not whoever typed
@@ -452,6 +464,25 @@ export async function updateFollowUp(
         editedAt: FieldValue.serverTimestamp(),
         editedByUid: auth.uid,
       });
+
+      // The day's Reports totals move by the difference, on the entry's own
+      // credited person and day — the same pair Reports reads it under.
+      const entryUid = (entry.creditUid as string | undefined) ?? (entry.authorUid as string | undefined);
+      if (entryUid && typeof entry.dayKey === "string") {
+        writeActivityDelta(
+          t,
+          entryUid,
+          entry.dayKey,
+          {
+            kind: entry.kind ?? null,
+            connect: Boolean(entry.connect),
+            meetingAligned: Boolean(entry.meetingAligned),
+            meetingHeld: Boolean(entry.meetingHeld),
+            siteVisit: Boolean(entry.siteVisit),
+          },
+          { kind: entry.kind ?? null, connect, meetingAligned, meetingHeld, siteVisit }
+        );
+      }
 
       // Deltas, so the lead counters and the KPI month stay true to the entry.
       const dCalls = callCount - Number(entry.callCount ?? 0);

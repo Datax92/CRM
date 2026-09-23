@@ -229,6 +229,8 @@ follow-ups, attendance, payroll and financial reporting.
 - **The dossier's day summary counts entries; the chips count leads.** Same four words, different units, which is why the summary is headed with the date and the chip row is prefixed *Leads*. It is the row that used to read "Written in this period" — not redundant, but unlabelled enough to read as a duplicate.
 - **A dossier period means "worked in", a report column means "entries written".** They are neighbouring questions and were being read as the same one. An employee's dossier counts **leads** and filters the period on **last touch** (`applyLeadFilters`); Reports counts **entries** in the range. Somebody who logs 30 follow-ups today across 30 leads is `30 / 41 worked` on their record and `5 Remarks + 25 Follow-ups` in Reports — both right. The dossier used to filter on `createdAt`, which answered "which of their leads were *created* today" and showed **nothing at all** for that employee; the two screens then looked like they were contradicting each other. The chip hints name their unit for the same reason.
 - Reports (`buildTeamReport`, a Server Action) have **one subject at a time** — an employee, a manager (their own work *and* their team's), the admin, All Employees, or All Managers. Every figure is built per person once (`lib/reportScope`), and a composite subject is the sum of a *set of people*, which is what makes double-counting impossible rather than merely unlikely. New Connects is the *first* connected contact on a lead (its Remark), Follow-up Connects every later one — disjoint, or the columns sum to more than the work that happened. **Remarks and Follow-ups count every entry, connected or not**, and are deliberately not disjoint from the connect columns: a day of unanswered calls is real work and must not read as a zero. The activity columns are range-scoped; P1/P2/P3 describe where the leads stand today and say so.
+  - **Reports reads day totals, not entries, from `config/activityTotals.from`** (default `2026-09-24`). `activityDays/{uid}_{dayKey}` holds the seven activity columns per person per day, moved by `writeActivityDelta` **inside the same transaction** as `addFollowUp` (new entry) and `updateFollowUp` (the difference), credited to the entry's own `creditUid ?? authorUid` and `dayKey`. `countsOf` must agree with `entryTally` — a test holds them together. Days before the start date are still folded from entries (`splitRange`), so nothing reads wrong before `npm run backfill:activity-days -- --confirm` fills them and moves the date back. Server-only: the catch-all rule denies clients. The dossier still reads entries, because it needs them per lead.
+  - **The screen opens on Today and remembers a report for ten minutes** (`TeamReportView`, module-level, keyed by reader + range + subject). **Run always fetches fresh**; the header says "as of 14:05 · Run to refresh" once figures are over a minute old.
 
 ## Data Bank & Clients
 
@@ -457,6 +459,15 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-23 (night) — Reports from day totals; the sweep reads the team once
+
+*"Do 1 2 3 4"* — the four remaining read cuts: day totals for Reports, a ten-minute report memory, Reports opening on Today, and the sweep sharing one roster read. Rules under **KPI** (Reports) and **Distribution**.
+
+- **The sweep reads the rotation once per run** (`RosterShare`, `lib/server/laneRoster`), outside the transactions, for every lead it moves — at 09:05 the night's offers expire together. A folder restricted to chosen people keeps its own small `getAll`. The daily reminder's `cronState` marker is remembered by a warm instance (`sweptDayInMemory`) instead of read 288 times a day.
+- **Offers made at night say so**: `acceptWindowPhrase` ends the notification "You can accept it until 09:05." instead of "5 minutes".
+- **Owed tomorrow, with quota to spare:** `npm run backfill:activity-days` (dry run), then `-- --confirm`. Until then Reports is exactly as before for days up to the 23rd.
+- **Validation**: typecheck 0, `test` **813/813**, `eslint src` 7 / 33 (baseline), `next build` compiles, `npm run test:sync` 4/4. The `activityDays` index is deployed and READY. **Not run against live data** — the project was over its read quota.
 
 ### 2026-09-23 (late evening) — only what changed: the lead list stops re-downloading itself
 

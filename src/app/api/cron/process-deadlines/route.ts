@@ -8,8 +8,9 @@ import {
   normalizeLaneUids,
   type CycleState,
   acceptDeadlineFrom,
+  acceptWindowPhrase,
 } from '@/lib/distribution';
-import { readLaneRoster } from '@/lib/server/laneRoster';
+import { readLaneRoster, type RosterShare } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
 import { ACTIVE_STATUSES } from '@/lib/leadStatus';
 import { karachiDayKey } from '@/lib/dates';
@@ -43,9 +44,11 @@ export async function GET(request: Request) {
   const startedAt = Date.now();
 
   try {
+    // The whole rotation, read once for every lead this run moves.
+    const roster: RosterShare = {};
     const [autoAssigned, reassigned, reminded] = await Promise.all([
-      processExpiredNewLeads(),
-      processExpiredAssignments(),
+      processExpiredNewLeads(roster),
+      processExpiredAssignments(roster),
       remindUncontactedLeads(),
     ]);
 
@@ -88,7 +91,7 @@ function rejectUnauthorized(request: Request): NextResponse | null {
 }
 
 /** BR-5: the admin's 5 minutes elapsed, so auto-distribution takes over. */
-async function processExpiredNewLeads(): Promise<number> {
+async function processExpiredNewLeads(roster: RosterShare): Promise<number> {
   const expired = await adminDb
     .collection('leads')
     .where('status', '==', 'NEW')
@@ -99,7 +102,7 @@ async function processExpiredNewLeads(): Promise<number> {
   let count = 0;
   for (const doc of expired.docs) {
     try {
-      if (await autoAssignLead(doc.id)) count++;
+      if (await autoAssignLead(doc.id, roster)) count++;
     } catch (error) {
       console.error(`[cron] Auto-assign failed for lead ${doc.id}:`, error);
     }
@@ -108,7 +111,7 @@ async function processExpiredNewLeads(): Promise<number> {
 }
 
 /** BR-8/BR-9: the employee's accept window elapsed without acceptance. */
-async function processExpiredAssignments(): Promise<number> {
+async function processExpiredAssignments(roster: RosterShare): Promise<number> {
   const expired = await adminDb
     .collection('leads')
     .where('status', '==', 'ASSIGNED')
@@ -119,7 +122,7 @@ async function processExpiredAssignments(): Promise<number> {
   let count = 0;
   for (const doc of expired.docs) {
     try {
-      if (await reassignExpiredLead(doc.id)) count++;
+      if (await reassignExpiredLead(doc.id, roster)) count++;
     } catch (error) {
       console.error(`[cron] Reassignment failed for lead ${doc.id}:`, error);
     }
@@ -127,7 +130,7 @@ async function processExpiredAssignments(): Promise<number> {
   return count;
 }
 
-async function autoAssignLead(leadId: string): Promise<boolean> {
+async function autoAssignLead(leadId: string, roster: RosterShare): Promise<boolean> {
   return adminDb.runTransaction(async (t: Transaction) => {
     const leadRef = adminDb.collection('leads').doc(leadId);
     const leadSnap = await t.get(leadRef);
@@ -139,7 +142,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
     // The lead's own routing, if it came from a folder restricted to certain
     // people — see `lib/server/laneRoster`.
     const { employees, recipients, cycleState, configRef, cyclePatch } =
-      await readDistributionState(t, lead);
+      await readDistributionState(t, lead, roster);
 
     const { uid: assignee, newState } = getNextAssigneeAndState(employees, cycleState);
 
@@ -189,7 +192,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
       leadId,
       targetRole: recipients.get(assignee)?.targetRole ?? 'employee',
       targetUid: assignee,
-      message: `You have been assigned a new lead: ${lead.name ?? leadId}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+      message: `You have been assigned a new lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
     });
 
     t.set(configRef, cyclePatch(newState, now), { merge: true });
@@ -197,7 +200,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
   });
 }
 
-async function reassignExpiredLead(leadId: string): Promise<boolean> {
+async function reassignExpiredLead(leadId: string, roster: RosterShare): Promise<boolean> {
   return adminDb.runTransaction(async (t: Transaction) => {
     const leadRef = adminDb.collection('leads').doc(leadId);
     const leadSnap = await t.get(leadRef);
@@ -218,7 +221,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
 
     // Restricted to the folder's own people when the lead carries them, so a
     // lead the admin routed to one desk never cascades off it.
-    const { employees, recipients } = await readDistributionState(t, lead);
+    const { employees, recipients } = await readDistributionState(t, lead, roster);
     // The cascade runs on priority alone and never touches the rotation
     // counters: a missed lead must not consume the turn of whoever cleans it up.
     const { uid: nextAssignee, wrapped } = resolveCascadeAssignee(employees, attempted);
@@ -339,7 +342,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       leadId,
       targetRole: recipients.get(nextAssignee)?.targetRole ?? 'employee',
       targetUid: nextAssignee,
-      message: `You have been reassigned a lead: ${lead.name ?? leadId}. You have ${ACCEPT_WINDOW_MINUTES} minutes to accept.`,
+      message: `You have been reassigned a lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
     });
 
     return true;
@@ -375,19 +378,33 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
  * identical alerts; the notification id is derived from the lead as well, so
  * even a double run updates one row rather than stacking.
  */
+/**
+ * The day this server instance last saw the reminder done — so a warm instance
+ * answers "already done today" without reading the marker. The sweep runs 288
+ * times a day for a job that runs once; a cold instance still reads it, which
+ * is what keeps two instances from both sending reminders.
+ */
+let sweptDayInMemory: string | null = null;
+
 async function remindUncontactedLeads(): Promise<number> {
   const today = karachiDayKey();
+  if (sweptDayInMemory === today) return 0;
   const marker = adminDb.collection('config').doc('cronState');
   const swept = (await marker.get()).data()?.staleSweepDayKey;
-  if (swept === today) return 0;
+  if (swept === today) {
+    sweptDayInMemory = today;
+    return 0;
+  }
 
   const days = await readNoContactDays();
   const windowMs = days * 24 * 60 * 60 * 1000;
   const cutoff = new Date(Date.now() - windowMs);
 
   const quiet = await readQuietLeads(cutoff);
-  const markSwept = () =>
-    marker.set({ staleSweepDayKey: today, staleSweptAt: FieldValue.serverTimestamp() }, { merge: true });
+  const markSwept = async () => {
+    await marker.set({ staleSweepDayKey: today, staleSweptAt: FieldValue.serverTimestamp() }, { merge: true });
+    sweptDayInMemory = today;
+  };
 
   if (quiet.length === 0) {
     await markSwept();
@@ -539,10 +556,11 @@ function stampFor(recipients: Map<string, LeadRecipient>, uid: string) {
  */
 async function readDistributionState(
   t: Transaction,
-  lead?: { laneUids?: unknown; dataBankFolderId?: unknown }
+  lead?: { laneUids?: unknown; dataBankFolderId?: unknown },
+  roster?: RosterShare
 ) {
   const restrictedTo = normalizeLaneUids(lead?.laneUids);
-  const { employees, profiles } = await readLaneRoster(t, restrictedTo);
+  const { employees, profiles } = await readLaneRoster(t, restrictedTo, roster);
 
   // What a lead carries when it lands with somebody, from the same snapshot,
   // so moving a lead never costs another read.

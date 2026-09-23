@@ -4,6 +4,7 @@ import {
   laneResumesAt,
   acceptDeadlineFrom,
   formatTimeLeft,
+  acceptWindowPhrase,
   getNextAssigneeAndState,
   resolveCascadeAssignee,
   readLaneEmployee,
@@ -534,4 +535,10 @@ test('an overnight countdown reads in hours, a short one ticks', () => {
   assert.equal(formatTimeLeft(-5), '0:00');
   assert.equal(formatTimeLeft(10 * 3600 + 4 * 60 + 30), '10h 04m');
   assert.equal(formatTimeLeft(3600), '1h 00m');
+});
+
+test('the notification says the morning deadline at night, the window by day', () => {
+  assert.equal(acceptWindowPhrase(pk(23, 15, 0), 5), 'You have 5 minutes to accept.');
+  assert.equal(acceptWindowPhrase(pk(23, 23, 30), 5), 'You can accept it until 09:05.');
+  assert.equal(acceptWindowPhrase(pk(24, 2, 0), 5), 'You can accept it until 09:05.');
 });

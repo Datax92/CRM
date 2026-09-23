@@ -19,7 +19,7 @@ import 'server-only';
  */
 
 import { adminDb } from '@/lib/firebase/server';
-import type { DocumentData, Transaction } from 'firebase-admin/firestore';
+import type { DocumentData, QuerySnapshot, Transaction } from 'firebase-admin/firestore';
 import {
   normalizeLaneUids,
   readChosenLaneMember,
@@ -45,7 +45,18 @@ export interface LaneRoster {
  * excludes. A chosen account that has since been deleted is simply not in the
  * result; the group shrinks rather than the routing failing.
  */
-export async function readLaneRoster(t: Transaction, laneUids: unknown): Promise<LaneRoster> {
+/**
+ * One read of the whole rotation, shared by every lead a single sweep handles
+ * (2026-09-23, the day the free read quota ran out). The sweep used to re-read
+ * the team for each expired lead — at 09:05, when the night's offers all
+ * expire together, once per lead. Read outside the transactions, once per run;
+ * a profile changing in the second it takes is picked up by the next sweep.
+ */
+export interface RosterShare {
+  whole?: Promise<QuerySnapshot<DocumentData>>;
+}
+
+export async function readLaneRoster(t: Transaction, laneUids: unknown, share?: RosterShare): Promise<LaneRoster> {
   const chosen = normalizeLaneUids(laneUids);
   const employees: Employee[] = [];
   const profiles = new Map<string, DocumentData>();
@@ -64,9 +75,8 @@ export async function readLaneRoster(t: Transaction, laneUids: unknown): Promise
 
   // Managers too — only the ones an admin has put in the rotation get a turn,
   // which `readLaneEmployee` decides.
-  const usersSnap = await t.get(
-    adminDb.collection('users').where('role', 'in', ['employee', 'subadmin'])
-  );
+  const wholeQuery = adminDb.collection('users').where('role', 'in', ['employee', 'subadmin']);
+  const usersSnap = share ? await (share.whole ??= wholeQuery.get()) : await t.get(wholeQuery);
   usersSnap.forEach((doc) => {
     const data = doc.data();
     employees.push(readLaneEmployee(doc.id, data));
