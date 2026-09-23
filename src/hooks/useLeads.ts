@@ -1,7 +1,9 @@
-import { useCallback, useState, useEffect } from 'react';
-import { collection, doc, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { useCallback, useState, useEffect, useSyncExternalStore } from 'react';
+import { collection, doc, query, where, orderBy, limit, onSnapshot, type Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase/client';
 import { useLive } from './useLive';
+import { subscribeSyncedLeads, syncedLeadsState } from '@/lib/leadSync';
+import { SERVER_STATE } from '@/lib/liveCollection';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import { QUOTA_MESSAGE, isQuotaExhausted } from '@/lib/quotaError';
 import type { LeadStatus } from '@/lib/leadStatus';
@@ -282,7 +284,30 @@ export function useLeads(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  const live = useLive(`leads:${key}`, build, !IS_DEMO && key !== 'idle', describeLiveError);
+  /*
+    **The whole pipeline syncs only what changed** (owner, 2026-09-23 — the day
+    the free read quota ran out). The admin's and HR's list is every lead in
+    the business, re-billed in full each time a device reopened the CRM; it now
+    comes from the device's copy plus `updatedAt > last visit`, with a full
+    sync every six hours. Scoped lists keep the ordinary listener — see
+    `lib/leadSync` for why a delta cannot serve them.
+  */
+  const synced = key === 'all' && !IS_DEMO;
+  const buildDelta = useCallback(
+    (since: Timestamp) =>
+      query(collection(db, 'leads'), where('updatedAt', '>', since), orderBy('updatedAt', 'asc')),
+    []
+  );
+  const subscribeSynced = useCallback(
+    (notify: () => void) =>
+      synced ? subscribeSyncedLeads('leads:all', build, buildDelta, describeLiveError, notify) : () => {},
+    [synced, build, buildDelta]
+  );
+  const readSynced = useCallback(() => (synced ? syncedLeadsState('leads:all') : SERVER_STATE), [synced]);
+  const syncedState = useSyncExternalStore(subscribeSynced, readSynced, () => SERVER_STATE);
+
+  const plain = useLive(`leads:${key}`, build, !IS_DEMO && key !== 'idle' && !synced, describeLiveError);
+  const live = synced ? syncedState : plain;
 
   if (IS_DEMO) {
     const leads = wholePipeline

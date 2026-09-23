@@ -67,6 +67,7 @@ import {
   readChosenLaneMember,
   normalizeLaneUids,
   MAX_LEADS_PER_TURN,
+  acceptDeadlineFrom,
 } from '@/lib/distribution';
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from '@/lib/dates';
 import { normalizeJobTitle } from '@/lib/constants/roles';
@@ -1139,7 +1140,7 @@ export const demo = {
       // A wrap starts a new lap, so the exclusion list is replaced.
       attemptedAssignees: wrapped ? [nextUid] : attempted,
       status: 'ASSIGNED',
-      acceptDeadlineAt: ts(new Date(Date.now() + ACCEPT_WINDOW_MS)),
+      acceptDeadlineAt: ts(acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS)),
       lastActivityAt: now(),
     });
 

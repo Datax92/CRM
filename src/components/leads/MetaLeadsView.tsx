@@ -33,6 +33,7 @@ import { useLeads, type Lead } from "@/hooks/useLeads";
 import { acceptLead, passLead } from "@/lib/clientActions";
 import { describeLeadSource } from "@/lib/leadSource";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
+import { formatTimeLeft } from "@/lib/distribution";
 import { LEAD_SCORE_WEIGHTS } from "@/lib/leadPriority";
 import { timestampMillis } from "@/lib/dates";
 import { groupMetaLeads, isMetaLead } from "@/lib/metaLeadGroups";
@@ -308,7 +309,7 @@ function Countdown({ deadline }: { deadline: Lead["acceptDeadlineAt"] }) {
       }}
     >
       <Clock size={11} />
-      {lapsed ? "Window closed — moving on" : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`}
+      {lapsed ? "Window closed — moving on" : `${formatTimeLeft(left)} left`}
     </span>
   );
 }

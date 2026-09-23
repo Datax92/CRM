@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  laneResumesAt,
+  acceptDeadlineFrom,
+  formatTimeLeft,
   getNextAssigneeAndState,
   resolveCascadeAssignee,
   readLaneEmployee,
@@ -491,4 +494,44 @@ test('a folder group of one keeps offering it back rather than leaving the lead 
 test('a folder whose chosen people have all gone yields nobody, so the record waits', () => {
   // The record stays in the Data Bank rather than becoming a lead with no owner.
   assert.equal(getNextAssigneeAndState([], {}).uid, null);
+});
+
+/* Quiet hours ---------------------------------------------------------------- */
+
+
+/** Karachi wall-clock time → epoch ms (UTC+5, no daylight saving). */
+const pk = (day: number, hour: number, minute = 0) => Date.UTC(2026, 8, day, hour - 5, minute);
+const FIVE_MIN = 5 * 60_000;
+
+test('in the working day an offer gets the ordinary five minutes', () => {
+  assert.equal(laneResumesAt(pk(23, 9, 0)), null);
+  assert.equal(laneResumesAt(pk(23, 15, 30)), null);
+  assert.equal(laneResumesAt(pk(23, 21, 59)), null);
+  assert.equal(acceptDeadlineFrom(pk(23, 15, 0), FIVE_MIN).getTime(), pk(23, 15, 5));
+});
+
+test('from 22:00 an offer waits for 09:05 the next morning', () => {
+  assert.equal(laneResumesAt(pk(23, 22, 0)), pk(24, 9, 0));
+  assert.equal(laneResumesAt(pk(23, 23, 59)), pk(24, 9, 0));
+  assert.equal(acceptDeadlineFrom(pk(23, 23, 0), FIVE_MIN).getTime(), pk(24, 9, 5));
+});
+
+test('after midnight it waits for 09:05 the same morning, not the next one', () => {
+  assert.equal(laneResumesAt(pk(24, 0, 30)), pk(24, 9, 0));
+  assert.equal(laneResumesAt(pk(24, 8, 59)), pk(24, 9, 0));
+  assert.equal(acceptDeadlineFrom(pk(24, 3, 0), FIVE_MIN).getTime(), pk(24, 9, 5));
+});
+
+test('the month boundary does not skip a day', () => {
+  // 30 September 23:00 Karachi → 1 October 09:00.
+  assert.equal(laneResumesAt(pk(30, 23, 0)), Date.UTC(2026, 9, 1, 4, 0));
+});
+
+test('an overnight countdown reads in hours, a short one ticks', () => {
+  assert.equal(formatTimeLeft(252), '4:12');
+  assert.equal(formatTimeLeft(59), '0:59');
+  assert.equal(formatTimeLeft(0), '0:00');
+  assert.equal(formatTimeLeft(-5), '0:00');
+  assert.equal(formatTimeLeft(10 * 3600 + 4 * 60 + 30), '10h 04m');
+  assert.equal(formatTimeLeft(3600), '1h 00m');
 });

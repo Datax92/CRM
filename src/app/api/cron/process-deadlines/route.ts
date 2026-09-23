@@ -7,6 +7,7 @@ import {
   laneDisplayName,
   normalizeLaneUids,
   type CycleState,
+  acceptDeadlineFrom,
 } from '@/lib/distribution';
 import { readLaneRoster } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
@@ -170,7 +171,7 @@ async function autoAssignLead(leadId: string): Promise<boolean> {
       lastActivityAt: now,
       distributionMethod: 'AUTO',
       status: 'ASSIGNED',
-      acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
       adminAssignDeadlineAt: FieldValue.delete(),
       autoRotationCycleSnapshot: newState,
       attemptedAssignees: FieldValue.arrayUnion(assignee),
@@ -315,7 +316,7 @@ async function reassignExpiredLead(leadId: string): Promise<boolean> {
       lastActivityAt: now,
       distributionMethod: 'AUTO_REASSIGN',
       status: 'ASSIGNED',
-      acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
       attemptedAssignees: wrapped ? [nextAssignee] : FieldValue.arrayUnion(nextAssignee),
       // How many complete laps of the lane this lead has been round. Nothing
       // acts on it — it is what makes "this has been going round for hours"

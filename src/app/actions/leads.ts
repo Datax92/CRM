@@ -18,7 +18,7 @@ import {
   ACCEPT_WINDOW_MS,
   ACCEPT_WINDOW_MINUTES,
 } from "@/lib/constants/distribution";
-import { resolveCascadeAssignee, laneDisplayName } from "@/lib/distribution";
+import { resolveCascadeAssignee, laneDisplayName, acceptDeadlineFrom } from "@/lib/distribution";
 import { readLaneRoster } from "@/lib/server/laneRoster";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
@@ -311,7 +311,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         cascadeLap: (Number(lead.cascadeLap) || 0) + (wrapped ? 1 : 0),
         // Always an offer: the lane has no floor to force it on anybody.
         status: "ASSIGNED",
-        acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
+        acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
       });
 
       t.create(adminDb.collection("notifications").doc(), {

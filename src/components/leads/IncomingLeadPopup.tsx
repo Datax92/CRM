@@ -37,6 +37,7 @@ import { useIncomingLead, ACCEPT_WINDOW_SECONDS } from "@/hooks/useIncomingLead"
 import { acceptLead, passLead } from "@/lib/clientActions";
 import { describeLeadSource } from "@/lib/leadSource";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
+import { formatTimeLeft } from "@/lib/distribution";
 import { LEAD_SCORE_WEIGHTS } from "@/lib/leadPriority";
 import { E } from "@/components/employees/directoryChrome";
 
@@ -345,11 +346,8 @@ function useCountdown(expiresAt: number | null): number | null {
   }, [expiresAt, now]);
 }
 
-function formatClock(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
+/** One formatter for every countdown — an overnight offer reads in hours. */
+const formatClock = formatTimeLeft;
 
 /**
  * Whether we are past the server render, for the portal.

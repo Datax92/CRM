@@ -1,6 +1,7 @@
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getFirestore, initializeFirestore, type Firestore } from "firebase-admin/firestore";
 import { getAuth, type Auth } from "firebase-admin/auth";
+import { installLeadStamp } from "@/lib/server/leadStampInstall";
 
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 
@@ -100,6 +101,9 @@ let firestore: Firestore | null = null;
 export function getAdminDb(): Firestore {
   if (firestore) return firestore;
 
+  // Every write to a lead gets `updatedAt`, which the browsers' "only what
+  // changed" sync reads. See `lib/leadStamp`.
+  installLeadStamp();
   const app = getAdminApp();
   try {
     firestore = initializeFirestore(app, { preferRest: PREFER_REST });

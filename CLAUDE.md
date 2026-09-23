@@ -50,6 +50,7 @@ follow-ups, attendance, payroll and financial reporting.
   - **A one-person lane re-offers to that person** with a fresh window each time. First and last are the same person; the rule taken literally is the owner's answer.
   - **It never stops on its own.** At a five-minute sweep an unaccepted lead costs ~288 hops a day — about 860 writes for one lead, against a 20,000/day cap. Five such leads is a fifth of the budget. That is the stated price of "loop until accepted"; a lap cap would be a different instruction.
   - `UNASSIGNED_NO_CAPACITY` is now reachable **only** when the lane is genuinely empty — no active member at all.
+  - **The lane has a night** (owner, 2026-09-23). An offer made between **22:00 and 09:00 Karachi** is given a deadline of **09:00 + the window** (`acceptDeadlineFrom`, `lib/distribution`), used by every place an offer is made — the sweep's auto-assign and cascade, Pass on, the Meta intake and the demo store. The holder can accept overnight; at 09:05 the lane carries on as by day. It replaced ~130 overnight hops per unaccepted lead (~15 reads, ~4 writes and a red flag each). Order, rotation and who is offered first are unchanged. Countdowns over an hour read `10h 04m` (`formatTimeLeft`).
 - **Admin actions bypass the lane.** Assign, reassign and promote write `ACCEPTED` + `acceptedAt` immediately and delete `acceptDeadlineAt`. An admin handing out a lead is a decision, not an offer.
 - **The cascade never advances rotation counters.** Cleaning up a colleague's miss must not consume your turn.
 - **Moving a lead writes its name too.** Every write that changes `assignedUserId` — the cron's auto-assign and cascade, Pass on, the manual paths — writes `assigneeName` from `laneDisplayName`. The cascade and Pass on used to move the uid alone, so a lead that went Aroosa → Rafia still read "Aroosa" in search and in the duplicate message that names who holds a number. Repaired 2026-09-17 (5 leads).
@@ -456,6 +457,18 @@ out of the script.
 ---
 
 # Session log (last 5 days)
+
+### 2026-09-23 (late evening) — only what changed: the lead list stops re-downloading itself
+
+*"do every technique and make it optimized then test it as well and make sure it wont happen again."*
+
+- **Every server write to `leads/{id}` is stamped `updatedAt`, centrally** (`lib/leadStamp` + `lib/server/leadStampInstall`, installed in `getAdminDb`). It wraps `WriteBatch.prototype`, which `DocumentReference`, `Transaction` and `BulkWriter` all write through, so the ~60 lead writers — and any added later — are stamped without knowing it. Complete because browsers cannot write `leads` and the app never deletes one. Scripts that initialise their own firebase-admin are **not** stamped; the six-hour full sync covers them.
+- **The admin's and HR's whole-pipeline list syncs only what changed** (`lib/leadSync`, `lib/leadSyncPlan`): the device's IndexedDB copy via `getDocsFromCache`, then `updatedAt > watermark`; a full sync if there is no copy, the copy is over six hours old, the record is corrupt, or the delta query errors. Scoped lists (employee, Sales manager) keep the ordinary listener — a lead reassigned out of their scope would never reach their delta. `useLeads` hands screens the same `LiveState` either way.
+- **The lane's night** — rule under **Distribution**.
+- **"Counts instead of lists" found nothing to change**: no screen loads a large list only to count it; the big lists are the ones displayed.
+- **Tested end to end on the emulator** — `npm run test:sync` (4 tests, real `firestore.rules`): stamping on create/set/merge/update/transaction and not on subcollections; the delta returns only changed leads; the rules allow it for admin and HR and refuse an employee; the cache answers the full query. **The emulator needs `firebase-tools@13`** on this machine's Java 17 — current releases require Java 21.
+- **`npm run test:rules` run for the first time in weeks: 37/40.** The 3 failures are all "a missing deal must read as absent" (`closedDeals`), and `firestore.rules` is unchanged since 2026-09-15 — pre-existing, not caused by this round, and owed a look.
+- **Validation**: typecheck 0, `test` **806/806**, `eslint src` 7 errors / 33 warnings (baseline), `next build` compiles. **Not measured against live usage** — the database was over quota all evening.
 
 ### 2026-09-23 (evening) — the free read quota ran out; Reports was reading the whole company's month
 

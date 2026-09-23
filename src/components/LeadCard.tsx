@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Clock, User, ArrowRight, AlertTriangle, Phone } from "lucide-react";
 import type { Lead } from "@/hooks/useLeads";
 import { ACCEPT_WINDOW_MS } from "@/lib/constants/distribution";
+import { formatTimeLeft } from "@/lib/distribution";
 import { LEAD_STATUS_LABELS, type LeadStatus } from "@/lib/leadStatus";
 import { formatPhone } from "@/lib/phone";
 import { formatBusinessDate } from "@/lib/dates";
@@ -177,11 +178,9 @@ function useCountdown(lead: Lead) {
     return { display: "0:00", expired: true, fractionRemaining: 0 };
   }
 
-  const minutes = Math.floor(remaining / 60000);
-  const seconds = Math.floor((remaining % 60000) / 1000);
   const fractionRemaining = windowMs > 0 ? Math.min(1, remaining / windowMs) : 1;
   return {
-    display: `${minutes}:${String(seconds).padStart(2, "0")}`,
+    display: formatTimeLeft(remaining / 1000),
     expired: false,
     fractionRemaining,
   };

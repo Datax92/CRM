@@ -330,3 +330,61 @@ export function resolveCascadeAssignee(
   return { uid: active[0].uid, wrapped: true };
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Quiet hours — the lane waits overnight                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The lane's night (owner, 2026-09-23), Karachi time: from 22:00 until 09:00
+ * an offer does not expire, so nothing circles the lane while nobody is
+ * working.
+ *
+ * **Why:** the lane loops until somebody accepts, one hop every five minutes.
+ * A lead that arrived at 23:00 used to go round ~130 times before anyone
+ * woke, each hop ~15 reads and ~4 writes, a red flag against whoever was
+ * holding it at the time, and a pile of EXPIRED events nobody reads — on the
+ * free plan, a real share of the day's read quota spent overnight.
+ *
+ * **How:** an offer made in quiet hours is given a deadline of 09:00 plus the
+ * ordinary window, instead of now plus the window. The person it was offered
+ * to can accept it any time before then — at midnight if they are awake — and
+ * if they have not by 09:05 the lane carries on exactly as in the day. The
+ * sweep has nothing to do overnight because nothing has expired. Nothing about
+ * the order of the lane, the rotation or who is offered first changes.
+ */
+export const LANE_QUIET_FROM_HOUR = 22;
+export const LANE_QUIET_UNTIL_HOUR = 9;
+
+const KARACHI_OFFSET_MS = 5 * 3_600_000; // UTC+5, no daylight saving
+const DAY_MS = 86_400_000;
+
+/** When the lane resumes, in epoch ms, if `nowMs` is inside quiet hours; else null. */
+export function laneResumesAt(nowMs: number): number | null {
+  const local = nowMs + KARACHI_OFFSET_MS;
+  const hour = new Date(local).getUTCHours();
+  if (hour < LANE_QUIET_FROM_HOUR && hour >= LANE_QUIET_UNTIL_HOUR) return null;
+  const dayStart = Math.floor(local / DAY_MS) * DAY_MS;
+  const resumeLocal = dayStart + LANE_QUIET_UNTIL_HOUR * 3_600_000 + (hour >= LANE_QUIET_FROM_HOUR ? DAY_MS : 0);
+  return resumeLocal - KARACHI_OFFSET_MS;
+}
+
+/** The accept deadline for an offer made at `nowMs`: the window, from now or from the morning. */
+export function acceptDeadlineFrom(nowMs: number, windowMs: number): Date {
+  return new Date((laneResumesAt(nowMs) ?? nowMs) + windowMs);
+}
+
+/**
+ * Time left on an offer, as the popup and the cards print it. Under an hour it
+ * is the ticking `4:12`; an overnight offer (see `acceptDeadlineFrom`) reads
+ * `10h 04m` rather than `604:12`.
+ */
+export function formatTimeLeft(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total >= 3600) {
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}

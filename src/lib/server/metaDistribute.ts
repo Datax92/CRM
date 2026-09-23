@@ -39,6 +39,7 @@ import {
   laneDisplayName,
   normalizeLaneUids,
   type CycleState,
+  acceptDeadlineFrom,
 } from '@/lib/distribution';
 import { readLaneRoster } from './laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
@@ -184,7 +185,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
         subAdminUid: (profile.subAdminUid as string | undefined) ?? null,
       }),
       distributionMethod: 'AUTO',
-      acceptDeadlineAt: new Date(Date.now() + ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
       attemptedAssignees: [assignee],
       autoRotationCycleSnapshot: newState,
       /*
