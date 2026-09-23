@@ -18,6 +18,7 @@
 
 import { assertMonthOpen } from "@/lib/groupMonthGuard";
 import { adminDb } from "@/lib/firebase/server";
+import { cached, docKey } from "@/lib/server/serverCache";
 import { verifyAuth, requireAdmin, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { karachiDayKey } from "@/lib/dates";
@@ -77,8 +78,11 @@ export async function getPersonalExpenseCategories(
   return runAction("getPersonalExpenseCategories", async () => {
     await verifyAuth(token);
 
-    const snap = await adminDb.collection("config").doc(PERSONAL_CATEGORY_DOC).get();
-    const custom = ((snap.data()?.categories ?? []) as unknown[])
+    // Cached a minute, as the office categories are.
+    const stored = await cached(docKey(`config/${PERSONAL_CATEGORY_DOC}`), 60_000, async () =>
+      (await adminDb.collection("config").doc(PERSONAL_CATEGORY_DOC).get()).data() ?? {}
+    );
+    const custom = ((stored.categories ?? []) as unknown[])
       .map((value) => String(value).trim())
       .filter(Boolean);
 

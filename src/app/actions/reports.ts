@@ -39,6 +39,7 @@
  */
 
 import { adminDb } from "@/lib/firebase/server";
+import { cached } from "@/lib/server/serverCache";
 import { verifyAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
@@ -468,9 +469,13 @@ async function loadPeople(
   if (seesEveryone) {
     // One read of the whole user collection rather than three role queries:
     // this is a handful of documents and the report needs every role anyway.
-    const snap = await adminDb.collection("users").get();
-    return snap.docs
-      .map((doc) => toPerson(doc.id, doc.data()))
+    // Cached a minute (`roster:` keys are dropped by any profile write on
+    // this server): the roster is the same for every report opened.
+    const everyone = await cached("roster:everyone", 60_000, async () =>
+      (await adminDb.collection("users").get()).docs.map((doc) => ({ id: doc.id, data: doc.data() }))
+    );
+    return everyone
+      .map((doc) => toPerson(doc.id, doc.data))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 

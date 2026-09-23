@@ -1,4 +1,8 @@
 import { adminAuth, adminDb } from "./server";
+import { cached, docKey } from "@/lib/server/serverCache";
+
+/** How long a profile is trusted without re-reading — see `verifyAuth`. */
+const PROFILE_TTL_MS = 30_000;
 import {
   isHrManager,
   isUserRole,
@@ -78,12 +82,21 @@ export async function verifyAuth(token: string): Promise<DecodedAuth> {
     throw new AuthError("Your session is invalid or has expired. Please sign in again.");
   }
 
-  const snap = await adminDb.collection("users").doc(decoded.uid).get();
-  if (!snap.exists) {
+  /*
+    **Cached for 30 seconds** (2026-09-23, the day the free read quota ran out):
+    this read happened on every Server Action — one read per click, all day.
+    A write to the profile on this server drops it at once
+    (`lib/server/serverCache`), so disabling an account takes effect here
+    immediately and on any other warm server within half a minute.
+  */
+  const profile = await cached(docKey(`users/${decoded.uid}`), PROFILE_TTL_MS, async () => {
+    const snap = await adminDb.collection("users").doc(decoded.uid).get();
+    return snap.exists ? (snap.data() ?? {}) : null;
+  });
+  if (!profile) {
     throw new AuthError("This account has no CRM profile. Ask an administrator to add you.");
   }
 
-  const profile = snap.data() ?? {};
   if (profile.status === "DISABLED") {
     throw new AuthError("This account has been disabled.");
   }

@@ -1,5 +1,6 @@
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase/server";
+import { cached, docKey } from "@/lib/server/serverCache";
 import { ACTIVITY_DAYS, ACTIVITY_TOTALS_FROM, activityDayId, activityDelta, type EntryFacts } from "@/lib/activityDays";
 
 /**
@@ -42,7 +43,10 @@ export function writeActivityDelta(
  */
 export async function readActivityTotalsFrom(): Promise<string> {
   try {
-    const value = (await adminDb.collection("config").doc("activityTotals").get()).get("from");
+    // Cached ten minutes: it moves once, when the backfill runs.
+    const value = await cached(docKey("config/activityTotals"), 10 * 60_000, async () =>
+      (await adminDb.collection("config").doc("activityTotals").get()).get("from") as unknown
+    );
     if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   } catch {
     // fall through

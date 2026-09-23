@@ -460,6 +460,14 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-24 (small hours) — a short server-side cache for what every request reads
+
+`lib/server/serverCache`: an in-memory, per-instance cache with a time limit, one shared load for simultaneous callers, and failures never remembered. Used **only for reads that decide what to show or who is asking — never inside a transaction**, where a stale value could write something wrong.
+
+- **What it holds:** the caller's profile in `verifyAuth` (**30 s** — it was one read on every Server Action), the attendance policy (60 s, every check-in and home load), both expense-category lists (60 s), Reports' roster (`roster:everyone`, 60 s), `config/activityTotals` (10 min).
+- **Dropped by the write itself.** The `WriteBatch` wrapper that stamps leads (`lib/server/leadStampInstall`) calls `noteWrite` for every create, set, update and delete, and again after `_commit` — where both `commit()` and a transaction finish — so a read between queueing and committing cannot re-cache the old value. A profile write also drops every `roster:` key. Other warm instances hold theirs until the window ends: **disabling an account takes effect everywhere within 30 seconds.**
+- **Validation**: typecheck 0, `test` 818/818 (5 new, `serverCache.test.ts`), `eslint src` 7 / 33, `next build` compiles, `npm run test:sync` **14/14** — the new case writes a cached profile plainly and in a transaction, and a roster through a profile write, against the emulator.
+
 ### 2026-09-23 (late night) — a read meter that costs nothing and nobody sees
 
 *"adding reads meter … dont show it to ui … read meter should show real reads and … not take its own reads."* The owner is certain the reads spike at particular times; three rounds of optimisation had been reasoned from the code, never measured.

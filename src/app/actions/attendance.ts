@@ -35,6 +35,7 @@ import {
   type AttendancePolicy,
 } from "@/lib/attendancePolicy";
 import { roleTitle } from "@/lib/constants/hierarchy";
+import { cached, docKey } from "@/lib/server/serverCache";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 
 /**
@@ -56,8 +57,13 @@ export type AttendanceConfig = AttendancePolicy;
  * nothing reads them.
  */
 export async function readPolicy(): Promise<AttendancePolicy> {
-  const snap = await adminDb.collection("config").doc("attendance").get();
-  const raw = (snap.data() ?? {}) as Partial<AttendancePolicy>;
+  // Cached for a minute: read on every check-in and every home-screen load,
+  // changed a few times a year. Saving the settings drops it on this server at
+  // once (`lib/server/serverCache`).
+  const stored = await cached(docKey("config/attendance"), 60_000, async () =>
+    (await adminDb.collection("config").doc("attendance").get()).data() ?? {}
+  );
+  const raw = stored as Partial<AttendancePolicy>;
 
   const officeWifiNames = Array.isArray(raw.officeWifiNames)
     ? raw.officeWifiNames.map((value: unknown) => normalizeNetworkName(String(value))).filter(Boolean)

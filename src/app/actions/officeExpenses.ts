@@ -2,6 +2,7 @@
 
 import { assertMonthOpen } from "@/lib/groupMonthGuard";
 import { adminDb } from "@/lib/firebase/server";
+import { cached, docKey } from "@/lib/server/serverCache";
 import { requireAdmin, requireManager, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
@@ -63,8 +64,12 @@ export async function getExpenseCategories(
   return runAction("getExpenseCategories", async () => {
     await requireExpenseAccess(token);
 
-    const snap = await adminDb.collection("config").doc(CATEGORY_DOC).get();
-    const custom = ((snap.data()?.categories ?? []) as unknown[])
+    // Cached a minute — read on every expense screen, changed rarely; saving
+    // them drops it on this server at once (`lib/server/serverCache`).
+    const stored = await cached(docKey(`config/${CATEGORY_DOC}`), 60_000, async () =>
+      (await adminDb.collection("config").doc(CATEGORY_DOC).get()).data() ?? {}
+    );
+    const custom = ((stored.categories ?? []) as unknown[])
       .map((value) => String(value).trim())
       .filter(Boolean);
 

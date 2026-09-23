@@ -32,8 +32,14 @@ process.env.FIRESTORE_EMULATOR_HOST ??= '127.0.0.1:8080';
 // understands; the raw loader gets a copy pointing at the file directly.
 const installSrc = new URL('../src/lib/server/leadStampInstall.ts', import.meta.url);
 const installCopy = new URL('../src/lib/server/_leadStampInstall.synctest.ts', import.meta.url);
-writeFileSync(installCopy, readFileSync(installSrc, 'utf8').replace('"@/lib/leadStamp"', '"../leadStamp.ts"'));
+writeFileSync(
+  installCopy,
+  readFileSync(installSrc, 'utf8')
+    .replace('"@/lib/leadStamp"', '"../leadStamp.ts"')
+    .replace('"@/lib/server/serverCache"', '"./serverCache.ts"')
+);
 const { installLeadStamp } = await import(installCopy.href);
+const serverCache = await import(new URL('../src/lib/server/serverCache.ts', import.meta.url).href);
 rmSync(installCopy);
 
 installLeadStamp();
@@ -116,4 +122,23 @@ test('the full list can be answered from the device copy without the server', as
   assert.equal(fromServer.size, 3);
   const fromCache = await getDocsFromCache(full(db));
   assert.deepEqual(fromCache.docs.map((d) => d.id).sort(), ['L1', 'L2', 'L3']);
+});
+
+test('a cached document is dropped when the server writes it, in a transaction too', async () => {
+  const key = serverCache.docKey('users/admin-uid');
+  let loads = 0;
+  const load = async () => ++loads;
+  await serverCache.cached(key, 60_000, load);
+  await admin.doc('users/admin-uid').update({ name: 'Changed' });
+  assert.equal(await serverCache.cached(key, 60_000, load), 2, 'dropped after a plain update');
+
+  await admin.runTransaction(async (t) => {
+    await t.get(admin.doc('users/admin-uid'));
+    t.update(admin.doc('users/admin-uid'), { name: 'Again' });
+  });
+  assert.equal(await serverCache.cached(key, 60_000, load), 3, 'dropped after a transaction commits');
+
+  await serverCache.cached('roster:everyone', 60_000, load);
+  await admin.doc('users/emp-uid').set({ status: 'DISABLED' }, { merge: true });
+  assert.equal(await serverCache.cached('roster:everyone', 60_000, load), 5, 'a profile write drops the roster');
 });
