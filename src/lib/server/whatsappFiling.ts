@@ -32,6 +32,23 @@ export { splitCloudApiMessages } from '@/lib/whatsappIntake';
  * retries rather than losing the lead.
  */
 export async function fileWhatsAppMessage(
+  body: Record<string, unknown>,
+  via: 'meta' | 'make'
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const result = await fileOne(body);
+  /*
+    **One line per message, naming the route and what it did.** With Make and
+    the direct webhook both live, the two requests for one message both answer
+    200; only this line says which of them created the lead and which was told
+    it already existed — the question asked when switching Make off.
+  */
+  const outcome = String(result.body.outcome ?? (result.status >= 500 ? 'FAILED' : result.body.error ?? 'UNKNOWN'));
+  const where = String(result.body.folderName ?? result.body.campaignName ?? '');
+  console.info(`[whatsapp] via ${via}: ${outcome}${where ? ` — ${where}` : ''}`);
+  return result;
+}
+
+async function fileOne(
   body: Record<string, unknown>
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const lead = readWhatsAppLead(body);

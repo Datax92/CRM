@@ -81,7 +81,7 @@ export async function POST(request: Request) {
       for (const change of entry.changes ?? []) {
         if (change.field !== 'messages') continue;
         for (const message of splitCloudApiMessages(change.value ?? {})) {
-          const result = await fileWhatsAppMessage(message);
+          const result = await fileWhatsAppMessage(message, 'meta');
           if (result.status >= 500) failed++;
           else if (result.body.outcome === 'CREATED') filed++;
         }

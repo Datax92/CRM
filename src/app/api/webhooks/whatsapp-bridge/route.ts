@@ -64,7 +64,7 @@ export async function POST(request: Request) {
 
   // The rules — ads only, first contact only — live in one place, shared with
   // the direct Meta webhook, so the two doors can never file differently.
-  const result = await fileWhatsAppMessage(body);
+  const result = await fileWhatsAppMessage(body, 'make');
   return NextResponse.json(result.body, { status: result.status });
 }
 
