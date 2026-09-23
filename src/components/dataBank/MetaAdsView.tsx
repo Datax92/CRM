@@ -22,7 +22,14 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Megaphone, Radio, AlertTriangle, BellRing, X } from "lucide-react";
-import { collection, onSnapshot, query, where, limit } from "firebase/firestore";
+import {
+  collection,
+  query,
+  where,
+  limit,
+} from "firebase/firestore";
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from "@/lib/firebase/meteredFirestore";
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";

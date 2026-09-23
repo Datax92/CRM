@@ -2,6 +2,7 @@ import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getFirestore, initializeFirestore, type Firestore } from "firebase-admin/firestore";
 import { getAuth, type Auth } from "firebase-admin/auth";
 import { installLeadStamp } from "@/lib/server/leadStampInstall";
+import { installReadMeter } from "@/lib/server/readMeter";
 
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 
@@ -113,6 +114,9 @@ export function getAdminDb(): Firestore {
     // existing instance already carries the settings applied the first time.
     firestore = getFirestore(app);
   }
+  // Counts every document the server reads, into the server log only. See
+  // `lib/server/readMeter`.
+  installReadMeter(firestore);
   return firestore;
 }
 

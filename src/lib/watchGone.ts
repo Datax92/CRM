@@ -21,7 +21,11 @@
  * of two answers, not a replacement for the first.
  */
 
-import { doc, onSnapshot } from "firebase/firestore";
+import {
+  doc,
+} from "firebase/firestore";
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from "@/lib/firebase/meteredFirestore";
 import { db } from "@/lib/firebase/client";
 import { IS_DEMO } from "@/lib/demo/store";
 

@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+} from 'firebase/firestore';
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError } from './useLeads';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';

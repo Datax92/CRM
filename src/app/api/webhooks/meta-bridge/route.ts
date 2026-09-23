@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import { karachiDayKey } from '@/lib/dates';
 import { notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
 import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
@@ -29,6 +30,11 @@ export const dynamic = 'force-dynamic';
  * every request is refused rather than the door standing open.
  */
 export async function POST(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('webhook:meta-bridge', () => handlePOST(request));
+}
+
+async function handlePOST(request: Request) {
   const secret = process.env.META_BRIDGE_SECRET;
   if (!secret) {
     console.error('[meta-bridge] META_BRIDGE_SECRET is not set — refusing every delivery.');

@@ -19,7 +19,11 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import {
+  doc,
+} from 'firebase/firestore';
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { karachiMonthKey } from '@/lib/dates';
 import { readLeadActivity, EMPTY_LEAD_ACTIVITY, type LeadActivity } from '@/lib/leadPriority';

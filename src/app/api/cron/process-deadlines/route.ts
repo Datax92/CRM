@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import { adminDb } from '@/lib/firebase/server';
 import { FieldValue, Transaction, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import {
@@ -38,6 +39,11 @@ const BATCH_LIMIT = 200;
  * overlapping or repeated invocations are harmless.
  */
 export async function GET(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('cron:process-deadlines', () => handleGET(request));
+}
+
+async function handleGET(request: Request) {
   const denied = rejectUnauthorized(request);
   if (denied) return denied;
 

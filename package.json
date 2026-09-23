@@ -23,7 +23,7 @@
     "deploy:rules:rest": "node scripts/deploy-rules-rest.mjs",
     "check:indexes": "node scripts/check-indexes.mjs",
     "test:rules": "firebase emulators:exec --only firestore --project leadway-rules-test 'node --test scripts/rules.test.mjs'",
-    "test:sync": "npx -y firebase-tools@13 emulators:exec --only firestore --project leadway-sync-test \"node --experimental-strip-types --test scripts/leadSync.test.mjs\"",
+    "test:sync": "npx -y firebase-tools@13 emulators:exec --only firestore --project leadway-sync-test \"node --experimental-strip-types --test --test-timeout=60000 --test-force-exit scripts/leadSync.test.mjs scripts/readMeter.test.mjs scripts/readMeterClient.test.mjs\"",
     "backfill:activity-days": "node --env-file=.env.local --experimental-strip-types scripts/backfill-activity-days.mts"
   },
   "dependencies": {

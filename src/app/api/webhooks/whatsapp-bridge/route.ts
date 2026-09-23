@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import { fileWhatsAppMessage } from '@/lib/server/whatsappFiling';
 
 export const runtime = 'nodejs';
@@ -41,6 +42,11 @@ export const dynamic = 'force-dynamic';
  * is one more way for this to be silently switched off.
  */
 export async function POST(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('webhook:whatsapp-bridge', () => handlePOST(request));
+}
+
+async function handlePOST(request: Request) {
   const secret = process.env.META_BRIDGE_SECRET;
   if (!secret) {
     console.error('[whatsapp-bridge] META_BRIDGE_SECRET is not set — refusing to run.');

@@ -1,0 +1,224 @@
+'use client';
+
+/**
+ * The browser half of the read meter (owner, 2026-09-23): `onSnapshot`,
+ * `getDocs` and `getDoc` exactly as `firebase/firestore` has them, plus a
+ * count of the documents that **came from Google's servers** — which is what
+ * is billed — kept in memory and sent every few minutes to `/api/readmeter`,
+ * which writes it to the server log. **Nothing is read from or written to
+ * Firestore to do this, and nothing is shown on screen.** The server half is
+ * `lib/server/readMeter`.
+ *
+ * Every client file that reads imports these three from here instead of from
+ * `firebase/firestore`. Behaviour is unchanged: same arguments, same
+ * callbacks, same unsubscribe.
+ *
+ * **What is counted, and how close it is to the bill:**
+ *
+ * - A query listener's **first answer from the server** counts every document
+ *   in it (`initial`). That is exact for a cold listen and an over-count when
+ *   Firestore resumes a listen from under 30 minutes ago and bills only what
+ *   changed — the meter cannot tell the two apart, so it reports them
+ *   separately and the daily total can be checked against Firebase's own.
+ * - Every later answer counts the documents that changed (`update`).
+ * - An answer served from the device's own copy counts nothing — it costs
+ *   nothing.
+ * - **The silent re-send is caught.** When a page reopens, the listener first
+ *   answers from the device's copy; the server then re-sends the same result,
+ *   billed in full, and by default the app is never told because nothing
+ *   changed. So query listeners are opened with metadata changes on, counted,
+ *   and only the answers the screen would have received are passed on.
+ * - `getDocs` counts its size (one for an empty result); `getDoc` one.
+ */
+
+import {
+  onSnapshot as fsOnSnapshot,
+  getDocs as fsGetDocs,
+  getDoc as fsGetDoc,
+  DocumentReference,
+  type DocumentData,
+  type DocumentSnapshot,
+  type Query,
+  type QuerySnapshot,
+  type SnapshotListenOptions,
+  type Unsubscribe,
+} from 'firebase/firestore';
+import { auth } from '@/lib/firebase/client';
+
+/* -------------------------------------------------------------------------- */
+/* The tally, and getting it to the server log                                 */
+/* -------------------------------------------------------------------------- */
+
+const FLUSH_MS = 5 * 60_000;
+const tally = new Map<string, number>();
+let timer: ReturnType<typeof setTimeout> | null = null;
+let hooked = false;
+
+/** `/admin/data-bank/abc123…` → `/admin/data-bank/:id`, so one screen is one row. */
+function pageKey(): string {
+  if (typeof window === 'undefined') return '?';
+  return window.location.pathname.replace(/\/[A-Za-z0-9_-]{15,}/g, '/:id');
+}
+
+/** A query's or a reference's collection path, ids dropped: `leads/*\/followUps`. */
+function collectionKey(target: unknown): string {
+  try {
+    if (target instanceof DocumentReference) {
+      return target.path.split('/').filter((_, index) => index % 2 === 0).join('/*/');
+    }
+    const internal = (target as { _query?: { path?: { segments?: string[] }; collectionGroup?: string | null } })._query;
+    if (internal?.collectionGroup) return `**/${internal.collectionGroup}`;
+    const segments = internal?.path?.segments ?? [];
+    return segments.filter((_, index) => index % 2 === 0).join('/*/') || '?';
+  } catch {
+    return '?';
+  }
+}
+
+function count(target: unknown, kind: 'initial' | 'update' | 'get', reads: number): void {
+  if (reads <= 0 || typeof window === 'undefined') return;
+  const key = `${pageKey()}|${collectionKey(target)}|${kind}`;
+  tally.set(key, (tally.get(key) ?? 0) + reads);
+  if (!hooked) {
+    hooked = true;
+    // Sent when the tab is hidden or closed as well, or a quick visit is lost.
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush();
+    });
+  }
+  if (!timer) timer = setTimeout(flush, FLUSH_MS);
+}
+
+function flush(): void {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  if (tally.size === 0) return;
+  const items = Object.fromEntries(tally);
+  tally.clear();
+  const body = JSON.stringify({ uid: auth?.currentUser?.uid ?? null, items });
+  try {
+    const sent = typeof navigator !== 'undefined' && navigator.sendBeacon?.('/api/readmeter', new Blob([body], { type: 'application/json' }));
+    if (!sent) void fetch('/api/readmeter', { method: 'POST', body, keepalive: true, headers: { 'content-type': 'application/json' } }).catch(() => {});
+  } catch {
+    // The meter must never break a screen.
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* The three reads                                                             */
+/* -------------------------------------------------------------------------- */
+
+type NextFn<T> = (snapshot: T) => void;
+type ErrorFn = (error: Error) => void;
+interface Observer<T> {
+  next?: NextFn<T>;
+  error?: ErrorFn;
+  complete?: () => void;
+}
+
+function isOptions(value: unknown): value is SnapshotListenOptions {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Observer<unknown>).next !== 'function' &&
+    ('includeMetadataChanges' in value || 'source' in value)
+  );
+}
+
+// The same call shapes as `firebase/firestore`'s own, so every caller's
+// callbacks stay typed.
+export function onSnapshot<T = DocumentData>(
+  reference: DocumentReference<T>,
+  onNext: (snapshot: DocumentSnapshot<T>) => void,
+  onError?: (error: Error) => void,
+  onCompletion?: () => void
+): Unsubscribe;
+export function onSnapshot<T = DocumentData>(
+  reference: DocumentReference<T>,
+  options: SnapshotListenOptions,
+  onNext: (snapshot: DocumentSnapshot<T>) => void,
+  onError?: (error: Error) => void,
+  onCompletion?: () => void
+): Unsubscribe;
+export function onSnapshot<T = DocumentData>(
+  query: Query<T>,
+  onNext: (snapshot: QuerySnapshot<T>) => void,
+  onError?: (error: Error) => void,
+  onCompletion?: () => void
+): Unsubscribe;
+export function onSnapshot<T = DocumentData>(
+  query: Query<T>,
+  options: SnapshotListenOptions,
+  onNext: (snapshot: QuerySnapshot<T>) => void,
+  onError?: (error: Error) => void,
+  onCompletion?: () => void
+): Unsubscribe;
+export function onSnapshot<T = DocumentData>(
+  target: Query<T> | DocumentReference<T>,
+  ...args: unknown[]
+): Unsubscribe {
+  // Unpack the SDK's overloads: [options?] then an observer or (next, error, complete).
+  let options: SnapshotListenOptions = {};
+  if (isOptions(args[0])) options = args.shift() as SnapshotListenOptions;
+  let observer: Observer<unknown>;
+  if (typeof args[0] === 'function') {
+    observer = { next: args[0] as NextFn<unknown>, error: args[1] as ErrorFn | undefined, complete: args[2] as (() => void) | undefined };
+  } else {
+    observer = (args[0] ?? {}) as Observer<unknown>;
+  }
+
+  if (target instanceof DocumentReference) {
+    let seenServer = false;
+    return fsOnSnapshot(target, options, {
+      next: (snap: DocumentSnapshot<T>) => {
+        if (!snap.metadata.fromCache) {
+          count(target, seenServer ? 'update' : 'initial', 1);
+          seenServer = true;
+        }
+        observer.next?.(snap);
+      },
+      error: observer.error,
+      complete: observer.complete,
+    });
+  }
+
+  const wantsMetadata = options.includeMetadataChanges === true;
+  let delivered = false;
+  let seenServer = false;
+  return fsOnSnapshot(target, { ...options, includeMetadataChanges: true }, {
+    next: (snap: QuerySnapshot<T>) => {
+      const changes = snap.docChanges();
+      if (!snap.metadata.fromCache) {
+        if (!seenServer) {
+          count(target, 'initial', Math.max(1, snap.size));
+          seenServer = true;
+        } else {
+          count(target, 'update', changes.filter((change) => change.type !== 'removed').length);
+        }
+      }
+      // Pass on only what the screen would have received without metadata
+      // changes: the first answer, and any answer in which documents changed.
+      if (wantsMetadata || !delivered || changes.length > 0) {
+        delivered = true;
+        observer.next?.(snap);
+      }
+    },
+    error: observer.error,
+    complete: observer.complete,
+  });
+}
+
+export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QuerySnapshot<T>> {
+  const snap = await fsGetDocs(query);
+  if (!snap.metadata.fromCache) count(query, 'get', Math.max(1, snap.size));
+  return snap;
+}
+
+export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promise<DocumentSnapshot<T>> {
+  const snap = await fsGetDoc(ref);
+  if (!snap.metadata.fromCache) count(ref, 'get', 1);
+  return snap;
+}

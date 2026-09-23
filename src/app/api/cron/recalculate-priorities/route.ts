@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import { recalculatePriorities } from '@/lib/server/recalcPriorities';
 
 export const runtime = 'nodejs';
@@ -18,6 +19,11 @@ export const maxDuration = 60;
  * the order has not changed it writes only scores and timestamps.
  */
 export async function GET(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('cron:recalculate-priorities', () => handleGET(request));
+}
+
+async function handleGET(request: Request) {
   const secret = process.env.CRON_SECRET;
 
   if (!secret) {

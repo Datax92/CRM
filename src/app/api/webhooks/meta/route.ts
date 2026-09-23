@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import {
   verifyMetaSignature,
   fetchLeadDetails,
@@ -48,6 +49,11 @@ export async function GET(request: Request) {
  * leads or restart an already-running 5-minute window.
  */
 export async function POST(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('webhook:meta', () => handlePOST(request));
+}
+
+async function handlePOST(request: Request) {
   // Signature verification needs the raw bytes — parse only after checking.
   const rawBody = await request.text();
   const signature = request.headers.get('x-hub-signature-256');

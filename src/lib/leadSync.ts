@@ -34,12 +34,13 @@
 
 import {
   getDocsFromCache,
-  onSnapshot,
   Timestamp,
   type DocumentData,
   type Query,
   type QuerySnapshot,
 } from 'firebase/firestore';
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { timestampMillis } from '@/lib/dates';
 import { advanceWatermark, planSync, readSyncMeta, type SyncMeta } from '@/lib/leadSyncPlan';
 import type { LiveRow, LiveState } from '@/lib/liveCollection';
@@ -99,8 +100,12 @@ function stampsIn(snap: QuerySnapshot<DocumentData>): Array<number | null> {
 function startFull(key: string, entry: Entry, fullQuery: Query<DocumentData>, onError: (e: unknown) => string): void {
   const startedAt = Date.now();
   let meta: SyncMeta | null = null;
+  // Metadata changes on: the server confirming a result identical to the
+  // device's copy raises no ordinary event, and that confirmation is the only
+  // moment the sync may record that the device is current.
   entry.stop = onSnapshot(
     fullQuery,
+    { includeMetadataChanges: true },
     (snap) => {
       entry.byId = new Map(snap.docs.map((doc) => [doc.id, { id: doc.id, ...doc.data() }]));
       // Recorded only from the server's answer — a snapshot served from the
@@ -146,6 +151,7 @@ async function startDelta(
   let watermark = meta.watermark;
   entry.stop = onSnapshot(
     deltaQuery(Timestamp.fromMillis(since)),
+    { includeMetadataChanges: true },
     (snap) => {
       for (const change of snap.docChanges()) {
         if (change.type === 'removed') entry.byId.delete(change.doc.id);

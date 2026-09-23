@@ -1,5 +1,15 @@
 import { useCallback, useState, useEffect, useSyncExternalStore } from 'react';
-import { collection, doc, query, where, orderBy, limit, onSnapshot, type Timestamp } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  query,
+  where,
+  orderBy,
+  limit,
+  type Timestamp,
+} from 'firebase/firestore';
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { useLive } from './useLive';
 import { subscribeSyncedLeads, syncedLeadsState } from '@/lib/leadSync';

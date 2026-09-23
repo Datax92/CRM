@@ -460,6 +460,16 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-23 (late night) — a read meter that costs nothing and nobody sees
+
+*"adding reads meter … dont show it to ui … read meter should show real reads and … not take its own reads."* The owner is certain the reads spike at particular times; three rounds of optimisation had been reasoned from the code, never measured.
+
+- **Server (exact):** `lib/server/readMeter` wraps the five firebase-admin read entry points — `Query.get`, `AggregateQuery.get` (reached through a never-sent `count()`), `Firestore.getAll` (which `DocumentReference.get` uses), `Transaction.get`, `Transaction.getAll` — which do not call one another, so each read counts once. An empty query counts 1, a count 1 per 1,000. Attributed by `AsyncLocalStorage`: `runAction` labels `action:<name>`, and the cron and webhook handlers are wrapped `cron:*` / `webhook:*`. One `[readmeter]` line per scope in the server log. **`Transaction.get` tells a document from a query by class** — a `CollectionReference` has a `path` too, and was first counted as one document.
+- **Browser (close):** `lib/firebase/meteredFirestore` exports `onSnapshot` / `getDocs` / `getDoc` with the SDK's own signatures; the 20 client files that read import them from there. It counts documents **from the server** only — first answer in full (`initial`, an over-count when a listen resumes within 30 min), later answers by changed documents (`update`), gets by size. **Query listeners are opened with metadata changes on** so the server's silent, billed re-send of an unchanged result is counted; only what the screen would have received is passed on. Tallied in memory, sent every five minutes and on tab hide by `sendBeacon` to `/api/readmeter`, which only logs. **No Firestore read or write anywhere in the meter.**
+- **Found by building it:** `lib/leadSync` recorded its "device is current" marker only on a server answer, and an unchanged result raises no ordinary event — so the marker was rarely written and most reopens would have synced in full. Both its listeners now take metadata changes.
+- **Collected from here**: `node scripts/readmeter-collect.mjs` pulls the lines every 20 minutes into `.readmeter/log.jsonl` (gitignored) — Vercel Hobby keeps about an hour — and `scripts/readmeter-report.mjs [day]` prints reads by hour, by source and by person.
+- **Validation**: typecheck 0, `test` 813/813, `eslint src` 7 / 33 (baseline), `next build` compiles, **`npm run test:sync` 13/13** (4 sync, 6 server meter, 3 browser meter against the real client SDK). The emulator needs `firebase-tools@13` here, and a test run killed mid-way leaves the emulator's Java on port 8080.
+
 ### 2026-09-23 (night) — Reports from day totals; the sweep reads the team once
 
 *"Do 1 2 3 4"* — the four remaining read cuts: day totals for Reports, a ten-minute report memory, Reports opening on Today, and the sweep sharing one roster read. Rules under **KPI** (Reports) and **Distribution**.

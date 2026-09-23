@@ -74,3 +74,4 @@ serviceAccountKey.json
 # OS
 Thumbs.db
 .aider*
+.readmeter/

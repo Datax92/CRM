@@ -18,7 +18,15 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { collection, limit, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import {
+  collection,
+  limit,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from "@/lib/firebase/meteredFirestore";
 import { db } from "@/lib/firebase/client";
 import { IS_DEMO, useDemoState } from "@/lib/demo/store";
 import { describeFirestoreError, useLeads, type FirestoreTimestamp, type Lead } from "./useLeads";

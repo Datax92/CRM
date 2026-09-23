@@ -30,7 +30,12 @@
  * Firestore actually sends something new.
  */
 
-import { onSnapshot, type Query, type DocumentData } from 'firebase/firestore';
+import {
+  type Query,
+  type DocumentData,
+} from 'firebase/firestore';
+// Metered: counts the reads Google bills, into the server log only.
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 
 /** How long a listener outlives its last subscriber. */
 const KEEP_ALIVE_MS = 60_000;

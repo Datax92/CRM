@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { meterReads } from '@/lib/server/readMeter';
 import { sweepAbsentees } from '@/app/actions/attendance';
 import { readPolicy } from '@/app/actions/attendance';
 import { pastAbsentCutoff } from '@/lib/attendancePolicy';
@@ -23,6 +24,11 @@ export const maxDuration = 60;
  * Sunday is skipped: nobody was expected, so nobody is absent.
  */
 export async function GET(request: Request) {
+  // Reads counted into the server log only — see `lib/server/readMeter`.
+  return meterReads('cron:mark-absentees', () => handleGET(request));
+}
+
+async function handleGET(request: Request) {
   const secret = process.env.CRON_SECRET;
 
   if (!secret) {

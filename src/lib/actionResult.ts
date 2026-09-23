@@ -12,6 +12,7 @@
  */
 
 import { QUOTA_MESSAGE, isQuotaExhausted } from './quotaError';
+import { meterReads } from './server/readMeter';
 import {
   CREDENTIALS_MESSAGE,
   credentialsKnownMissing,
@@ -60,7 +61,9 @@ export async function runAction<T>(
   }
 
   try {
-    const data = await body();
+    // Every Firestore read this action makes is counted into the server log as
+    // `action:<label>` — never into Firestore. See `lib/server/readMeter`.
+    const data = await meterReads(`action:${label}`, body);
     const took = Date.now() - startedAt;
     if (took >= SLOW_ACTION_MS) {
       console.warn(`[action:${label}] took ${took}ms — slower than expected.`);
