@@ -7,6 +7,7 @@ import {
   whatsappNotes,
   adLabel,
   whatsappSource,
+  splitCloudApiMessages,
 } from './whatsappIntake.ts';
 import { resolveMetaSource, metaFolderId } from './metaIntake.ts';
 
@@ -146,4 +147,60 @@ test('a message typed straight to the number is not from an ad', () => {
   // A headline alone is not proof: Meta always sends an id, a URL or a click id with a real referral.
   assert.equal(cameFromAnAd(readWhatsAppLead({ phone: '923001234567', ad_headline: 'Faisal Town 2' })!), false);
   assert.equal(cameFromAnAd(readWhatsAppLead({ phone: '923001234567', ad_id: '120212345' })!), true);
+});
+
+/** A Click-to-WhatsApp first message as Meta's Cloud API webhook delivers it. */
+const cloudValue = {
+  messaging_product: 'whatsapp',
+  metadata: { display_phone_number: '923111555426', phone_number_id: '111' },
+  contacts: [{ profile: { name: 'Awais Khan' }, wa_id: '923001234567' }],
+  messages: [
+    {
+      from: '923001234567',
+      id: 'wamid.ABC',
+      timestamp: '1758620000',
+      type: 'text',
+      text: { body: 'Price?' },
+      referral: {
+        source_url: 'https://fb.me/x',
+        source_id: '120251649751890457',
+        source_type: 'ad',
+        headline: 'Faisal Town 2',
+        ctwa_clid: 'clid1',
+      },
+    },
+  ],
+};
+
+test('a direct Cloud API message reads as the same lead the Make bridge would file', () => {
+  const [body] = splitCloudApiMessages(cloudValue);
+  const lead = readWhatsAppLead(body);
+  assert.equal(lead?.phone, '923001234567');
+  assert.equal(lead?.name, 'Awais Khan');
+  assert.equal(lead?.messageId, 'wamid.ABC');
+  assert.equal(lead?.message, 'Price?');
+  assert.equal(lead?.adId, '120251649751890457');
+  assert.equal(lead && cameFromAnAd(lead), true);
+});
+
+test('delivery and read receipts are not messages and file nothing', () => {
+  assert.deepEqual(
+    splitCloudApiMessages({ statuses: [{ id: 'wamid.X', status: 'read', recipient_id: '923001234567' }] }),
+    []
+  );
+  assert.deepEqual(splitCloudApiMessages({}), []);
+});
+
+test('a batch pairs each message with its own sender', () => {
+  const bodies = splitCloudApiMessages({
+    contacts: [
+      { profile: { name: 'A' }, wa_id: '1' },
+      { profile: { name: 'B' }, wa_id: '2' },
+    ],
+    messages: [
+      { from: '2', id: 'm2', text: { body: 'hi' } },
+      { from: '1', id: 'm1', text: { body: 'hello' } },
+    ],
+  });
+  assert.deepEqual(bodies.map((body) => readWhatsAppLead(body)?.name), ['B', 'A']);
 });

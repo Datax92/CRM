@@ -1,11 +1,5 @@
 import { NextResponse } from 'next/server';
-import { adminDb } from '@/lib/firebase/server';
-import { phoneKey } from '@/lib/dataBank';
-import { karachiDayKey } from '@/lib/dates';
-import { notifyMetaLead, recordMetaIntakeIssue } from '@/lib/server/metaFiling';
-import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
-import { resolveCampaign } from '@/lib/meta';
-import { readWhatsAppLead, cameFromAnAd, whatsappNotes, whatsappSource, adLabel } from '@/lib/whatsappIntake';
+import { fileWhatsAppMessage } from '@/lib/server/whatsappFiling';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +11,10 @@ export const dynamic = 'force-dynamic';
  * people to WhatsApp — 103 conversations at Rs 155–191 each when this was
  * built — and until now somebody read each chat and typed the name and number
  * into the CRM. Every one they missed was money already spent.
+ *
+ * **Meta can now deliver these directly** (`/api/webhooks/meta`, object
+ * `whatsapp_business_account`); both routes call `fileWhatsAppMessage`, so
+ * this one can be switched off in Make once the direct subscription is live.
  *
  * **A third door into the same room.** It files through `fileAndOfferMetaLead`,
  * exactly as the Meta webhook and the form bridge do, so a WhatsApp lead is
@@ -64,130 +62,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'Malformed payload' }, { status: 400 });
   }
 
-  const lead = readWhatsAppLead(body);
-  if (!lead) {
-    /*
-      No number at all. Kept rather than discarded — the payload still holds
-      whatever WhatsApp sent, and the Meta Ads screen surfaces these so somebody
-      notices the same day instead of it becoming an HTTP status nobody reads.
-    */
-    await recordMetaIntakeIssue({
-      reason: 'NO_PHONE',
-      detail: 'A WhatsApp message arrived with no sender number, so it cannot be filed.',
-      leadgenId: null,
-      source: 'WhatsApp',
-      payload: body,
-    });
-    return NextResponse.json(
-      { ok: false, error: 'A WhatsApp lead needs a sender number.' },
-      { status: 200 }
-    );
-  }
-
-  /*
-    **Ads only.** Asked before any read, because this number is the business's
-    everyday WhatsApp and most of what arrives here is not a lead. 200 so the
-    intermediary records it as handled rather than retrying; the outcome is
-    what shows in its history when somebody asks why a message did not appear.
-  */
-  if (!cameFromAnAd(lead)) {
-    console.info('[whatsapp-bridge] Skipped a message with no ad referral.');
-    return NextResponse.json({
-      ok: true,
-      outcome: 'NOT_FROM_AD',
-      message: 'This message did not come from an ad, so no lead was created.',
-    });
-  }
-
-  try {
-    const key = phoneKey(lead.phone);
-
-    /*
-      **The first-contact rule.** Asked before anything is written, and asked of
-      the pipeline rather than of this message. `phoneKey` is on every lead
-      (backfilled 2026-09-13), so this is one indexed read.
-    */
-    if (key) {
-      const known = await adminDb
-        .collection('leads')
-        .where('phoneKey', '==', key)
-        .limit(1)
-        .get();
-      if (!known.empty) {
-        const existing = known.docs[0];
-        // 200, not an error: this is the rule working. A non-2xx would make the
-        // intermediary retry a message that will never be filed, for ever.
-        return NextResponse.json({
-          ok: true,
-          outcome: 'ALREADY_A_LEAD',
-          leadId: existing.id,
-          assignedTo: existing.data().assigneeName ?? null,
-          message: 'That number is already in the pipeline — no second lead created.',
-        });
-      }
-    }
-
-    // Best-effort by design: `resolveCampaign` returns nulls rather than
-    // throwing, and `whatsappSource` then groups by ad instead.
-    const campaign = await resolveCampaign(lead.adId);
-    const source = whatsappSource(lead, campaign);
-
-    const result = await fileAndOfferMetaLead({
-      // The WhatsApp message id, so a redelivery of the same message is caught
-      // even before the phone rule above.
-      leadgenId: lead.messageId,
-      name: lead.name,
-      phone: lead.phone,
-      email: null,
-      city: null,
-      /*
-        Their own words, and which ad they tapped. Kept as text for the reason
-        `metaNotes` records: "around 50 lakh maybe" is a sentence, and storing it
-        as a number would invent a precision the customer never gave.
-      */
-      extras: {
-        ...(lead.message ? { 'Their first message': lead.message } : {}),
-        ...(lead.adHeadline ? { 'Ad they tapped': lead.adHeadline } : {}),
-        ...(lead.clickId ? { 'WhatsApp click id': lead.clickId } : {}),
-      },
-      /*
-        Grouped by **campaign** — the folder the owner reads as "Faisal Town 2"
-        — and by ad only when the campaign could not be looked up. See
-        `whatsappSource`.
-      */
-      ...source,
-      formId: null,
-      formName: null,
-      pageId: null,
-      submittedAt: lead.sentAt,
-    });
-
-    if (result.outcome === 'CREATED') {
-      await notifyMetaLead(result.folderId, result.folderName, karachiDayKey());
-    }
-
-    return NextResponse.json({
-      ok: true,
-      ...result,
-      // Shown in the intermediary's history, so a lead in a folder named after
-      // its ad rather than its campaign explains itself without a log search.
-      groupedBy: campaign.campaignId ? 'CAMPAIGN' : 'AD',
-      campaignName: campaign.campaignName,
-      notes: whatsappNotes(lead),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[whatsapp-bridge] Failed to file a lead:', message);
-    await recordMetaIntakeIssue({
-      reason: 'FAILED',
-      detail: message.slice(0, 300),
-      leadgenId: lead.messageId,
-      source: adLabel(lead),
-      payload: body,
-    }).catch(() => {});
-    // Non-2xx so the intermediary retries rather than losing it.
-    return NextResponse.json({ ok: false, error: 'Could not file the lead.' }, { status: 500 });
-  }
+  // The rules — ads only, first contact only — live in one place, shared with
+  // the direct Meta webhook, so the two doors can never file differently.
+  const result = await fileWhatsAppMessage(body);
+  return NextResponse.json(result.body, { status: result.status });
 }
 
 /** A health check, so setup can be confirmed without sending a lead. */

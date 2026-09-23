@@ -137,7 +137,14 @@ export async function fileMetaLead(lead: MetaLeadInput): Promise<FileResult> {
     return { outcome: 'DUPLICATE_PHONE', folderId, folderName: source.label, recordId: clash.docs[0].id };
   }
 
-  await recordRef.create({
+  /*
+    **The same message from two doors at once** — Make and Meta's direct webhook
+    both carry the WhatsApp message id, so during a switch-over they can race
+    past the `get` above together. The loser's `create` is refused; that is the
+    duplicate rule working, not a failure, and reporting it as one would put a
+    false "could not be filed" alert on Meta Ads and make the sender retry.
+  */
+  const created = await recordRef.create({
     folderId,
     values,
     name: String(values[META_FOLDER_ROLES.name] ?? '').trim() || 'Unnamed lead',
@@ -161,7 +168,16 @@ export async function fileMetaLead(lead: MetaLeadInput): Promise<FileResult> {
     metaSubmittedAt: lead.submittedAt ?? null,
     addedByUid: 'system:meta',
     createdAt: FieldValue.serverTimestamp(),
-  });
+  }).then(
+    () => true,
+    (error: unknown) => {
+      if (isAlreadyExists(error)) return false;
+      throw error;
+    }
+  );
+  if (!created) {
+    return { outcome: 'DUPLICATE_LEAD', folderId, folderName: source.label, recordId: recordRef.id };
+  }
 
   await folderRef.update({
     recordCount: FieldValue.increment(1),
@@ -235,4 +251,17 @@ export async function recordMetaIntakeIssue(input: {
       },
       { merge: true }
     );
+}
+
+/**
+ * A `create` refused because the document is already there — gRPC code 6
+ * (`ALREADY_EXISTS`), or HTTP 409 over REST, which `preferRest` makes the
+ * usual transport. Matched on the code and the wording, since the two
+ * transports shape the error differently.
+ */
+function isAlreadyExists(error: unknown): boolean {
+  const e = error as { code?: unknown; status?: unknown; message?: unknown } | null;
+  if (!e) return false;
+  if (e.code === 6 || e.code === 409 || e.code === 'already-exists' || e.code === 'ALREADY_EXISTS' || e.status === 409) return true;
+  return /already exists/i.test(String(e.message ?? ''));
 }

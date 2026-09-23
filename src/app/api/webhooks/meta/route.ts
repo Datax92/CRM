@@ -7,6 +7,7 @@ import {
 } from '@/lib/meta';
 import { notifyMetaLead } from '@/lib/server/metaFiling';
 import { fileAndOfferMetaLead } from '@/lib/server/metaDistribute';
+import { fileWhatsAppMessage, splitCloudApiMessages } from '@/lib/server/whatsappFiling';
 import { karachiDayKey } from '@/lib/dates';
 
 // firebase-admin and node:crypto both require the Node runtime.
@@ -65,6 +66,30 @@ export async function POST(request: Request) {
     body = JSON.parse(rawBody);
   } catch {
     return NextResponse.json({ error: 'Malformed payload' }, { status: 400 });
+  }
+
+  /*
+    **Click-to-WhatsApp, straight from Meta** (owner, 2026-09-23), replacing the
+    Make scenario. The same app's webhook carries both objects, so the same
+    signature check covers both. Each message goes through `fileWhatsAppMessage`,
+    the filer the Make bridge also uses — ads only, first contact only.
+  */
+  if (body.object === 'whatsapp_business_account') {
+    let filed = 0;
+    let failed = 0;
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        if (change.field !== 'messages') continue;
+        for (const message of splitCloudApiMessages(change.value ?? {})) {
+          const result = await fileWhatsAppMessage(message);
+          if (result.status >= 500) failed++;
+          else if (result.body.outcome === 'CREATED') filed++;
+        }
+      }
+    }
+    // Non-2xx makes Meta redeliver; the message id and the phone rule make a
+    // redelivery of anything already filed a no-op.
+    return NextResponse.json({ filed, failed }, { status: failed > 0 ? 500 : 200 });
   }
 
   if (body.object !== 'page') {

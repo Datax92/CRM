@@ -174,3 +174,22 @@ export function whatsappNotes(lead: WhatsAppLead): string | null {
 export function adLabel(lead: WhatsAppLead): string {
   return lead.adHeadline || (lead.adId ? `WhatsApp ad ${lead.adId}` : 'WhatsApp (no ad)');
 }
+
+/**
+ * The messages inside one Cloud API webhook `value`, each as its own body.
+ *
+ * Meta batches: one `value` can carry several `messages` and the `contacts`
+ * they came from. **Statuses are not messages** — delivery and read receipts
+ * arrive on the same `messages` field with a `statuses` array and no
+ * `messages`, and reading one as a lead would file an issue for every receipt.
+ */
+export function splitCloudApiMessages(value: Record<string, unknown>): Array<Record<string, unknown>> {
+  const messages = Array.isArray(value.messages) ? (value.messages as Array<Record<string, unknown>>) : [];
+  const contacts = Array.isArray(value.contacts) ? (value.contacts as Array<Record<string, unknown>>) : [];
+  return messages
+    .filter((message) => message && typeof message === 'object' && typeof message.from === 'string')
+    .map((message) => {
+      const contact = contacts.find((entry) => entry?.wa_id === message.from) ?? contacts[0];
+      return { contacts: contact ? [contact] : [], messages: [message] };
+    });
+}
