@@ -29,9 +29,7 @@ export class ActionTimeout extends Error {
   constructor() {
     super(
       "The server did not answer in time. It may still have gone through — " +
-        "refresh in a moment and check before trying again. If this keeps " +
-        "happening, check Firebase console → Usage and billing first: once the " +
-        "day's free quota is spent, every write stalls exactly like this."
+        "refresh in a moment and check before trying again."
     );
     this.name = "ActionTimeout";
   }

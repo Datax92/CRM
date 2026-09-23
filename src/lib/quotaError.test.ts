@@ -38,8 +38,8 @@ test("survives the shapes an error is not", () => {
   assert.equal(isQuotaExhausted(8), false);
 });
 
-test("the message names both ways out", () => {
-  assert.match(QUOTA_MESSAGE, /midnight US\/Pacific/);
-  assert.match(QUOTA_MESSAGE, /Blaze/);
+test("staff are told the save did not happen, without billing details", () => {
+  assert.match(QUOTA_MESSAGE, /try again/i);
+  assert.doesNotMatch(QUOTA_MESSAGE, /quota|Blaze|billing|Firebase|Firestore/i);
   assert.equal(FREE_TIER_DAILY_WRITES, 20_000);
 });

@@ -22,12 +22,18 @@
 /** Documents the free plan may be written per project per day. */
 export const FREE_TIER_DAILY_WRITES = 20_000;
 
+/**
+ * What staff see when the day's quota is spent (owner, 2026-09-23).
+ *
+ * **Neutral on purpose, never silent.** The previous text named the free tier,
+ * the reset time and the billing console — true, but it is a message for the
+ * owner, and every salesperson was reading it on their phone. It still says
+ * the save did not happen, because a failure nobody can see is a remark
+ * somebody believes they logged. The real cause stays in the server log
+ * (`[action:…] Firestore quota exhausted`), which is where it is diagnosed.
+ */
 export const QUOTA_MESSAGE =
-  "This project has used up its Firestore free-tier quota for today " +
-  "(20,000 writes / 20,000 deletes / 50,000 reads). Writes will keep timing " +
-  "out until the quota resets at midnight US/Pacific. To lift the ceiling now, " +
-  "upgrade the project to the Blaze pay-as-you-go plan in the Firebase console " +
-  "→ Usage and billing.";
+  "Couldn't save right now — the system is busy. Please try again in a little while.";
 
 /**
  * True when an error is Firestore refusing work because a quota is spent.
