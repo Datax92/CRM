@@ -1,7 +1,13 @@
 "use client";
 
 /**
- * A manager's view of the Meta ad folders — the same component the admin uses,
- * scoped by `useDataBankFolders` and the Security Rule behind it.
+ * A manager's Meta Ads — every Facebook lead their team holds, grouped by
+ * campaign in the admin's layout. Built from the team's leads rather than the
+ * admin's folders, which a manager cannot read; see `TeamMetaAdsView`.
  */
-export { default } from "@/app/admin/meta-ads/page";
+
+import { TeamMetaAdsView } from "@/components/dataBank/TeamMetaAdsView";
+
+export default function SubAdminMetaAdsPage() {
+  return <TeamMetaAdsView />;
+}

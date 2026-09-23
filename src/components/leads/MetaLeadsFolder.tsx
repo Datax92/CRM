@@ -17,6 +17,12 @@
  * The rows are the person's own leads whose folder is this one, from
  * `useLeads` — `dataBankFolders` are managing-roles-only, so the folder is
  * identified by the id the leads carry rather than read.
+ *
+ * **`scope="team"` is a manager's Meta Ads** (owner, 2026-09-23): every lead
+ * in the campaign held by anybody on their team, themselves included, each row
+ * naming who holds it — the admin's Assigned list, drawn for one team. Their
+ * **Meta Leads** stays `scope="own"`. The pane is the same one; it already
+ * lets a manager work their own leads and only read their team's.
  */
 
 import { useMemo, useState } from "react";
@@ -49,11 +55,27 @@ function chipFor(lead: Lead): RowChip {
     : { text: statusLabel(lead.status), background: "#e8f5f3", color: "#2f7d78" };
 }
 
-export function MetaLeadsFolder({ folderId }: { folderId: string }) {
+/** Who holds a lead, for a team row's chip. */
+function holderOf(lead: Lead, me: string | undefined): string {
+  if (lead.assignedUserId && lead.assignedUserId === me) return "You";
+  return lead.assigneeName?.trim() || "Unassigned";
+}
+
+/** A team row names the holder; amber while the lead is still an unanswered offer. */
+function teamChipFor(lead: Lead, me: string | undefined): RowChip {
+  const holder = holderOf(lead, me);
+  return lead.status === "ASSIGNED"
+    ? { text: `Waiting · ${holder}`, background: "#fdf3e3", color: "#8a6321", title: `Offered to ${holder}` }
+    : { text: holder, background: "#e8f5f3", color: "#2f7d78", title: `${statusLabel(lead.status)} · held by ${holder}` };
+}
+
+export function MetaLeadsFolder({ folderId, scope = "own" }: { folderId: string; scope?: "own" | "team" }) {
   const { user, role, getIdToken } = useAuth();
-  useProtectedRoute(["employee", "subadmin"]);
+  useProtectedRoute(scope === "team" ? ["subadmin"] : ["employee", "subadmin"]);
   const isMobile = useIsMobile();
+  const team = scope === "team";
   const basePath = role === "subadmin" ? "/subadmin" : "/employee";
+  const backHref = team ? "/subadmin/meta-ads" : `${basePath}/meta-leads`;
   const paneRole = role === "subadmin" ? "subadmin" : "employee";
 
   const { leads, loading, error } = useLeads(
@@ -64,17 +86,34 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
 
   const [query, setQuery] = useState("");
   const [view, setView] = useState<View>("ALL");
+  const [holder, setHolder] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  // A manager's query already returns only their team's leads (and their own),
+  // so the team scope needs no further narrowing than the folder.
   const inFolder = useMemo(
     () =>
       leads
         .filter(
-          (lead) => lead.assignedUserId === user?.uid && isMetaLead(lead) && metaFolderOf(lead) === folderId
+          (lead) =>
+            (team || lead.assignedUserId === user?.uid) && isMetaLead(lead) && metaFolderOf(lead) === folderId
         )
         .sort((a, b) => (timestampMillis(b.createdAt) ?? 0) - (timestampMillis(a.createdAt) ?? 0)),
-    [leads, user?.uid, folderId]
+    [leads, user?.uid, folderId, team]
   );
+
+  /** Everybody holding a lead here, with a count — the admin's assignee picker. */
+  const holders = useMemo(() => {
+    if (!team) return [];
+    const counts = new Map<string, { uid: string; name: string; count: number }>();
+    for (const lead of inFolder) {
+      const uid = lead.assignedUserId ?? "";
+      const entry = counts.get(uid) ?? { uid, name: holderOf(lead, user?.uid), count: 0 };
+      entry.count += 1;
+      counts.set(uid, entry);
+    }
+    return [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [inFolder, team, user?.uid]);
   const summary = useMemo(
     () => groupMetaLeads(inFolder, (lead) => timestampMillis(lead.createdAt))[0] ?? null,
     [inFolder]
@@ -84,6 +123,7 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
     const needle = query.trim().toLowerCase();
     const digits = needle.replace(/\D/g, "");
     return inFolder.filter((lead) => {
+      if (holder && (lead.assignedUserId ?? "") !== holder) return false;
       if (view === "WAITING" && lead.status !== "ASSIGNED") return false;
       if (view === "TAKEN" && lead.status === "ASSIGNED") return false;
       if (!needle) return true;
@@ -92,7 +132,7 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
         (digits.length >= 3 && (lead.phone ?? "").replace(/\D/g, "").includes(digits))
       );
     });
-  }, [inFolder, view, query]);
+  }, [inFolder, view, query, holder]);
   const pages = usePagination(visible, PAGE_SIZE);
 
   // Resolved against the live list, so a status changed in the pane shows behind it.
@@ -105,7 +145,7 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
   const tabs: Array<[View, string, number]> = [
     ["ALL", "All", inFolder.length],
     ["WAITING", "Waiting", waiting],
-    ["TAKEN", "Yours", summary?.taken ?? 0],
+    ["TAKEN", team ? "Accepted" : "Yours", summary?.taken ?? 0],
   ];
 
   const list = (
@@ -119,8 +159,8 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
       <div className="flex min-h-[78px] shrink-0 items-center justify-between gap-3 bg-[#4f9c99] px-5 py-3.5 text-white">
         <div className="flex min-w-0 items-center gap-2.5">
           <Link
-            href={`${basePath}/meta-leads`}
-            aria-label="Back to Meta Leads"
+            href={backHref}
+            aria-label={team ? "Back to Meta Ads" : "Back to Meta Leads"}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-white/20"
           >
             <ArrowLeft size={17} />
@@ -141,7 +181,7 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
             </h1>
             <div className="text-[11.5px] tabular-nums text-white/80">
               {inFolder.length.toLocaleString()} lead{inFolder.length === 1 ? "" : "s"} ·{" "}
-              {waiting.toLocaleString()} waiting for you
+              {waiting.toLocaleString()} {team ? "waiting on your team" : "waiting for you"}
             </div>
           </div>
         </div>
@@ -162,6 +202,25 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
           />
         </div>
       </div>
+
+      {team && holders.length > 1 && (
+        <div className="shrink-0 px-[18px] pb-1">
+          <select
+            value={holder}
+            onChange={(event) => setHolder(event.target.value)}
+            aria-label="Show the leads one person holds"
+            className="w-full cursor-pointer rounded-md border border-[#dceae8] bg-white px-3 py-2 text-[#2b3a39] outline-none focus:border-[#4f9c99]"
+            style={{ fontSize: isMobile ? 16 : 13 }}
+          >
+            <option value="">Everyone on the team · {inFolder.length.toLocaleString()}</option>
+            {holders.map((person) => (
+              <option key={person.uid || "none"} value={person.uid}>
+                {person.name} · {person.count.toLocaleString()}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="flex shrink-0 items-center gap-2 px-[18px] pt-1.5 pb-3.5" role="tablist" aria-label="Filter leads">
         {tabs.map(([key, label, count]) => {
@@ -203,26 +262,32 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
             {query.trim()
               ? `Nothing matches “${query.trim()}”.`
               : inFolder.length === 0
-                ? "You hold no leads from this campaign."
+                ? team
+                  ? "Nobody on your team holds a lead from this campaign."
+                  : "You hold no leads from this campaign."
                 : "Nothing in this filter."}
           </p>
         ) : (
           pages.items.map((lead, index) => (
-            <AssignedLeadRow
-              key={lead.id}
-              name={lead.name || "Unnamed lead"}
-              phone={lead.phone}
-              kindLabel="Lead"
-              ringColor={lead.status === "ASSIGNED" ? "#c9973a" : "#2f7d78"}
-              chip={chipFor(lead)}
-              active={lead.id === selectedId}
-              seen={isOpened(lead.id)}
-              index={index}
-              onClick={() => {
-                setSelectedId(lead.id);
-                markOpened(lead.id);
-              }}
-            />
+            // A row wrapper, as the admin's list has: the row is `flex-1`, and
+            // as a direct child of this column it grew to the list's full
+            // height — one lead drawn as a tall box with its name mid-way down.
+            <div key={lead.id} className="flex min-w-0">
+              <AssignedLeadRow
+                name={lead.name || "Unnamed lead"}
+                phone={lead.phone}
+                kindLabel="Lead"
+                ringColor={lead.status === "ASSIGNED" ? "#c9973a" : "#2f7d78"}
+                chip={team ? teamChipFor(lead, user?.uid) : chipFor(lead)}
+                active={lead.id === selectedId}
+                seen={isOpened(lead.id)}
+                index={index}
+                onClick={() => {
+                  setSelectedId(lead.id);
+                  markOpened(lead.id);
+                }}
+              />
+            </div>
           ))
         )}
         <div className="px-1">
@@ -265,7 +330,14 @@ export function MetaLeadsFolder({ folderId }: { folderId: string }) {
             getIdToken={getIdToken}
           />
         ) : (
-          <WorkspaceEmpty label="Select a Lead from the List" hint="Your leads from this campaign open here, to call and log." />
+          <WorkspaceEmpty
+            label="Select a Lead from the List"
+            hint={
+              team
+                ? "Your team's leads from this campaign open here. Your own can be worked; the rest are read-only."
+                : "Your leads from this campaign open here, to call and log."
+            }
+          />
         )}
       </section>
     </div>
