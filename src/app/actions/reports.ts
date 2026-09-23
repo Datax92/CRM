@@ -280,7 +280,7 @@ export async function buildTeamReport(
     }
 
     const readsMs = since();
-    const { entries, warning } = await loadEntries(from, to, leadIds);
+    const { entries, warning } = await loadEntries(from, to, leadIds, uids);
     const activityMs = since();
 
     for (const doc of entries) {

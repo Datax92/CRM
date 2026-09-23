@@ -126,7 +126,7 @@ export async function buildActivityBreakdown(
       }
     }
 
-    const { entries, warning } = await loadEntries(from, to, leadIds);
+    const { entries, warning } = await loadEntries(from, to, leadIds, wanted);
     const { byUid, byLead } = tallyEntries(toCountableEntries(entries), new Set(wanted));
 
     // A composite subject — a manager and their team — is the sum of a set of

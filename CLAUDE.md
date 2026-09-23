@@ -457,6 +457,16 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-23 (evening) — the free read quota ran out; Reports was reading the whole company's month
+
+At ~17:15 Karachi every read began failing with `429 RESOURCE_EXHAUSTED` — the Spark plan's 50,000 reads/day. Railway's failure emails were the symptom: the sweep it calls returned 500, Railway itself was fine. The owner was advised to move to Blaze (a $30 prepayment was asked); no workaround exists, since everything reads first.
+
+- **The largest reader found:** `loadEntries` ran `collectionGroup('followUps')` over the range **unscoped** and discarded all but the subject's entries, and Reports opens on "This month" — so every open, including an employee opening their own, read every entry the company had written since the 1st. The dossier's activity used the same query. Now scoped: entries whose `creditUid` **or** `authorUid` is a subject, unioned by path, because entries before 2026-09-03 carry only `authorUid` and are credited through it. Two collection-group indexes (`creditUid, dayKey`, `authorUid, dayKey`) deployed; until they build the per-lead fallback (already scoped) runs.
+- **Also deployed:** the owed `leads (status, lastFollowUpAt)` index for the quiet-lead reminder.
+- **The quota message staff see is neutral** (`QUOTA_MESSAGE`) and no screen names the plan, quota or billing — the owner's instruction. The server log still says `Firestore quota exhausted`.
+- **Not changed, worth the owner's decision:** the lane loop costs ~15 reads and ~4 writes per hop, every five minutes, all night for any lead nobody accepts.
+- **Not measured:** the service account cannot read Cloud Monitoring (403), and Vercel's log window is about an hour, so the read budget was traced from the code, not from usage figures.
+
 ### 2026-09-23 (second round) — Investment with X: profit is income only once it is received
 
 *"we enter amounts and profits are calculated but in originality we havent recieved the payment yet so there should be option on which i click recieved and that profit goes to income and the investment amount goes back."*

@@ -31,12 +31,54 @@ import type { CountableEntry } from "@/lib/leadBuckets";
  * a slower report is worth incomparably more than a screen that says something
  * went wrong.
  */
+/** Firestore's `in` takes at most 30 values. */
+const IN_LIMIT = 30;
+
 export async function loadEntries(
   from: string,
   to: string,
-  leadIds: string[]
+  leadIds: string[],
+  /**
+   * Whose entries are wanted. **Given, the read is scoped to them** (owner,
+   * 2026-09-23, the day the free read quota ran out): the unscoped query paid
+   * for every entry the whole company wrote in the range and discarded all but
+   * the subject's — and Reports opens on "This month", so every open bought the
+   * whole company's month.
+   *
+   * Two queries, unioned: entries **credited** to these people, and entries
+   * **written** by them. An entry is counted for `creditUid ?? authorUid`
+   * (`toCountableEntries`), and entries older than `creditUid` (2026-09-03)
+   * carry only `authorUid` — a `creditUid` query alone would drop them. The
+   * union is a superset of what the tally counts, for any range; the extra rows
+   * (written by the subject, credited to somebody else) are ignored by the
+   * callers, which tally by credited person.
+   *
+   * Omitted, the range is read unscoped as before.
+   */
+  creditUids?: string[]
 ): Promise<{ entries: FirebaseFirestore.QueryDocumentSnapshot[]; warning: string | null }> {
   try {
+    if (creditUids) {
+      const uids = [...new Set(creditUids.filter(Boolean))];
+      if (uids.length === 0) return { entries: [], warning: null };
+      const slices: string[][] = [];
+      for (let index = 0; index < uids.length; index += IN_LIMIT) slices.push(uids.slice(index, index + IN_LIMIT));
+      const snaps = await Promise.all(
+        slices.flatMap((slice) =>
+          (["creditUid", "authorUid"] as const).map((field) =>
+            adminDb
+              .collectionGroup("followUps")
+              .where(field, "in", slice)
+              .where("dayKey", ">=", from)
+              .where("dayKey", "<=", to)
+              .get()
+          )
+        )
+      );
+      const byPath = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+      for (const snap of snaps) for (const doc of snap.docs) byPath.set(doc.ref.path, doc);
+      return { entries: [...byPath.values()], warning: null };
+    }
     const snap = await adminDb
       .collectionGroup("followUps")
       .where("dayKey", ">=", from)
