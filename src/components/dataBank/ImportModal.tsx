@@ -372,26 +372,17 @@ export function ImportModal({
                       : "rounded-md border border-[#dceae8] bg-white px-4 py-3 text-[13px] text-[#5b6d6b]"
                   }
                 >
-                  <strong>
-                    {cost.writes.toLocaleString()} database writes and{" "}
-                    {cost.reads.toLocaleString()} reads
-                  </strong>{" "}
-                  — one write per record, which is Firestore&rsquo;s floor.
+                  {/* No plan, quota or billing talk on screen (owner, 2026-09-23) —
+                      only the practical advice. The ceiling itself is unchanged. */}
                   {cost.writes > FREE_TIER_DAILY_WRITES ? (
                     <>
-                      {" "}
-                      The free plan allows {FREE_TIER_DAILY_WRITES.toLocaleString()} writes a day
-                      across the whole project, so <strong>this import does not fit in one
-                      day</strong>: past the ceiling every save in the app stalls until midnight
-                      US/Pacific. Either split it across days or move the project to the Blaze
-                      pay-as-you-go plan, where it costs about ${cost.usd.toFixed(2)}.
+                      <strong>This file is too large to import in one day.</strong> Importing it all
+                      at once can stop the CRM saving for everyone until tomorrow — split it into
+                      smaller files and import them on different days.
                     </>
                   ) : (
                     <>
-                      {" "}
-                      That is {Math.round((cost.writes / FREE_TIER_DAILY_WRITES) * 100)}% of the free
-                      plan&rsquo;s {FREE_TIER_DAILY_WRITES.toLocaleString()} writes a day, or about $
-                      {cost.usd.toFixed(2)} on Blaze.
+                      <strong>{(prepared?.rows.length ?? 0).toLocaleString()} records</strong> ready to import.
                     </>
                   )}
                 </div>

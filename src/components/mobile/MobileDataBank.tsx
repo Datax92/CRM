@@ -154,7 +154,7 @@ export function MobileDataBankFolders() {
           */
           text: res.data.done
             ? `${folder.name} deleted, along with ${res.data.deleted.toLocaleString()} records.`
-            : `${folder.name} is gone from your list. ${res.data.deleted.toLocaleString()} records removed and ${res.data.remaining.toLocaleString()} still to go — press delete again to finish, or leave it until tomorrow so today's quota is not spent.`,
+            : `${folder.name} is gone from your list. ${res.data.deleted.toLocaleString()} records removed and ${res.data.remaining.toLocaleString()} still to go — press delete again to finish, or leave it until tomorrow.`,
         });
         setConfirming(null);
       } else {
