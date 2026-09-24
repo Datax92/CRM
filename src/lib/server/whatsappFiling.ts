@@ -69,9 +69,30 @@ async function fileOne(
     WhatsApp and most of what arrives is not a lead (owner, 2026-09-17).
   */
   if (!cameFromAnAd(lead)) {
+    /*
+      **Who was skipped, so a missed lead would be visible** (owner, 2026-09-24,
+      after Make was switched off and the direct route became the only one).
+      The last four digits and whether the number is already in the pipeline:
+      a skipped message from somebody *new* is the one shape a lost ad lead
+      could take, and without this the log could not tell it from a supplier.
+      One indexed read per skipped message, and never fatal.
+    */
+    let known: boolean | null = null;
+    try {
+      const key = phoneKey(lead.phone);
+      if (key) known = !(await adminDb.collection('leads').where('phoneKey', '==', key).limit(1).get()).empty;
+    } catch {
+      known = null;
+    }
+    const tail = lead.phone.replace(/\D/g, '').slice(-4);
     return {
       status: 200,
-      body: { ok: true, outcome: 'NOT_FROM_AD', message: 'This message did not come from an ad, so no lead was created.' },
+      body: {
+        ok: true,
+        outcome: 'NOT_FROM_AD',
+        folderName: `…${tail}, ${known === null ? 'unknown to check' : known ? 'already a lead' : 'NEW to the CRM'}`,
+        message: 'This message did not come from an ad, so no lead was created.',
+      },
     };
   }
 
