@@ -26,14 +26,13 @@
  * the table in `lib/dealAmounts`; this module is handed the two figures and
  * never works out which is which.
  *
- * **3. The company keeps what is left of the source.** `companyRetained =
- * payoutSource − every finalised Cut`. There is **no company percentage** and
- * no "remainder of the base": the company is not one of the recipients, it is
- * whoever is holding the pot afterwards. A company share of the *base* would
- * be charged against money the base does not represent — on the lump sum
- * above, 4% of 40 lakh is 1.6 lakh taken out of a 4 lakh commission, which is
- * not what anybody agreed. The `COMPANY_BASE` kind survives in the types only
- * so **already-finalised records still render**; nothing creates one.
+ * **3. The company keeps what is left of the source, and may name a cut of its
+ * own** (owner, 2026-09-24). A `COMPANY_BASE` line is a percentage of the base
+ * like any other, shown with its own meter; it counts in the rupee test below,
+ * because the company cannot keep more than the pot holds. The company's total
+ * is its cut **plus** everything unallocated: `companyRetained = payoutSource −
+ * what people are paid`. No payout row is written for it — it has nobody to
+ * show it to. (From 2026-09-09 to 2026-09-24 there was no company percentage.)
  *
  * **4. Over-allocation is refused, not clamped.** Cuts totalling more than the
  * payment source cannot be silently reduced to fit; that would pay people
@@ -83,11 +82,21 @@ export interface DistributionResult {
   lines: DistributionLine[];
   /** Sum of every named percentage. */
   distributedPercentage: number;
-  /** The finalised Cuts in rupees — percentages of `cutBase`. */
-  distributedAmount: number;
   /**
-   * What the company keeps: `payoutSource − distributedAmount`. Negative only
-   * in an invalid result, which cannot be finalised.
+   * Every Cut in rupees — percentages of `cutBase` — **including the
+   * company's own cut**. This is what the rupee test compares with the source.
+   */
+  distributedAmount: number;
+  /** What is paid to people: `distributedAmount` less the company's cut. */
+  peopleAmount: number;
+  /** The company's named cut, in rupees and in percent of the base. */
+  companyCutAmount: number;
+  companyCutPercentage: number;
+  /** What nobody was given: `payoutSource − distributedAmount`. The company's too. */
+  unallocatedAmount: number;
+  /**
+   * What the company ends up with: its own cut plus the unallocated rest, i.e.
+   * `payoutSource − peopleAmount`. Negative only in an invalid result.
    */
   companyRetained: number;
   /**
@@ -169,8 +178,20 @@ export function calculateDistribution(
   const distributedAmount = roundMoney(
     lines.reduce((total, line) => total + line.amount, 0)
   );
+  const isCompany = (line: DistributionLine) => line.recipientRole === 'company';
+  const companyCutAmount = roundMoney(
+    lines.filter(isCompany).reduce((total, line) => total + line.amount, 0)
+  );
+  const companyCutPercentage = roundPercent(
+    lines.filter(isCompany).reduce((total, line) => total + line.percentage, 0)
+  );
+  const peopleAmount = roundMoney(distributedAmount - companyCutAmount);
 
-  const companyRetained = roundMoney(payoutSource - distributedAmount);
+  // **The company's total is its own cut plus everything nobody was given**
+  // (owner, 2026-09-24) — i.e. the source less what people are paid. The
+  // company cut is a named slice of that, not money on top of it.
+  const companyRetained = roundMoney(payoutSource - peopleAmount);
+  const unallocatedAmount = roundMoney(payoutSource - distributedAmount);
   const sourceUsedPercentage =
     payoutSource > 0 ? roundPercent((distributedAmount / payoutSource) * 100) : 0;
 
@@ -209,6 +230,10 @@ export function calculateDistribution(
     lines,
     distributedPercentage,
     distributedAmount,
+    peopleAmount,
+    companyCutAmount,
+    companyCutPercentage,
+    unallocatedAmount,
     companyRetained,
     sourceUsedPercentage,
     // Kept only so a record written before this shape still renders.

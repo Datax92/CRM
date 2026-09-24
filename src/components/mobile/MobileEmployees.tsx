@@ -1012,7 +1012,7 @@ function toMillis(value: { toMillis?: () => number; toDate?: () => Date } | unde
   return date ? date.getTime() : 0;
 }
 
-function ProfileOverlay({
+export function ProfileOverlay({
   employee,
   leads,
   deals,

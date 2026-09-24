@@ -33,7 +33,7 @@ const followUp = (over: Partial<CountableEntry> = {}): CountableEntry =>
 
 test('a remark is one remark and nothing else', () => {
   assert.deepEqual(entryTally(remark()), {
-    remarks: 1, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0,
+    remarks: 1, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0,
   });
 });
 
@@ -41,13 +41,13 @@ test('a connected remark is BOTH a remark and a new connect', () => {
   // The owner stated this outright: if the remark connected it belongs in the
   // remark column and in New connects. They are a subset, not a second count.
   assert.deepEqual(entryTally(remark({ connect: true })), {
-    remarks: 1, followUps: 0, newConnects: 1, followUpConnects: 0, meetingsAligned: 0,
+    remarks: 1, followUps: 0, newConnects: 1, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0,
   });
 });
 
 test('a connected follow-up is both a follow-up and a follow-up connect', () => {
   assert.deepEqual(entryTally(followUp({ connect: true })), {
-    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0,
+    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0,
   });
 });
 
@@ -61,7 +61,7 @@ test('the two connect columns never both count one call', () => {
 test('an entry written before `kind` existed counts as a follow-up', () => {
   // Which is what all but the first entry on a lead were.
   assert.deepEqual(entryTally({ leadId: 'L1', uid: 'u1', kind: null, connect: true }), {
-    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0,
+    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0,
   });
 });
 
@@ -76,13 +76,13 @@ test('entries fold per person and per lead, and only for the people asked for', 
   const { byUid, byLead } = tallyEntries(entries, new Set(['u1']));
 
   assert.deepEqual(byUid.get('u1'), {
-    remarks: 1, followUps: 2, newConnects: 1, followUpConnects: 1, meetingsAligned: 0,
+    remarks: 1, followUps: 2, newConnects: 1, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0,
   });
   assert.deepEqual(byLead.get('A'), {
-    remarks: 1, followUps: 1, newConnects: 1, followUpConnects: 0, meetingsAligned: 0,
+    remarks: 1, followUps: 1, newConnects: 1, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0,
   });
   assert.deepEqual(byLead.get('B'), {
-    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0,
+    remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0,
   });
   // Somebody else's work is not in this dossier at all — not as a zero row.
   assert.equal(byLead.has('C'), false);
@@ -113,7 +113,7 @@ test('given the period entries, the cuts describe the period and not the record'
 });
 
 test('one connected follow-up in the period lands in exactly the right two cuts', () => {
-  const tally = { remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0 };
+  const tally = { remarks: 0, followUps: 1, newConnects: 0, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0 };
   assert.equal(matchesActivityFilter(lead, 'FOLLOWED_UP', tally), true);
   assert.equal(matchesActivityFilter(lead, 'FOLLOWUP_CONNECTS', tally), true);
   assert.equal(matchesActivityFilter(lead, 'CONNECTED', tally), true);
@@ -124,7 +124,7 @@ test('one connected follow-up in the period lands in exactly the right two cuts'
 test('a remark and a follow-up on the same lead in one period put it in both', () => {
   // Deliberately unlike the old all-time rule, where a lead moved OUT of
   // Remarks the moment it was followed up. Over one day both things happened.
-  const tally = { remarks: 1, followUps: 1, newConnects: 0, followUpConnects: 0, meetingsAligned: 0 };
+  const tally = { remarks: 1, followUps: 1, newConnects: 0, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0 };
   assert.equal(matchesActivityFilter(lead, 'REMARKED', tally), true);
   assert.equal(matchesActivityFilter(lead, 'FOLLOWED_UP', tally), true);
 });
@@ -144,8 +144,8 @@ test('the chip counts count leads, and are driven by the same tallies', () => {
     { id: 'C', status: 'CONTACTED', followUpCount: 8, connectCount: 5 },
   ];
   const tallies = new Map([
-    ['A', { remarks: 0, followUps: 4, newConnects: 0, followUpConnects: 2, meetingsAligned: 0 }],
-    ['B', { remarks: 1, followUps: 0, newConnects: 1, followUpConnects: 0, meetingsAligned: 0 }],
+    ['A', { remarks: 0, followUps: 4, newConnects: 0, followUpConnects: 2, meetingsAligned: 0, answeredCalls: 0 }],
+    ['B', { remarks: 1, followUps: 0, newConnects: 1, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0 }],
   ]);
 
   const counts = countByFilter(leads, undefined, 'admin', tallies);
@@ -167,7 +167,7 @@ test('addTally folds without losing a figure', () => {
   addTally(into, entryTally(remark({ connect: true })));
   addTally(into, entryTally(followUp({ connect: true })));
   addTally(into, entryTally(followUp()));
-  assert.deepEqual(into, { remarks: 1, followUps: 2, newConnects: 1, followUpConnects: 1, meetingsAligned: 0 });
+  assert.deepEqual(into, { remarks: 1, followUps: 2, newConnects: 1, followUpConnects: 1, meetingsAligned: 0, answeredCalls: 0 });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -243,10 +243,10 @@ test('`undefined` still means the all-time reading, for callers with no periods'
 });
 
 test('tallyFor keeps the three states apart', () => {
-  const map = new Map([['A', { remarks: 2, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0 }]]);
+  const map = new Map([['A', { remarks: 2, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0 }]]);
   assert.equal(tallyFor('A', undefined), undefined);
   assert.equal(tallyFor('A', null), null);
-  assert.deepEqual(tallyFor('A', map), { remarks: 2, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0 });
+  assert.deepEqual(tallyFor('A', map), { remarks: 2, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0, answeredCalls: 0 });
   // A lead the map does not mention was genuinely untouched in these dates —
   // an empty tally, which is an answer, not an absence.
   assert.deepEqual(tallyFor('B', map), EMPTY_TALLY);
@@ -366,6 +366,7 @@ test('it is not disjoint from remarks and follow-ups — the entry is counted in
     newConnects: 1,
     followUpConnects: 0,
     meetingsAligned: 1,
+    answeredCalls: 0,
   });
 });
 

@@ -16,6 +16,9 @@ import {
   readDownPayment,
   readAdjustment,
   readRemaining,
+  DOWN_PAYMENT_KINDS,
+  DOWN_PAYMENT_KIND_LABELS,
+  type DownPaymentKind,
 } from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDate, formatBusinessDateTime } from "@/lib/dates";
@@ -884,6 +887,8 @@ function DealEntryForm({
     seeded?.downPayment ? String(seeded.downPayment) : ""
   );
   const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
+  const [discount, setDiscount] = useState("");
+  const [downPaymentKind, setDownPaymentKind] = useState<DownPaymentKind>("DOWN_PAYMENT");
   const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
   const [dealCategory, setDealCategory] = useState<string>(DEFAULT_DEAL_CATEGORY);
   const [dealDate, setDealDate] = useState(todayInputValue());
@@ -895,10 +900,15 @@ function DealEntryForm({
   }, []);
 
   // Same arithmetic as every other Deal Entry surface — see `lib/dealAmounts`.
+  // This form is a Down Payment form. It used to send no type, which reads as
+  // Installments, and was refused for want of an "amount received" it never asks.
   const typedAmounts = {
+    dealType: "DOWN_PAYMENT" as const,
     totalPrice: Number(totalPrice),
     downPayment: Number(downPayment),
     adjustment: Number(adjustment),
+    discount: Number(discount),
+    downPaymentKind,
   };
   const amounts = dealAmounts(typedAmounts);
   const amountErrors = totalPrice === "" ? [] : validateDealAmounts(typedAmounts);
@@ -912,9 +922,12 @@ function DealEntryForm({
       const result = await closeDeal(await getIdToken(), lead.id, {
         customer: { name, phone, email, cnic, address, city },
         serviceDescription,
+        dealType: "DOWN_PAYMENT",
         totalPrice: Number(totalPrice),
         downPayment: Number(downPayment) || 0,
         adjustment: Number(adjustment) || 0,
+        discount: Number(discount) || 0,
+        downPaymentKind,
         paymentMethod,
         dealCategory,
         dealDate,
@@ -1022,7 +1035,30 @@ function DealEntryForm({
             />
           </div>
           <div className="space-y-1">
-            <label className="block text-xs font-semibold text-slate-700">Down Payment (PKR) *</label>
+            <label className="block text-xs font-semibold text-slate-700">Discount (PKR)</label>
+            <input
+              type="number"
+              min="0"
+              value={discount}
+              onChange={(e) => setDiscount(e.target.value)}
+              placeholder="0"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 focus:bg-white"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
+              <span>{DOWN_PAYMENT_KIND_LABELS[downPaymentKind]} (PKR) *</span>
+              <select
+                value={downPaymentKind}
+                onChange={(e) => setDownPaymentKind(e.target.value as DownPaymentKind)}
+                aria-label="Down payment kind"
+                className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-medium"
+              >
+                {DOWN_PAYMENT_KINDS.map((kind) => (
+                  <option key={kind} value={kind}>{DOWN_PAYMENT_KIND_LABELS[kind]}</option>
+                ))}
+              </select>
+            </label>
             <input
               type="number"
               required
@@ -1046,7 +1082,7 @@ function DealEntryForm({
           </div>
           <div className="space-y-1">
             <label className="block text-xs font-semibold text-slate-700">Remaining (PKR)</label>
-            {/* Calculated — Total Price minus Adjustment. */}
+            {/* Calculated — Total Price minus Discount minus Adjustment. */}
             <input
               type="text"
               readOnly

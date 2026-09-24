@@ -165,6 +165,8 @@ export async function finalizeProfitDistribution(
       // restate what people were paid.
       totalPrice: deal.totalPrice ?? deal.amountReceived ?? 0,
       downPayment: deal.downPayment ?? null,
+      downPaymentKind: deal.downPaymentKind ?? null,
+      discount: deal.discount ?? 0,
       adjustment: deal.adjustment ?? deal.payableAmount ?? 0,
       remaining: readRemaining(deal),
       receivedAmount: readReceivedAmount(deal),
@@ -178,6 +180,12 @@ export async function finalizeProfitDistribution(
       cutBase: result.cutBase,
       payoutSource: result.payoutSource,
       companyRetained: result.companyRetained,
+      // The company's own named cut, and what nobody was given. Both are the
+      // company's; kept apart because they are different decisions.
+      companyCutAmount: result.companyCutAmount,
+      companyCutPercentage: result.companyCutPercentage,
+      unallocatedAmount: result.unallocatedAmount,
+      peopleAmount: result.peopleAmount,
       netProfit: result.netProfit,
       lines: result.lines,
       distributedPercentage: result.distributedPercentage,

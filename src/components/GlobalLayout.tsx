@@ -256,6 +256,8 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         {
           title: "My Team", short: "Team", icon: Users,
           subItems: [
+            // Their own profile — themselves and their team — as the admin sees it.
+            { title: "My Profile", path: "/subadmin/profile", icon: UserCheck },
             { title: "Team Performance", path: "/subadmin/team", icon: IdCard },
             { title: "Reports", path: "/subadmin/reports", icon: BarChart3 }
           ]
@@ -311,6 +313,8 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         {
           title: "Performance", short: "Stats", icon: Activity,
           subItems: [
+            // The profile the admin opens from Team, about themselves.
+            { title: "My Profile", path: "/employee/profile", icon: IdCard },
             { title: "My Stats", path: "/employee/performance/stats", icon: BarChart3 },
             // §6 — their own report, in their own side panel. Scoped on the
             // server, so it can only ever be their row.

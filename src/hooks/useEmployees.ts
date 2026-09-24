@@ -181,6 +181,35 @@ function readEmployee(raw: Record<string, unknown>): EmployeeData {
 }
 
 /**
+ * The signed-in person's own `users` document, as the directory reads it —
+ * one document, allowed by `isSelf` — so an employee or a manager can be shown
+ * the same profile the admin opens from Team (owner, 2026-09-24).
+ */
+export function useOwnEmployeeRecord(uid: string | undefined) {
+  const demoState = useDemoState();
+  const [state, setState] = useState<{ key: string; record: EmployeeData | null } | null>(null);
+  const key = uid ?? 'idle';
+
+  useEffect(() => {
+    if (IS_DEMO || !uid) return;
+    return onSnapshot(
+      doc(db, 'users', uid),
+      (snap) => setState({ key: uid, record: snap.exists() ? readEmployee({ ...snap.data(), id: snap.id }) : null }),
+      (err) => {
+        console.error('[useOwnEmployeeRecord]', err);
+        setState({ key: uid, record: null });
+      }
+    );
+  }, [uid]);
+
+  if (IS_DEMO) {
+    return { record: demoState.employees.find((employee) => employee.uid === uid) ?? null, loading: false };
+  }
+  const current = state?.key === key ? state : null;
+  return { record: current?.record ?? null, loading: Boolean(uid) && current === null };
+}
+
+/**
  * The sub admins, for the admin's assignment controls.
  *
  * Admin-only: nobody else has a reason to enumerate the management layer, and

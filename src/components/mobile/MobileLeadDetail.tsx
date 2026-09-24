@@ -46,7 +46,10 @@ import {
   DEAL_TYPE_LABELS,
   DEAL_TYPE_HINTS,
   CUT_BASE_LABELS,
-  CUT_SOURCE_LABELS,
+  DOWN_PAYMENT_KINDS,
+  DOWN_PAYMENT_KIND_LABELS,
+  payoutSourceLabel,
+  type DownPaymentKind,
   type DealType,
   dealFigureRows,
   dealCutRows,
@@ -76,6 +79,7 @@ import {
 } from "@/lib/followUpKind";
 import { STAGE_STATUSES, statusLabel } from "@/lib/leadStatus";
 import { M, MobileCard, MobileHeader, Segmented } from "./mobileChrome";
+import { EditDealModal } from "@/components/financials/EditDealModal";
 
 type Tab = "notes" | "kyc" | "audit" | "deal";
 type Banner = { tone: "error" | "success"; text: string } | null;
@@ -754,7 +758,10 @@ export function MobileLeadDetail({
 
         {tab === "deal" &&
           (deal ? (
-            <DealRecord deal={deal} />
+            <DealRecord
+              deal={deal}
+              getIdToken={userRole === "admin" ? getIdToken : undefined}
+            />
           ) : canEnterDeal ? (
             <DealForm lead={lead} getIdToken={getIdToken} onResult={setBanner} onDone={() => setTab("notes")} />
           ) : (
@@ -1394,6 +1401,8 @@ function DealForm({
     seeded?.downPayment ? String(seeded.downPayment) : ""
   );
   const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
+  const [discount, setDiscount] = useState("");
+  const [downPaymentKind, setDownPaymentKind] = useState<DownPaymentKind>("DOWN_PAYMENT");
   const [receivedAmount, setReceivedAmount] = useState("");
   const [payableAmount, setPayableAmount] = useState("");
   const [commission, setCommission] = useState("");
@@ -1411,6 +1420,8 @@ function DealForm({
     downPayment: Number(downPayment),
     confirmationAmount: Number(confirmationAmount),
     adjustment: Number(adjustment),
+    discount: Number(discount),
+    downPaymentKind,
     receivedAmount: Number(receivedAmount),
     payableAmount: Number(payableAmount),
     commission: Number(commission),
@@ -1430,6 +1441,8 @@ function DealForm({
         downPayment: Number(downPayment) || 0,
         confirmationAmount: Number(confirmationAmount) || 0,
         adjustment: Number(adjustment) || 0,
+        discount: Number(discount) || 0,
+        downPaymentKind,
         receivedAmount: Number(receivedAmount) || 0,
         payableAmount: Number(payableAmount) || 0,
         commission: Number(commission) || 0,
@@ -1541,11 +1554,58 @@ function DealForm({
                 style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
               />
               <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
-                The Cut is a percentage of this.
+                The agreed sale price, before any discount.
               </span>
             </label>
             <label style={FIELD_LABEL}>
-              <span>{dealType === "CONFIRMATION" ? "Confirmation (PKR) *" : "Down payment (PKR) *"}</span>
+              <span>Discount (PKR)</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                value={discount}
+                onChange={(e) => setDiscount(e.target.value)}
+                placeholder="0"
+                style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
+              />
+              <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
+                Comes off the total price.
+              </span>
+            </label>
+            {dealType === "DOWN_PAYMENT" && (
+              /* What the money is called. A label only — the Cut is paid from
+                 it either way. */
+              <div role="radiogroup" aria-label="Down payment kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {DOWN_PAYMENT_KINDS.map((kind) => {
+                  const on = downPaymentKind === kind;
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      className="mob-press"
+                      onClick={() => setDownPaymentKind(kind)}
+                      style={{
+                        borderRadius: 12,
+                        border: `1px solid ${on ? M.teal : "#dceae8"}`,
+                        background: on ? "#e2f0ee" : "#fff",
+                        color: on ? M.tealDeep : M.muted,
+                        padding: "10px 8px",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        WebkitTapHighlightColor: "transparent",
+                      }}
+                    >
+                      {DOWN_PAYMENT_KIND_LABELS[kind]}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <label style={FIELD_LABEL}>
+              <span>{dealType === "CONFIRMATION" ? "Confirmation (PKR) *" : `${DOWN_PAYMENT_KIND_LABELS[downPaymentKind]} (PKR) *`}</span>
               <input
                 type="number"
                 inputMode="decimal"
@@ -1562,7 +1622,7 @@ function DealForm({
               <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
                 {dealType === "CONFIRMATION"
                   ? "What the client paid to confirm. More may follow later."
-                  : "What the client has handed over so far."}
+                  : "What the client has handed over so far. The Cut is paid from this."}
               </span>
             </label>
             <label style={FIELD_LABEL}>
@@ -1577,7 +1637,7 @@ function DealForm({
                 style={{ ...FIELD, fontVariantNumeric: "tabular-nums" }}
               />
               <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
-                A discount, or a file traded in.
+                Anything else off the price — a file traded in.
               </span>
             </label>
             {/* Read-only: Total Price minus Adjustment. A typed Remaining that
@@ -1597,6 +1657,9 @@ function DealForm({
                   color: M.muted,
                 }}
               />
+              <span style={{ fontSize: 11, fontWeight: 500, color: M.fainter }}>
+                Total − Discount − Adjustment. The Cut is a percentage of this.
+              </span>
             </label>
           </>
         )}
@@ -1762,7 +1825,7 @@ function DealForm({
         aria-live="polite"
       >
         <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.9px", color: M.tealDeep }}>
-          PAID FROM — {CUT_SOURCE_LABELS[dealType].toUpperCase()}
+          PAID FROM — {payoutSourceLabel(dealType, downPaymentKind).toUpperCase()}
         </span>
         <span
           style={{
@@ -1837,7 +1900,16 @@ function DealForm({
   );
 }
 
-function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLead>["deal"]> }) {
+/** `getIdToken` is passed for the admin only — the one role that may edit a closed deal. */
+function DealRecord({
+  deal,
+  getIdToken,
+}: {
+  deal: NonNullable<ReturnType<typeof useDealForLead>["deal"]>;
+  getIdToken?: () => Promise<string>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   return (
     <MobileCard style={{ padding: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -1845,8 +1917,43 @@ function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLe
           <circle cx="12" cy="12" r="9" />
           <path d="m8.5 12 2.5 2.5 4.5-5" />
         </svg>
-        <div style={{ fontSize: 15.5, fontWeight: 700, color: M.ink }}>Confirmed deal</div>
+        <div style={{ flex: 1, fontSize: 15.5, fontWeight: 700, color: M.ink }}>Confirmed deal</div>
+        {getIdToken && (
+          <button
+            type="button"
+            className="mob-press"
+            onClick={() => setEditing(true)}
+            style={{
+              borderRadius: 999,
+              border: "1px solid #dceae8",
+              padding: "7px 13px",
+              fontSize: 13,
+              fontWeight: 700,
+              color: M.tealDeep,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            Edit
+          </button>
+        )}
       </div>
+      {notice && (
+        <div role="status" style={{ marginTop: 10, fontSize: 12.5, fontWeight: 600, color: M.tealDeep }}>
+          {notice}
+        </div>
+      )}
+      {editing && getIdToken && (
+        <EditDealModal
+          deal={deal}
+          getIdToken={getIdToken}
+          onClose={() => setEditing(false)}
+          onDone={(message) => {
+            setEditing(false);
+            setNotice(message);
+          }}
+        />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
         {[
           ["Customer", deal.customer?.name || "—"],

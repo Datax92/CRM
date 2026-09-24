@@ -30,7 +30,8 @@ import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { loadEntries, toCountableEntries } from "@/lib/reportEntries";
-import { tallyEntries, EMPTY_TALLY, type EntryTally } from "@/lib/leadBuckets";
+import { addTally, tallyEntries, EMPTY_TALLY, type EntryTally } from "@/lib/leadBuckets";
+import { loadWorkedMinutes } from "@/lib/server/activityDays";
 
 export interface ActivityItem {
   id: string;
@@ -48,6 +49,8 @@ export interface ActivityBreakdown {
   to: string;
   /** The subject's own totals — the four figures Reports shows for the range. */
   totals: EntryTally;
+  /** Minutes worked in the range, from attendance — the dossier's Hours figure. */
+  workedMinutes: number;
   /**
    * Per lead, for the dossier's cuts. A lead with no entry in the range is
    * simply absent rather than present as four zeroes: the map is the answer to
@@ -111,34 +114,40 @@ export async function buildActivityBreakdown(
     // range cannot hold one inside it. Safe because an entry can only be
     // **back**-dated — its `dayKey` comes from `occurredAt`, which cannot be
     // later than the write.
+    //
+    // **Read only if the fast path fails** (2026-09-24). The lead list feeds the
+    // fallback and nothing else, and every dossier open used to read the
+    // subject's whole pipeline for it — hundreds of reads for a list that the
+    // deployed index makes unnecessary.
     const start = Date.parse(`${from}T00:00:00.000+05:00`);
-    const leadSnaps = await Promise.all(
-      chunk(wanted).map((slice) =>
-        adminDb.collection("leads").where("assignedUserId", "in", slice).get()
-      )
-    );
-
-    const leadIds: string[] = [];
-    for (const snap of leadSnaps) {
-      for (const doc of snap.docs) {
-        const last = doc.data().lastFollowUpAt as { toMillis?: () => number } | undefined;
-        if (last?.toMillis && last.toMillis() >= start) leadIds.push(doc.id);
+    const leadIdsForFallback = async () => {
+      const leadSnaps = await Promise.all(
+        chunk(wanted).map((slice) =>
+          adminDb.collection("leads").where("assignedUserId", "in", slice).get()
+        )
+      );
+      const ids: string[] = [];
+      for (const snap of leadSnaps) {
+        for (const doc of snap.docs) {
+          const last = doc.data().lastFollowUpAt as { toMillis?: () => number } | undefined;
+          if (last?.toMillis && last.toMillis() >= start) ids.push(doc.id);
+        }
       }
-    }
+      return ids;
+    };
 
-    const { entries, warning } = await loadEntries(from, to, leadIds, wanted);
+    const [{ entries, warning }, minutesByUid] = await Promise.all([
+      loadEntries(from, to, leadIdsForFallback, wanted),
+      loadWorkedMinutes(wanted, from, to),
+    ]);
+    const workedMinutes = [...minutesByUid.values()].reduce((sum, minutes) => sum + minutes, 0);
     const { byUid, byLead } = tallyEntries(toCountableEntries(entries), new Set(wanted));
 
     // A composite subject — a manager and their team — is the sum of a set of
     // distinct people, which is what makes double-counting impossible rather
     // than merely unlikely. Same property `reportScope` relies on.
     const totals = { ...EMPTY_TALLY };
-    for (const tally of byUid.values()) {
-      totals.remarks += tally.remarks;
-      totals.followUps += tally.followUps;
-      totals.newConnects += tally.newConnects;
-      totals.followUpConnects += tally.followUpConnects;
-    }
+    for (const tally of byUid.values()) addTally(totals, tally);
 
     const items: ActivityItem[] = [];
     for (const doc of entries) {
@@ -157,7 +166,7 @@ export async function buildActivityBreakdown(
 
       let action = isRemark ? "Logged remark" : "Logged follow-up";
       if (isCall) {
-        action = isConnect ? "Connected call" : "Outgoing call";
+        action = isConnect ? "Connected call" : "Answered call";
       }
 
       let detail = msg;
@@ -184,7 +193,7 @@ export async function buildActivityBreakdown(
       });
     }
 
-    return { from, to, totals, byLead: Object.fromEntries(byLead), items, warning };
+    return { from, to, totals, workedMinutes, byLead: Object.fromEntries(byLead), items, warning };
   });
 }
 

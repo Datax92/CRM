@@ -66,6 +66,8 @@ import { useDealDistribution } from "@/hooks/useDistributions";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { OverlayPanel, OverlayCard, OverlayFigures } from "@/components/ui/OverlayPanel";
 import { DistributionSummaryCard } from "./ProfitDistributionModal";
+import { EditDealModal } from "./EditDealModal";
+import { useAuth } from "@/context/AuthContext";
 import type { DealRecord } from "@/hooks/useFinancials";
 
 const T = {
@@ -96,6 +98,9 @@ export function ClosedDealRecord({
   onClose: () => void;
 }) {
   const isMobile = useIsMobile();
+  const { getIdToken } = useAuth();
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // The deal id *is* the lead id, so no lookup table is needed.
   const { lead } = useLeadById(deal.leadId ?? deal.id);
@@ -122,6 +127,25 @@ export function ClosedDealRecord({
       maxWidth={860}
       onClose={onClose}
       headerAside={
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            style={{
+              borderRadius: 999,
+              padding: "4px 12px",
+              fontSize: 11.5,
+              fontWeight: 700,
+              color: "#fff",
+              background: "rgba(255,255,255,0.18)",
+              border: "1px solid rgba(255,255,255,0.5)",
+              cursor: "pointer",
+            }}
+          >
+            Edit deal
+          </button>
+        )}
         <span
           style={{
             borderRadius: 999,
@@ -135,6 +159,7 @@ export function ClosedDealRecord({
           }}
         >
           {settled ? "SETTLED" : "AWAITING SPLIT"}
+        </span>
         </span>
       }
       headerExtra={
@@ -150,6 +175,33 @@ export function ClosedDealRecord({
         />
       }
     >
+      {notice && (
+        <p
+          role="status"
+          style={{
+            borderRadius: 10,
+            border: "1px solid #bfe0dc",
+            background: "#eef8f7",
+            color: "#2f7d78",
+            padding: "10px 12px",
+            fontSize: 12.5,
+            marginBottom: 12,
+          }}
+        >
+          {notice}
+        </p>
+      )}
+      {editing && (
+        <EditDealModal
+          deal={deal}
+          getIdToken={getIdToken}
+          onClose={() => setEditing(false)}
+          onDone={(message) => {
+            setEditing(false);
+            setNotice(message);
+          }}
+        />
+      )}
       <Group title="Client" icon={<User size={13} />} mobile={isMobile} defaultOpen>
         <Facts
           rows={[

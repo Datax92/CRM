@@ -48,6 +48,16 @@ export interface PersonMetrics {
   /** Connected calls recorded on a Follow-Up — every contact after the first. */
   followUpConnects: number;
   /**
+   * Calls logged under 1:10 — answered, but short of a Connect (owner,
+   * 2026-09-24). Disjoint from both connect columns.
+   */
+  answeredCalls: number;
+  /**
+   * Minutes worked in the range, from attendance (check-in to check-out). A
+   * day not yet checked out counts 0 until it is.
+   */
+  workedMinutes: number;
+  /**
    * Entries in the range on which a **meeting was agreed** — arranged, not
    * held. `meetings` below is the other half of that pair and counts the ones
    * that actually took place, so a row reading 9 aligned and 2 meetings is a
@@ -69,6 +79,8 @@ export const METRIC_KEYS: (keyof PersonMetrics)[] = [
   'followUps',
   'newConnects',
   'followUpConnects',
+  'answeredCalls',
+  'workedMinutes',
   'meetingsAligned',
   'meetings',
   'siteVisits',
@@ -85,6 +97,8 @@ export function blankMetrics(): PersonMetrics {
     followUps: 0,
     newConnects: 0,
     followUpConnects: 0,
+    answeredCalls: 0,
+    workedMinutes: 0,
     meetingsAligned: 0,
     meetings: 0,
     siteVisits: 0,

@@ -25,6 +25,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  sortExpenses,
+  isExpenseSort,
+  EXPENSE_SORTS,
+  EXPENSE_SORT_LABELS,
+  DEFAULT_EXPENSE_SORT,
+  type ExpenseSort,
+} from "@/lib/expenseSort";
 import { Wallet2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useMyPersonalExpenses, useLedger } from "@/hooks/useLedger";
@@ -65,6 +73,7 @@ import {
   HeroTile,
   ICON,
   MobileSearch,
+  MobileSort,
   PeriodPill,
   StatCards,
   TONE,
@@ -155,6 +164,8 @@ export function PersonalExpensesView() {
   const [search, setSearch] = useState("");
   const [state, setState] = useState<PaymentState | "ALL">("ALL");
   const [category, setCategory] = useState("ALL");
+  // By the date typed on the expense, newest first, unless changed.
+  const [sort, setSort] = useState<ExpenseSort>(DEFAULT_EXPENSE_SORT);
   const [showPeriod, setShowPeriod] = useState(false);
   /*
     **The categories are configuration, not a constant.** The built-in seven
@@ -199,7 +210,7 @@ export function PersonalExpensesView() {
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return inRange.filter((expense) => {
+    return sortExpenses(inRange.filter((expense) => {
       if (state !== "ALL" && paymentState(expense) !== state) return false;
       if (category !== "ALL" && expense.category !== category) return false;
       if (!needle) return true;
@@ -208,8 +219,8 @@ export function PersonalExpensesView() {
         (expense.vendor ?? "").toLowerCase().includes(needle) ||
         (expense.purpose ?? "").toLowerCase().includes(needle)
       );
-    });
-  }, [inRange, search, state, category]);
+    }), sort);
+  }, [inRange, search, state, category, sort]);
 
   /*
     The headline figures describe the **range**, not the filter — a total that
@@ -451,6 +462,7 @@ export function PersonalExpensesView() {
       {isMobile ? (
         <>
           <MobileSearch value={search} onChange={setSearch} placeholder="What it was for, or who you paid" />
+          <MobileSort value={sort} onChange={(next) => isExpenseSort(next) && setSort(next)} options={EXPENSE_SORTS.map((value) => ({ value, label: EXPENSE_SORT_LABELS[value] }))} />
           <ChipRow
             chips={[
               { label: "All", active: state === "ALL" && category === "ALL", pick: () => { setState("ALL"); setCategory("ALL"); } },
@@ -472,6 +484,7 @@ export function PersonalExpensesView() {
           from={from} to={to} maxTo={karachiDayKey()} onFrom={setFrom} onTo={setTo}
           search={search} onSearch={setSearch}
           onDownload={download} canDownload={filtered.length > 0}
+          sort={{ value: sort, onChange: (next) => isExpenseSort(next) && setSort(next), options: EXPENSE_SORTS.map((value) => ({ value, label: EXPENSE_SORT_LABELS[value] })) }}
           selects={[
             {
               label: "Paid back", width: "148px", value: state,

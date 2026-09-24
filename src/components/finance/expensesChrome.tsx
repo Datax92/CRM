@@ -383,7 +383,7 @@ export interface SelectFilter {
 
 export function FilterPanel({
   from, to, maxTo, onFrom, onTo, search, onSearch, selects, onDownload, canDownload,
-  periodLabel,
+  periodLabel, sort,
 }: {
   /** Either may be `""`, which means **no bound on that side**. */
   from: string; to: string; maxTo: string;
@@ -393,6 +393,12 @@ export function FilterPanel({
   onDownload: () => void; canDownload: boolean;
   /** Overrides the `from → to` pill — "All policies", when nothing is bounded. */
   periodLabel?: string;
+  /**
+   * The list's order, on the heading row rather than in the grid: it reorders
+   * the list and filters nothing, and a fourth column would push the grid past
+   * the page on a laptop.
+   */
+  sort?: { value: string; onChange: (v: string) => void; options: Array<{ value: string; label: string }> };
 }) {
   return (
     <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 18, padding: "16px 20px 18px" }}>
@@ -401,6 +407,17 @@ export function FilterPanel({
         <span style={{ padding: "4px 12px", borderRadius: 999, background: X.tint, border: `1px solid ${X.line}`, fontSize: 11.5, fontWeight: 700, color: X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
           {periodLabel ?? `${from} → ${to}`}
         </span>
+        {sort && (
+          <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, ...designLabel }}>
+            <span>Sort</span>
+            <select value={sort.value} onChange={(event) => sort.onChange(event.target.value)} aria-label="Sort expenses"
+              style={{ ...designField, fontSize: 13, padding: "7px 10px", cursor: "pointer", width: "auto" }}>
+              {sort.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: `150px 150px minmax(200px,1fr) ${selects.map((s) => s.width).join(" ")} auto`, gap: 12, alignItems: "end" }}>
@@ -467,6 +484,26 @@ export function MobileSearch({ value, onChange, placeholder }: {
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder}
         style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 16, fontWeight: 500, color: "#22302f", fontFamily: "inherit" }} />
     </div>
+  );
+}
+
+/**
+ * The phone's sort control: a labelled native select, so each platform draws
+ * its own picker. 16px, or iOS Safari zooms the page on focus.
+ */
+export function MobileSort({ value, onChange, options }: {
+  value: string; onChange: (v: string) => void; options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${X.line}`, borderRadius: 999, padding: "6px 8px 6px 16px" }}>
+      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "1.3px", textTransform: "uppercase", color: "#93a5a3", flexShrink: 0 }}>Sort</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)} aria-label="Sort expenses"
+        style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 16, fontWeight: 600, color: "#22302f", fontFamily: "inherit", padding: "5px 0", cursor: "pointer" }}>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 

@@ -97,6 +97,10 @@ export interface DealRecord {
   totalPrice?: number;
   downPayment?: number;
   confirmationAmount?: number;
+  /** Priced types: off the price before the adjustment. Absent means none. */
+  discount?: number;
+  /** Down Payment only: `DOWN_PAYMENT` or `TOKEN_RECEIVED`. A label. */
+  downPaymentKind?: string;
   adjustment?: number;
   /** Null for a Lump Sum, which has no Remaining. */
   remaining?: number | null;

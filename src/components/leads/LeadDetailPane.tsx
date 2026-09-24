@@ -58,13 +58,17 @@ import {
   DEAL_TYPE_LABELS,
   DEAL_TYPE_HINTS,
   CUT_BASE_LABELS,
-  CUT_SOURCE_LABELS,
+  DOWN_PAYMENT_KINDS,
+  DOWN_PAYMENT_KIND_LABELS,
+  payoutSourceLabel,
   type DealType,
+  type DownPaymentKind,
 } from "@/lib/dealAmounts";
 import { ACCEPT_WINDOW_MINUTES } from "@/lib/constants/distribution";
 import { formatBusinessDate, formatBusinessDateTime, karachiDayKey } from "@/lib/dates";
 import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
 import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
+import { EditDealModal } from "@/components/financials/EditDealModal";
 import { initialsOf } from "@/lib/leadDisplay";
 import {
   Phone, Mail, MapPin, UserCheck, Clock, X, Plus, MessageCircle,
@@ -425,7 +429,10 @@ export function LeadDetailPane({
 
           {activeTab === "DEAL_ENTRY" &&
             (deal ? (
-              <DealRecord deal={deal} />
+              <DealRecord
+                deal={deal}
+                getIdToken={userRole === "admin" ? getIdToken : undefined}
+              />
             ) : canEnterDeal ? (
               <DealEntryForm
                 lead={lead}
@@ -1323,6 +1330,8 @@ function DealEntryForm({
     seeded?.downPayment ? String(seeded.downPayment) : ""
   );
   const [adjustment, setAdjustment] = useState(seeded?.adjustment ? String(seeded.adjustment) : "");
+  const [discount, setDiscount] = useState("");
+  const [downPaymentKind, setDownPaymentKind] = useState<DownPaymentKind>("DOWN_PAYMENT");
   const [receivedAmount, setReceivedAmount] = useState("");
   const [payableAmount, setPayableAmount] = useState("");
   const [commission, setCommission] = useState("");
@@ -1343,6 +1352,8 @@ function DealEntryForm({
     downPayment: Number(downPayment),
     confirmationAmount: Number(confirmationAmount),
     adjustment: Number(adjustment),
+    discount: Number(discount),
+    downPaymentKind,
     receivedAmount: Number(receivedAmount),
     payableAmount: Number(payableAmount),
     commission: Number(commission),
@@ -1368,6 +1379,8 @@ function DealEntryForm({
         downPayment: Number(downPayment) || 0,
         confirmationAmount: Number(confirmationAmount) || 0,
         adjustment: Number(adjustment) || 0,
+        discount: Number(discount) || 0,
+        downPaymentKind,
         receivedAmount: Number(receivedAmount) || 0,
         payableAmount: Number(payableAmount) || 0,
         commission: Number(commission) || 0,
@@ -1506,13 +1519,47 @@ function DealEntryForm({
                     className={`${INPUT_CLASS} tabular-nums`}
                   />
                   <span className="text-[11px] text-[#9aacaa]">
-                    The agreed sale price. The Cut is a percentage of this.
+                    The agreed sale price, before any discount.
+                  </span>
+                </label>
+                <label className={FIELD_LABEL_CLASS}>
+                  <span>Discount (PKR)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={discount}
+                    onChange={(e) => setDiscount(e.target.value)}
+                    placeholder="0"
+                    className={`${INPUT_CLASS} tabular-nums`}
+                  />
+                  <span className="text-[11px] text-[#9aacaa]">
+                    Comes off the total price.
                   </span>
                 </label>
                 {dealType === "DOWN_PAYMENT" ? (
                   <label className={FIELD_LABEL_CLASS}>
-                    <span>
-                      Down Payment (PKR) <span className="text-[#e05a4a]">*</span>
+                    <span className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {DOWN_PAYMENT_KIND_LABELS[downPaymentKind]} (PKR) <span className="text-[#e05a4a]">*</span>
+                      </span>
+                      {/* What the money is called. A label only — the Cut is
+                          paid from it either way. */}
+                      <span role="radiogroup" aria-label="Down payment kind" className="inline-flex rounded-md border border-[#dceae8] p-0.5">
+                        {DOWN_PAYMENT_KINDS.map((kind) => (
+                          <button
+                            key={kind}
+                            type="button"
+                            role="radio"
+                            aria-checked={downPaymentKind === kind}
+                            onClick={() => setDownPaymentKind(kind)}
+                            className={`rounded px-2 py-0.5 text-[11px] ${
+                              downPaymentKind === kind ? "bg-[#e2f0ee] text-[#2f7d78]" : "text-[#7e918f]"
+                            }`}
+                          >
+                            {DOWN_PAYMENT_KIND_LABELS[kind]}
+                          </button>
+                        ))}
+                      </span>
                     </span>
                     <input
                       required
@@ -1524,7 +1571,7 @@ function DealEntryForm({
                       className={`${INPUT_CLASS} tabular-nums`}
                     />
                     <span className="text-[11px] text-[#9aacaa]">
-                      What the client has handed over so far.
+                      What the client has handed over so far. The Cut is paid from this.
                     </span>
                   </label>
                 ) : (
@@ -1560,7 +1607,7 @@ function DealEntryForm({
                     className={`${INPUT_CLASS} tabular-nums`}
                   />
                   <span className="text-[11px] text-[#9aacaa]">
-                    Anything off the price — a discount, or a file traded in.
+                    Anything else off the price — a file traded in.
                   </span>
                 </label>
                 {/* Read-only on purpose: it is Total Price minus Adjustment, and
@@ -1577,7 +1624,7 @@ function DealEntryForm({
                     className={`${INPUT_CLASS} tabular-nums bg-[#eef5f4] text-[#5b6d6b]`}
                   />
                   <span className="text-[11px] text-[#9aacaa]">
-                    Total Price &minus; Adjustment. Calculated.
+                    Total &minus; Discount &minus; Adjustment. Calculated. The Cut is a percentage of this.
                   </span>
                 </label>
               </>
@@ -1741,7 +1788,7 @@ function DealEntryForm({
             <div className="mt-2.5 flex flex-wrap items-center justify-between gap-4 border-t border-[#cfe6e2] pt-2.5">
               <span className="min-w-0">
                 <span className="block text-xs tracking-[1px] text-[#2f7d78]">
-                  PAID FROM — {CUT_SOURCE_LABELS[dealType].toUpperCase()}
+                  PAID FROM — {payoutSourceLabel(dealType, downPaymentKind).toUpperCase()}
                 </span>
                 <span className="mt-0.5 block text-[11px] text-[#5f8b88]">
                   The company keeps what is left of this after the Cut.
@@ -1766,18 +1813,52 @@ function DealEntryForm({
   );
 }
 
-function DealRecord({ deal }: { deal: NonNullable<ReturnType<typeof useDealForLead>["deal"]> }) {
+/** `getIdToken` is passed for the admin only — the one role that may edit a closed deal. */
+function DealRecord({
+  deal,
+  getIdToken,
+}: {
+  deal: NonNullable<ReturnType<typeof useDealForLead>["deal"]>;
+  getIdToken?: () => Promise<string>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   return (
     <div className="max-w-[840px] overflow-hidden rounded-xl border border-[#bfe0dc] bg-white">
       <div className="flex items-center gap-2.5 border-b border-[#f0f6f5] px-6 py-5">
         <CheckCircle2 className="shrink-0 text-[#3f8f8a]" size={20} />
-        <div>
+        <div className="min-w-0 flex-1">
           <h3 className="text-lg font-medium text-[#2b3a39]">Confirmed Deal Record</h3>
           <p className="text-[12.5px] text-[#7e918f]">
             Settled {formatBusinessDate(deal.dealDate ?? deal.enteredAt)}
           </p>
         </div>
+        {getIdToken && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="shrink-0 rounded-full border border-[#dceae8] px-3.5 py-1.5 text-[12.5px] text-[#2f7d78] hover:bg-[#eef8f7]"
+          >
+            Edit deal
+          </button>
+        )}
       </div>
+      {notice && (
+        <p role="status" className="border-b border-[#f0f6f5] bg-[#eef8f7] px-6 py-2.5 text-[12.5px] text-[#2f7d78]">
+          {notice}
+        </p>
+      )}
+      {editing && getIdToken && (
+        <EditDealModal
+          deal={deal}
+          getIdToken={getIdToken}
+          onClose={() => setEditing(false)}
+          onDone={(message) => {
+            setEditing(false);
+            setNotice(message);
+          }}
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-px bg-[#e0eeec] sm:grid-cols-4">
         {[

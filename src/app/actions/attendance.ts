@@ -1,6 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
+import { writeWorkedMinutes } from "@/lib/server/activityDays";
 import { adminDb } from "@/lib/firebase/server";
 import {
   verifyAuth,
@@ -359,6 +360,13 @@ export async function punchAttendance(
       const openingLate =
         kind === "IN" && existingFirst === null ? verdict.late : Boolean(existing?.late);
       const firstIsNew = kind === "IN" && existingFirst === null;
+      const workedToday = lastAt
+        ? Math.max(0, Math.floor((lastAt.getTime() - firstAt.getTime()) / 60_000))
+        : 0;
+      // Hours reach Reports and the dossier through the day document they
+      // already read. Only once the day has a check-out: until then there are
+      // no hours to report, and a write per check-in would buy nothing.
+      if (lastAt) writeWorkedMinutes(t, auth.uid, dayKey, workedToday);
 
       t.set(
         ref,
@@ -369,9 +377,7 @@ export async function punchAttendance(
           monthKey: karachiMonthKey(now),
           firstActionAt: firstAt,
           ...(lastAt ? { lastActionAt: lastAt } : null),
-          workedMinutes: lastAt
-            ? Math.max(0, Math.floor((lastAt.getTime() - firstAt.getTime()) / 60_000))
-            : 0,
+          workedMinutes: workedToday,
           // Whether the day has been closed, which "lastActionAt is set" alone
           // no longer tells you now that nothing writes it in the background.
           checkedOut: kind === "OUT" ? true : (existing?.checkedOut ?? false),
@@ -1090,6 +1096,9 @@ export async function adjustAttendance(
         },
         { merge: true }
       );
+
+      // A corrected check-in or check-out corrects the hours in Reports too.
+      if (workedMinutes !== undefined) writeWorkedMinutes(t, uid, dayKey, workedMinutes);
 
       t.set(adminDb.collection("notifications").doc(), {
         type: "ATTENDANCE_ADJUSTED",

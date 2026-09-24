@@ -14,6 +14,9 @@ import {
   readRemaining,
   readCutBase,
   readPayoutSource,
+  readDiscount,
+  dealFigureRows,
+  normalizeDownPaymentKind,
   normalizeDealType,
   isPricedType,
   DEAL_TYPES,
@@ -33,7 +36,7 @@ const LAKH = 100_000;
 
 /* -------------------------------------------------------------------------- */
 
-describe('Down Payment', () => {
+describe('Down Payment (owner, 2026-09-24)', () => {
   const deal = dealAmounts({
     dealType: 'DOWN_PAYMENT',
     totalPrice: 50 * LAKH,
@@ -45,44 +48,68 @@ describe('Down Payment', () => {
     assert.equal(deal.remaining, 40 * LAKH);
   });
 
-  test('the Cut base is the TOTAL PRICE, not the remaining', () => {
-    // The owner's example: a 1% cut is 50,000, not the 40,000 the old
-    // single-base rule produced.
-    assert.equal(deal.cutBase, 50 * LAKH);
-    assert.equal(deal.cutBase * 0.01, 50_000);
+  test('with an adjustment, the Cut base is the REMAINING', () => {
+    assert.equal(deal.cutBase, 40 * LAKH);
+    assert.equal(deal.cutBase * 0.01, 40_000);
   });
 
-  test('the Cut is paid out of the Remaining', () => {
-    assert.equal(deal.payoutSource, 40 * LAKH);
+  test('the Cut is paid out of the DOWN PAYMENT', () => {
+    assert.equal(deal.payoutSource, 10 * LAKH);
   });
 
-  test('the base and the source are different numbers here', () => {
-    assert.notEqual(deal.cutBase, deal.payoutSource);
-  });
-
-  test('with no adjustment the two coincide, which is the only case they do', () => {
+  test('with no adjustment, the Cut base is the total price', () => {
     const plain = dealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 50 * LAKH, downPayment: 10 * LAKH });
-    assert.equal(plain.remaining, 50 * LAKH);
     assert.equal(plain.cutBase, 50 * LAKH);
-    assert.equal(plain.payoutSource, 50 * LAKH);
+    assert.equal(plain.payoutSource, 10 * LAKH);
   });
 
-  test('the down payment never changes the base or the source', () => {
-    const small = dealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 50 * LAKH, downPayment: 1, adjustment: 10 * LAKH });
-    assert.equal(small.cutBase, deal.cutBase);
-    assert.equal(small.payoutSource, deal.payoutSource);
+  test('the screenshot deal: 4,879,000 less 2,079,000 is a 2,800,000 base, paid from 30,000', () => {
+    const najeeb = dealAmounts({
+      dealType: 'DOWN_PAYMENT', totalPrice: 4_879_000, downPayment: 30_000, adjustment: 2_079_000,
+    });
+    assert.equal(najeeb.cutBase, 2_800_000);
+    assert.equal(najeeb.cutBase * 0.02, 56_000);
+    assert.equal(najeeb.payoutSource, 30_000);
+  });
+
+  test('a discount comes off the price before anything else', () => {
+    const d = dealAmounts({
+      dealType: 'DOWN_PAYMENT', totalPrice: 50 * LAKH, discount: 5 * LAKH, downPayment: 10 * LAKH, adjustment: 10 * LAKH,
+    });
+    assert.equal(d.netPrice, 45 * LAKH);
+    assert.equal(d.remaining, 35 * LAKH);
+    assert.equal(d.cutBase, 35 * LAKH);
+    // The discount never reached the company, so it is not booked as revenue.
+    assert.equal(d.amountReceived, 45 * LAKH);
+    assert.equal(d.profit, 35 * LAKH);
+  });
+
+  test('a discount with no adjustment makes the base the discounted price', () => {
+    const d = dealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 50 * LAKH, discount: 2 * LAKH, downPayment: LAKH });
+    assert.equal(d.cutBase, 48 * LAKH);
+  });
+
+  test('Token Received is a label: the arithmetic is identical', () => {
+    const token = dealAmounts({
+      dealType: 'DOWN_PAYMENT', downPaymentKind: 'TOKEN_RECEIVED', totalPrice: 50 * LAKH, downPayment: 10 * LAKH, adjustment: 10 * LAKH,
+    });
+    assert.equal(token.downPaymentKind, 'TOKEN_RECEIVED');
+    assert.equal(token.cutBase, deal.cutBase);
+    assert.equal(token.payoutSource, deal.payoutSource);
+    assert.equal(normalizeDownPaymentKind('junk'), 'DOWN_PAYMENT');
+    assert.match(describeDealAmounts(token), /token received/);
   });
 
   test('an adjustment larger than the price is clamped, never negative', () => {
     const over = dealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 10 * LAKH, adjustment: 99 * LAKH });
     assert.equal(over.remaining, 0);
-    assert.equal(over.payoutSource, 0);
+    assert.equal(over.cutBase, 0);
   });
 });
 
 /* -------------------------------------------------------------------------- */
 
-describe('Confirmation', () => {
+describe('Confirmation follows the same rule', () => {
   const deal = dealAmounts({
     dealType: 'CONFIRMATION',
     totalPrice: 50 * LAKH,
@@ -90,15 +117,13 @@ describe('Confirmation', () => {
     adjustment: 10 * LAKH,
   });
 
-  test('Remaining, base and source match Down Payment exactly', () => {
+  test('base is Remaining, source is the confirmation amount', () => {
     assert.equal(deal.remaining, 40 * LAKH);
-    assert.equal(deal.cutBase, 50 * LAKH);
-    assert.equal(deal.payoutSource, 40 * LAKH);
+    assert.equal(deal.cutBase, 40 * LAKH);
+    assert.equal(deal.payoutSource, 7 * LAKH);
   });
 
   test('the client payment is a Confirmation, and is kept apart from a down payment', () => {
-    // Same shape, one renamed field. Storing it in `downPayment` would make the
-    // record say the client put down a deposit they never put down.
     assert.equal(deal.confirmationAmount, 7 * LAKH);
     assert.equal(deal.downPayment, 0);
   });
@@ -234,6 +259,16 @@ describe('validation, per type', () => {
     assert.match(validateDealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 0 })[0], /total price/i);
   });
 
+  test('a discount over the price is refused', () => {
+    const errors = validateDealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 10 * LAKH, discount: 11 * LAKH });
+    assert.match(errors.join(' '), /discount cannot be more/i);
+  });
+
+  test('a down payment over the discounted price is refused', () => {
+    const errors = validateDealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 10 * LAKH, discount: 5 * LAKH, downPayment: 6 * LAKH });
+    assert.match(errors.join(' '), /price after the discount/i);
+  });
+
   test('an adjustment over the price is refused', () => {
     const errors = validateDealAmounts({ dealType: 'DOWN_PAYMENT', totalPrice: 10 * LAKH, adjustment: 11 * LAKH });
     assert.match(errors.join(' '), /adjustment cannot be more than the total price/i);
@@ -313,8 +348,28 @@ describe('reading a deal recorded before the type selector', () => {
   test('a deal from the brief four-field form reads as a Down Payment', () => {
     const fourField = { totalPrice: 50 * LAKH, downPayment: 10 * LAKH, adjustment: 10 * LAKH, remaining: 40 * LAKH };
     assert.equal(readDealType(fourField), 'DOWN_PAYMENT');
-    assert.equal(readCutBase(fourField), 50 * LAKH);
-    assert.equal(readPayoutSource(fourField), 40 * LAKH);
+    assert.equal(readCutBase(fourField), 40 * LAKH);
+    assert.equal(readPayoutSource(fourField), 10 * LAKH);
+  });
+
+  test('a priced deal stored under the old rule is split by the new one', () => {
+    // Stored with cutBase = Total and payoutSource = Remaining, as closeDeal
+    // wrote them before 2026-09-24. Still pending, so the new rule applies.
+    const stored = {
+      dealType: 'DOWN_PAYMENT', totalPrice: 4_879_000, downPayment: 30_000, adjustment: 2_079_000,
+      remaining: 2_800_000, cutBase: 4_879_000, payoutSource: 2_800_000,
+    };
+    assert.equal(readCutBase(stored), 2_800_000);
+    assert.equal(readPayoutSource(stored), 30_000);
+  });
+
+  test('a stored discount is read and shown', () => {
+    const stored = { dealType: 'DOWN_PAYMENT', totalPrice: 50 * LAKH, discount: 5 * LAKH, downPayment: LAKH };
+    assert.equal(readDiscount(stored), 5 * LAKH);
+    assert.equal(readRemaining(stored), 45 * LAKH);
+    assert.ok(dealFigureRows(stored).some((row) => row.label === 'Discount'));
+    assert.ok(!dealFigureRows({ ...stored, discount: 0 }).some((row) => row.label === 'Discount'));
+    assert.ok(dealFigureRows({ ...stored, downPaymentKind: 'TOKEN_RECEIVED' }).some((row) => row.label === 'Token Received'));
   });
 
   test('the down payment reads as NOT RECORDED, not as zero', () => {

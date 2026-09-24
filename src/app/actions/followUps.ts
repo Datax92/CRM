@@ -210,6 +210,7 @@ export async function addFollowUp(
         meetingAligned,
         meetingHeld,
         siteVisit,
+        callMade,
       });
 
       // KPI counters are credited to whoever works the lead, not whoever typed
@@ -479,8 +480,9 @@ export async function updateFollowUp(
             meetingAligned: Boolean(entry.meetingAligned),
             meetingHeld: Boolean(entry.meetingHeld),
             siteVisit: Boolean(entry.siteVisit),
+            callMade: Boolean(entry.callMade),
           },
-          { kind: entry.kind ?? null, connect, meetingAligned, meetingHeld, siteVisit }
+          { kind: entry.kind ?? null, connect, meetingAligned, meetingHeld, siteVisit, callMade }
         );
       }
 

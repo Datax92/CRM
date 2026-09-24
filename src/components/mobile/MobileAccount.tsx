@@ -166,6 +166,7 @@ function subAdminSections(isHr: boolean): Section[] {
       title: "My Team",
       d: I.team,
       items: [
+        { label: "My Profile", path: "/subadmin/profile", d: I.report },
         { label: "Team Performance", path: "/subadmin/team", d: I.team },
         { label: "Reports", path: "/subadmin/reports", d: I.report },
       ],
@@ -215,6 +216,7 @@ const EMPLOYEE_SECTIONS: Section[] = [
     title: "Performance",
     d: I.report,
     items: [
+      { label: "My Profile", path: "/employee/profile", d: I.report },
       { label: "My Stats", path: "/employee/performance/stats", d: I.sheet },
       { label: "My Report", path: "/employee/reports", d: I.report },
       { label: "My Earnings", path: "/employee/earnings", d: I.wallet },

@@ -212,7 +212,7 @@ function GlobalSearchInner() {
 
       {selectedDeal && (
         <ClosedDealRecord
-          deal={selectedDeal}
+          deal={allDeals.find((d) => d.id === selectedDeal.id) ?? selectedDeal}
           employeeName={employeeName(selectedDeal.userId)}
           isAdmin
           onClose={() => setSelectedDeal(null)}

@@ -470,7 +470,7 @@ export default function ClosedDealsPage() {
 
       {selected && (
         <ClosedDealRecord
-          deal={selected}
+          deal={deals.find((d) => d.id === selected.id) ?? selected}
           employeeName={nameOf.get(selected.userId ?? "")}
           managerName={
             nameOf.get(selected.subAdminUid ?? managerOf.get(selected.userId ?? "") ?? "") ?? undefined

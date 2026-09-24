@@ -109,7 +109,12 @@ export function EmployeeDetailModal({
    * here would be a second description of a lead to keep true.
    */
   const [openLead, setOpenLead] = useState<Lead | null>(null);
-  const { getIdToken } = useAuth();
+  const { getIdToken, role } = useAuth();
+  // The lead opened from here is shown as the **viewer** may work it. It was
+  // hard-coded to "admin", which offered a manager — and now an employee
+  // reading their own profile — controls the server would refuse.
+  const viewerRole: "admin" | "subadmin" | "employee" =
+    role === "admin" || role === "subadmin" ? role : "employee";
   const [filters, setFilters] = useState<DossierFilters>(defaultDossierFilters);
 
   const isManager = team !== undefined;
@@ -722,7 +727,7 @@ export function EmployeeDetailModal({
               key={openLead.id}
               lead={leads.find((row) => row.id === openLead.id) ?? openLead}
               onClose={() => setOpenLead(null)}
-              userRole="admin"
+              userRole={viewerRole}
               getIdToken={getIdToken}
               assigneeName={employee.name}
             />

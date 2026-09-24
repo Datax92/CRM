@@ -37,7 +37,12 @@ const IN_LIMIT = 30;
 export async function loadEntries(
   from: string,
   to: string,
-  leadIds: string[],
+  /**
+   * Only used by the slow fallback, so it may be a function: the dossier
+   * passes one and reads the subject's leads **only if the index is missing**
+   * — otherwise every open paid a read per lead for a list it never used.
+   */
+  leadIds: string[] | (() => Promise<string[]>),
   /**
    * Whose entries are wanted. **Given, the read is scoped to them** (owner,
    * 2026-09-23, the day the free read quota ran out): the unscoped query paid
@@ -100,10 +105,11 @@ export async function loadEntries(
 
     if (!missingIndex) throw error;
 
+    const ids = typeof leadIds === "function" ? await leadIds() : leadIds;
     const entries: FirebaseFirestore.QueryDocumentSnapshot[] = [];
     const BATCH = 25;
-    for (let index = 0; index < leadIds.length; index += BATCH) {
-      const slice = leadIds.slice(index, index + BATCH);
+    for (let index = 0; index < ids.length; index += BATCH) {
+      const slice = ids.slice(index, index + BATCH);
       const snaps = await Promise.all(
         slice.map((leadId) =>
           adminDb
@@ -155,6 +161,10 @@ export function toCountableEntries(
       uid: (entry.creditUid as string) ?? (entry.authorUid as string) ?? "",
       kind: (entry.kind as string | undefined) ?? null,
       connect: entry.connect === true,
+      // Both were missing here, so the dossier's Meeting-aligned count read 0
+      // whatever was written.
+      meetingAligned: entry.meetingAligned === true,
+      callMade: entry.callMade === true,
     };
   });
 }

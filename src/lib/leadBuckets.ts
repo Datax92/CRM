@@ -97,6 +97,11 @@ export interface EntryTally {
    * Meetings column and the P2 band: aligned is a promise, held is the fact.
    */
   meetingsAligned: number;
+  /**
+   * Calls logged under 1:10 — answered, but short of a Connect (owner,
+   * 2026-09-24). Disjoint from both connect columns.
+   */
+  answeredCalls: number;
 }
 
 export const EMPTY_TALLY: EntryTally = {
@@ -105,6 +110,7 @@ export const EMPTY_TALLY: EntryTally = {
   newConnects: 0,
   followUpConnects: 0,
   meetingsAligned: 0,
+  answeredCalls: 0,
 };
 
 /** Adds `add` into `into`, in place. The report and the dossier both fold. */
@@ -114,6 +120,7 @@ export function addTally(into: EntryTally, add: EntryTally): EntryTally {
   into.newConnects += add.newConnects;
   into.followUpConnects += add.followUpConnects;
   into.meetingsAligned += add.meetingsAligned;
+  into.answeredCalls += add.answeredCalls;
   return into;
 }
 
@@ -489,6 +496,7 @@ export function entryTally(entry: CountableEntry): EntryTally {
     // Independent of the call: a meeting agreed over WhatsApp is still a
     // meeting agreed, and an entry predating the field simply reads false.
     meetingsAligned: entry.meetingAligned === true ? 1 : 0,
+    answeredCalls: entry.callMade === true && !connected ? 1 : 0,
   };
 }
 
@@ -501,6 +509,8 @@ export interface CountableEntry {
   connect?: boolean | null;
   /** A meeting was agreed on this entry. Absent on every entry before it existed. */
   meetingAligned?: boolean | null;
+  /** A call was logged. Not a connect, it is an answered call. */
+  callMade?: boolean | null;
 }
 
 /**

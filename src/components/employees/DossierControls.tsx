@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef } from "react";
+import { formatWorkedHours } from "@/lib/activityDays";
 import { isStageFilter, isActivityFilter, ACTIVITY_FILTER_HINTS } from "@/lib/leadBuckets";
 import { STAGE_TONES } from "@/components/leads/StageChrome";
 /**
@@ -417,7 +418,9 @@ function ActivitySummary({
       totals.followUps +
       totals.newConnects +
       totals.followUpConnects +
-      totals.meetingsAligned ===
+      totals.meetingsAligned +
+      totals.answeredCalls +
+      activity.workedMinutes ===
       0;
 
   const figures = [
@@ -425,6 +428,8 @@ function ActivitySummary({
     { label: "New connects", value: totals.newConnects, sub: true },
     { label: "Follow-ups", value: totals.followUps },
     { label: "Follow-up connects", value: totals.followUpConnects, sub: true },
+    // Calls under 1:10: picked up, too short to be a connect (owner, 2026-09-24).
+    { label: "Answered calls", value: totals.answeredCalls },
     /*
       **Not a sub-figure.** The connect columns are a subset of the entry
       counts above them and are drawn as such; a meeting agreed is an outcome
@@ -433,6 +438,8 @@ function ActivitySummary({
       Reports gives it its own column.
     */
     { label: "Meetings aligned", value: totals.meetingsAligned },
+    // From attendance, check-in to check-out — the time the work above took.
+    { label: "Hours worked", value: formatWorkedHours(activity.workedMinutes) },
   ];
 
   return (

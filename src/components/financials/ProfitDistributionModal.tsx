@@ -39,6 +39,7 @@ import {
   Users,
   RotateCcw,
   PieChart,
+  Building2,
 } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import {
@@ -47,13 +48,15 @@ import {
   readCutBase,
   readDealType,
   readPayoutSource,
+  isPricedType,
+  payoutSourceLabel,
   CUT_BASE_LABELS,
-  CUT_SOURCE_LABELS,
   DEAL_TYPE_LABELS,
 } from "@/lib/dealAmounts";
 import {
   calculateDistribution,
   parsePercentage,
+  DEFAULT_COMPANY_PERCENTAGE,
   DEFAULT_EMPLOYEE_PERCENTAGE,
   DEFAULT_SUBADMIN_PERCENTAGE,
   type DistributionShare,
@@ -109,6 +112,7 @@ export function ProfitDistributionModal({
   const [ownSubPct, setOwnSubPct] = useState(ownSubAdmin ? String(DEFAULT_SUBADMIN_PERCENTAGE) : "0");
   const [otherSubUid, setOtherSubUid] = useState<string>("");
   const [otherSubPct, setOtherSubPct] = useState("0");
+  const [companyPct, setCompanyPct] = useState(String(DEFAULT_COMPANY_PERCENTAGE));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,6 +148,19 @@ export function ProfitDistributionModal({
           },
         ]
       : []),
+    // The company's own named cut (owner, 2026-09-24). Only sent when set, so
+    // a split with no company percentage stores exactly what it always did.
+    ...(parsePercentage(companyPct) > 0
+      ? [
+          {
+            recipientUid: null,
+            recipientName: "Company",
+            recipientRole: "company" as const,
+            kind: "COMPANY_BASE" as const,
+            percentage: parsePercentage(companyPct),
+          },
+        ]
+      : []),
   ];
 
   /**
@@ -162,14 +179,13 @@ export function ProfitDistributionModal({
   const cutBase = readCutBase(deal);
   const payoutSource = readPayoutSource(deal);
   const result = calculateDistribution({ cutBase, payoutSource }, shares);
+  const sourceLabel = payoutSourceLabel(dealType, deal.downPaymentKind);
 
   /**
-   * The cash actually in hand — null for a deal closed before the form asked,
-   * in which case the row is not shown rather than claiming the client paid
-   * nothing. Not shown at all for a lump sum, where the client's money went to
-   * the builder and the commission is already the pot.
+   * A priced deal whose down payment was never recorded has nothing to pay
+   * from. Said in words, with the way out, rather than only as "nothing left".
    */
-  const downPaymentOnDeal = dealType === "LUMP_SUM" ? null : readDownPayment(deal);
+  const downPaymentMissing = isPricedType(dealType) && readDownPayment(deal) === null;
   const amountFor = (kind: string) => result.lines.find((line) => line.kind === kind)?.amount ?? 0;
 
   const submit = async () => {
@@ -191,7 +207,7 @@ export function ProfitDistributionModal({
 
       if (outcome.ok) {
         onDone(
-          `Profit distribution finalized. ${formatMoney(outcome.data.distributedAmount)} allocated, ${formatMoney(outcome.data.companyTotalAmount)} to the company.`
+          `Profit distribution finalized. ${formatMoney(result.peopleAmount)} to people, ${formatMoney(outcome.data.companyTotalAmount)} to the company.`
         );
       } else {
         setError(outcome.error);
@@ -398,14 +414,19 @@ export function ProfitDistributionModal({
             </div>
           </div>
 
-          {/*
-            **There is no company percentage.** The company is not one of the
-            recipients — it keeps whatever is left of the payment source after
-            the finalised cuts, which is the line at the foot of the summary.
-            A company share of the *base* would be charged against money the
-            base does not represent: on a lump sum, 4% of the client's 40 lakh
-            is 1.6 lakh taken out of a 4 lakh commission.
-          */}
+          {/* The company's own cut (owner, 2026-09-24): a percentage of the
+              base like the others, with its amount beside it. Whatever nobody
+              is given is the company's as well — the summary says both. */}
+          <ShareRow
+            icon={<Building2 size={15} />}
+            person="Company"
+            role="Company's cut — the unallocated rest is the company's too"
+            value={companyPct}
+            onChange={setCompanyPct}
+            amount={amountFor("COMPANY_BASE")}
+            disabled={busy}
+            stacked={isMobile}
+          />
         </div>
       </OverlayCard>
 
@@ -421,53 +442,35 @@ export function ProfitDistributionModal({
             value={formatMoney(result.cutBase)}
           />
           <TotalRow
-            label="Total cuts"
-            sub={`${result.distributedPercentage}% of the base`}
-            value={formatMoney(result.distributedAmount)}
+            label="Paid to people"
+            sub={`${roundTo2(result.distributedPercentage - result.companyCutPercentage)}% of the base`}
+            value={formatMoney(result.peopleAmount)}
+          />
+          <TotalRow
+            label="Company's cut"
+            sub={`${result.companyCutPercentage}% of the base`}
+            value={formatMoney(result.companyCutAmount)}
           />
           <div style={{ height: 1, background: T.line, margin: "3px 0" }} aria-hidden />
+          {/* **The pot the cuts are paid out of** — the down payment on a
+              priced deal (owner, 2026-09-24). Every cut above, the company's
+              included, has to fit inside it or the split is refused. */}
           <TotalRow
-            label={`Paid from — ${CUT_SOURCE_LABELS[dealType].toLowerCase()}`}
+            label={`Paid from — ${sourceLabel.toLowerCase()}`}
             sub={
               result.distributedAmount > result.payoutSource
-                ? `${formatMoney(result.distributedAmount - result.payoutSource)} more than this deal holds`
-                : `${result.sourceUsedPercentage}% of it goes out in cuts`
+                ? `${formatMoney(result.distributedAmount - result.payoutSource)} more than has been received`
+                : `${result.sourceUsedPercentage}% of it is allocated`
             }
             value={formatMoney(result.payoutSource)}
           />
 
-          {/*
-            **Where the money is actually coming from.**
-
-            The shares are a percentage of the price, but they are paid out of
-            what the client has actually handed over — the down payment. Those
-            are different numbers and nothing else on this screen says so, which
-            is how an admin finalises a split the business cannot yet fund.
-            Shown, never enforced: a shortfall is often covered elsewhere, and
-            refusing the split would be this screen inventing a rule about the
-            company's cash flow.
-          */}
-          {downPaymentOnDeal !== null && (
-            <>
-              <div style={{ height: 1, background: T.line, margin: "3px 0" }} aria-hidden />
-              <TotalRow
-                label="Paid from the down payment"
-                sub={
-                  result.distributedAmount > downPaymentOnDeal
-                    ? `${formatMoney(result.distributedAmount - downPaymentOnDeal)} more than has been received`
-                    : `${formatMoney(downPaymentOnDeal - result.distributedAmount)} of it left`
-                }
-                value={formatMoney(downPaymentOnDeal)}
-                muted={result.distributedAmount <= downPaymentOnDeal}
-              />
-            </>
-          )}
-
-          {/* A bar, so "how much is still unallocated" is answerable at a
-              glance and not only by reading four numbers. */}
+          {/* How much of the pot is spoken for: people in teal, the company's
+              cut beside it, red once the two together exceed the pot. */}
           <div
             aria-hidden
             style={{
+              display: "flex",
               height: 8,
               borderRadius: 999,
               background: T.tealSoft,
@@ -475,24 +478,49 @@ export function ProfitDistributionModal({
               margin: "2px 0 4px",
             }}
           >
-            <div
-              style={{
-                height: "100%",
-                width: `${Math.min(100, Math.max(0, result.distributedPercentage))}%`,
-                background: result.distributedPercentage > 100 ? "#c0563c" : T.teal,
-                transition: "width 120ms linear",
-              }}
-            />
+            {result.distributedAmount > result.payoutSource ? (
+              <div style={{ width: "100%", background: "#c0563c" }} />
+            ) : (
+              <>
+                <div
+                  style={{
+                    width: `${barShare(result.peopleAmount, result.payoutSource)}%`,
+                    background: T.teal,
+                    transition: "width 120ms linear",
+                  }}
+                />
+                <div
+                  style={{
+                    width: `${barShare(result.companyCutAmount, result.payoutSource)}%`,
+                    background: T.amber,
+                    transition: "width 120ms linear",
+                  }}
+                />
+              </>
+            )}
           </div>
+
+          <TotalRow
+            label="Unallocated"
+            sub="also the company's"
+            value={formatMoney(Math.max(0, result.unallocatedAmount))}
+            muted
+          />
 
           <div style={{ height: 1, background: T.line }} />
 
           <TotalRow
             label="Company total"
-            sub="base + remainder"
+            sub="company's cut + unallocated"
             value={formatMoney(result.companyTotalAmount)}
             strong
           />
+
+          {downPaymentMissing && (
+            <p style={{ fontSize: 12, color: T.amber }}>
+              No {sourceLabel.toLowerCase()} was recorded on this deal. Edit the deal to add it, then split it.
+            </p>
+          )}
         </dl>
 
         {result.errors.length > 0 && (
@@ -545,6 +573,14 @@ export function ProfitDistributionModal({
 }
 
 /* -------------------------------------------------------------------------- */
+
+const roundTo2 = (value: number) => Math.round(value * 100) / 100;
+
+/** A segment's width on the pot bar, as a percentage of the pot. */
+function barShare(amount: number, pot: number): number {
+  if (!(pot > 0)) return 0;
+  return Math.min(100, Math.max(0, (amount / pot) * 100));
+}
 
 function Avatar({ children }: { children: React.ReactNode }) {
   return (

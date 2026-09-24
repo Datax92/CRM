@@ -183,3 +183,48 @@ test('amounts round to the paisa and never drift', () => {
   assert.equal(result.distributedAmount, Math.round(summed * 100) / 100);
   assert.equal(result.companyRetained, Math.round((99_999 - result.distributedAmount) * 100) / 100);
 });
+
+/* -------------------------------------------------------------------------- */
+/* The company's own cut (owner, 2026-09-24)                                   */
+/* -------------------------------------------------------------------------- */
+
+const company = (percentage: number): DistributionShare => ({
+  recipientUid: null,
+  recipientName: 'Company',
+  recipientRole: 'company',
+  kind: 'COMPANY_BASE',
+  percentage,
+});
+
+test('a company cut is a percentage of the base, and the rest is the company too', () => {
+  // Base 28 lakh, paid from a 2 lakh down payment. 2% + 2% to people, 3% to
+  // the company: people 112,000, company cut 84,000, unallocated 4,000.
+  const result = calculateDistribution(
+    { cutBase: 28 * LAKH, payoutSource: 2 * LAKH },
+    [...shares(2, 2), company(3)]
+  );
+  assert.equal(result.valid, true);
+  assert.equal(result.peopleAmount, 112_000);
+  assert.equal(result.companyCutAmount, 84_000);
+  assert.equal(result.companyCutPercentage, 3);
+  assert.equal(result.unallocatedAmount, 4_000);
+  // Company total = its cut + what nobody was given = source − people.
+  assert.equal(result.companyRetained, 88_000);
+  assert.equal(result.companyRetained, result.companyCutAmount + result.unallocatedAmount);
+});
+
+test('the company cut counts toward the pot: more than the down payment is refused', () => {
+  const result = calculateDistribution(
+    { cutBase: 28 * LAKH, payoutSource: 30_000 },
+    [...shares(1), company(1)]
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join(' '), /more than the Rs 30,000 available/);
+});
+
+test('a company line needs no account', () => {
+  const result = calculateDistribution({ cutBase: LAKH, payoutSource: LAKH }, [company(10)]);
+  assert.equal(result.valid, true);
+  assert.equal(result.peopleAmount, 0);
+  assert.equal(result.companyRetained, LAKH);
+});

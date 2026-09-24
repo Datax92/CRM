@@ -46,8 +46,8 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { pipelineStage } from "@/lib/pipelineStage";
 import { addTally, entryTally } from "@/lib/leadBuckets";
 import { loadEntries } from "@/lib/reportEntries";
-import { ACTIVITY_DAYS, ACTIVITY_FIELDS, readCounts, splitRange } from "@/lib/activityDays";
-import { readActivityTotalsFrom } from "@/lib/server/activityDays";
+import { ACTIVITY_DAYS, ACTIVITY_FIELDS, readCounts, readWorkedMinutes, splitRange } from "@/lib/activityDays";
+import { attendanceMinutes, readActivityTotalsFrom } from "@/lib/server/activityDays";
 import {
   blankMetrics,
   describeSubject,
@@ -323,6 +323,7 @@ export async function buildTeamReport(
         // cuts on them too. Meetings *held* and site visits stay below: they
         // are the report's own columns and the dossier does not show them.
         meetingAligned: entry.meetingAligned === true,
+        callMade: entry.callMade === true,
       }));
 
       // Meetings and site visits are the report's own columns — the dossier
@@ -349,7 +350,20 @@ export async function buildTeamReport(
           if (!row) continue;
           const counts = readCounts(doc.data());
           for (const field of ACTIVITY_FIELDS) row[field] += counts[field];
+          // Hours ride on the same document — no extra read for them.
+          row.workedMinutes += readWorkedMinutes(doc.data());
         }
+      }
+    }
+
+    // Hours for days **before** the day documents start come from attendance.
+    // Empty once the backfill has moved the start date back, so this read only
+    // exists until then.
+    if (range.entries) {
+      const minutes = await attendanceMinutes(range.entries.from, range.entries.to);
+      for (const [uid, worked] of minutes) {
+        const row = tally.get(uid);
+        if (row) row.workedMinutes += worked;
       }
     }
 
@@ -406,6 +420,8 @@ function pick(row: ReportRow): PersonMetrics {
     followUps: row.followUps,
     newConnects: row.newConnects,
     followUpConnects: row.followUpConnects,
+    answeredCalls: row.answeredCalls,
+    workedMinutes: row.workedMinutes,
     meetingsAligned: row.meetingsAligned,
     meetings: row.meetings,
     siteVisits: row.siteVisits,

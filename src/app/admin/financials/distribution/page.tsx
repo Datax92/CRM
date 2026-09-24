@@ -37,6 +37,7 @@ import {
   ProfitDistributionModal,
   DistributionSummaryCard,
 } from "@/components/financials/ProfitDistributionModal";
+import { EditDealModal } from "@/components/financials/EditDealModal";
 import { PieChart, Clock, CheckCircle2, ArrowRight, Wallet } from "lucide-react";
 
 const T = {
@@ -72,8 +73,22 @@ export default function ProfitDistributionPage() {
   const { distributions } = useAllDistributions(isAdmin);
 
   const [active, setActive] = useState<DealRecord | null>(null);
+  // The admin corrects a closed deal from here too — this is where a missing
+  // down payment shows up, and the split cannot be finalised without it.
+  const [editing, setEditing] = useState<DealRecord | null>(null);
   const [banner, setBanner] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const editPanel = editing && (
+    <EditDealModal
+      deal={editing}
+      getIdToken={getIdToken}
+      onClose={() => setEditing(null)}
+      onDone={(message) => {
+        setEditing(null);
+        setBanner({ tone: "success", text: message });
+      }}
+    />
+  );
 
   const { pending, settled } = useMemo(() => {
     const pending: DealRecord[] = [];
@@ -156,13 +171,29 @@ export default function ProfitDistributionPage() {
             </PhoneEmpty>
           ) : (
             pending.map((deal, index) => (
-              <PhoneDealCard
-                key={deal.id}
-                deal={deal}
-                index={index}
-                who={nameOf.get(deal.userId ?? "") ?? "Unknown employee"}
-                onPress={() => setActive(deal)}
-              />
+              <div key={deal.id} style={{ display: "flex", flexDirection: "column" }}>
+                <PhoneDealCard
+                  deal={deal}
+                  index={index}
+                  who={nameOf.get(deal.userId ?? "") ?? "Unknown employee"}
+                  onPress={() => setActive(deal)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setEditing(deal)}
+                  style={{
+                    alignSelf: "flex-end",
+                    marginTop: -4,
+                    padding: "6px 4px",
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    color: M.tealDeep,
+                    cursor: "pointer",
+                  }}
+                >
+                  Edit deal
+                </button>
+              </div>
             ))
           )}
 
@@ -187,8 +218,17 @@ export default function ProfitDistributionPage() {
                   }}
                 >
                   <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 14.5, fontWeight: 800, color: M.ink }}>
-                      {deal.customer?.name ?? "Client"}
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <span style={{ fontSize: 14.5, fontWeight: 800, color: M.ink }}>
+                        {deal.customer?.name ?? "Client"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(deal)}
+                        style={{ fontSize: 12.5, fontWeight: 700, color: M.tealDeep, cursor: "pointer" }}
+                      >
+                        Edit deal
+                      </button>
                     </div>
                     <div style={{ fontSize: 11.5, fontWeight: 500, color: M.fainter }}>
                       {nameOf.get(deal.userId ?? "") ?? "Unknown employee"} · net{" "}
@@ -247,6 +287,7 @@ export default function ProfitDistributionPage() {
             }}
           />
         )}
+        {editPanel}
       </div>
     );
   }
@@ -404,6 +445,22 @@ export default function ProfitDistributionPage() {
                   </div>
 
                   <button
+                    onClick={() => setEditing(deal)}
+                    style={{
+                      borderRadius: 999,
+                      border: `1px solid ${T.line}`,
+                      background: T.surface,
+                      padding: "9px 15px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: T.teal,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Edit deal
+                  </button>
+                  <button
                     onClick={() => setActive(deal)}
                     style={{
                       background: T.teal,
@@ -472,6 +529,12 @@ export default function ProfitDistributionPage() {
                         {formatMoney(deal.profit)}
                       </p>
                     </div>
+                    <button
+                      onClick={() => setEditing(deal)}
+                      style={{ fontSize: 12.5, fontWeight: 600, color: T.teal, cursor: "pointer" }}
+                    >
+                      Edit deal
+                    </button>
                   </div>
 
                   {distribution ? (
@@ -507,6 +570,7 @@ export default function ProfitDistributionPage() {
           }}
         />
       )}
+      {editPanel}
     </div>
   );
 }

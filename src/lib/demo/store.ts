@@ -1342,6 +1342,63 @@ export const demo = {
     return ok(undefined);
   },
 
+  /** Mirrors `updateClosedDeal`: same arithmetic, and a finalised split reopens on a money change. */
+  updateClosedDeal(
+    dealId: string,
+    input: {
+      customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
+      serviceDescription: string; dealType?: string;
+      totalPrice?: number; downPayment?: number; confirmationAmount?: number; adjustment?: number;
+      discount?: number; downPaymentKind?: string;
+      receivedAmount?: number; payableAmount?: number; commission?: number;
+      paymentMethod?: string; dealCategory?: string; dealDate?: string; notes?: string;
+    }
+  ): Result<{ dealId: string; profit: number; reopened: boolean }> {
+    const existing = state.deals.find((d) => d.id === dealId);
+    if (!existing) return fail('That deal no longer exists.');
+    if (!input.customer.name.trim()) return fail("Enter the customer's name.");
+    if (!input.customer.phone.trim()) return fail('Enter a valid contact number for the customer.');
+    if (!input.serviceDescription.trim()) return fail('Describe what was sold, so the record makes sense later.');
+    const errors = validateDealAmounts(input);
+    if (errors.length > 0) return fail(errors[0]);
+    const a = dealAmounts(input);
+    const figures = {
+      dealType: a.dealType, totalPrice: a.totalPrice, downPayment: a.downPayment,
+      confirmationAmount: a.confirmationAmount, adjustment: a.adjustment,
+      discount: a.discount, downPaymentKind: a.downPaymentKind,
+      remaining: a.remaining, receivedAmount: a.receivedAmount, commission: a.commission,
+      cutBase: a.cutBase, payoutSource: a.payoutSource,
+      amountReceived: a.amountReceived, payableAmount: a.legacyPayableAmount, profit: a.profit,
+    };
+    const record = existing as unknown as Record<string, unknown>;
+    const moneyChanged = Object.entries(figures).some(([k, v]) => (record[k] ?? null) !== (v ?? null));
+    const reopened = moneyChanged && existing.distributionStatus === 'FINALIZED';
+    state.deals = state.deals.map((d) =>
+      d.id === dealId
+        ? {
+            ...d,
+            ...figures,
+            customer: {
+              name: input.customer.name.trim(),
+              phone: input.customer.phone.replace(/\D/g, ''),
+              email: input.customer.email?.trim() || null,
+              cnic: input.customer.cnic?.trim() || null,
+              address: input.customer.address?.trim() || null,
+              city: input.customer.city?.trim() || null,
+            },
+            serviceDescription: input.serviceDescription.trim(),
+            paymentMethod: input.paymentMethod || 'Cash',
+            dealCategory: normalizeDealCategory(input.dealCategory),
+            notes: input.notes?.trim() || null,
+            ...(input.dealDate ? { dealDate: ts(new Date(`${input.dealDate}T12:00:00`)) } : {}),
+            ...(reopened ? { distributionStatus: 'PENDING' as const } : {}),
+          }
+        : d
+    );
+    emit();
+    return ok({ dealId, profit: a.profit, reopened });
+  },
+
   setEmployeeSubAdmin(employeeUid: string, subAdminUid: string | null): Result<{ moved: string | null }> {
     state.employees = state.employees.map((e) =>
       e.uid === employeeUid ? { ...e, subAdminUid } : e
@@ -1597,6 +1654,7 @@ export const demo = {
           kind: entry.kind,
           connect: entry.connect,
           meetingAligned: entry.meetingAligned,
+          callMade: entry.callMade,
         });
         addTally(totals, one);
         addTally((byLead[leadId] ??= { ...EMPTY_TALLY }), one);
@@ -1609,7 +1667,7 @@ export const demo = {
 
         let action = isRemark ? "Logged remark" : "Logged follow-up";
         if (isCall) {
-          action = isConnect ? "Connected call" : "Outgoing call";
+          action = isConnect ? "Connected call" : "Answered call";
         }
 
         let detail = msg;
@@ -1647,7 +1705,11 @@ export const demo = {
       }
     }
 
-    return ok({ from, to, totals, byLead, items, warning: null });
+    // Hours from the demo attendance records, as the live action reads them.
+    const workedMinutes = state.attendance
+      .filter((record) => wanted.has(record.uid) && record.dayKey >= from && record.dayKey <= to)
+      .reduce((sum, record) => sum + (Number(record.workedMinutes) || 0), 0);
+    return ok({ from, to, totals, workedMinutes, byLead, items, warning: null });
   },
 
   /**
@@ -1692,6 +1754,9 @@ export const demo = {
 
     const rows = subjectPeople.map((person) => {
       const metrics = blankMetrics();
+      metrics.workedMinutes = state.attendance
+        .filter((record) => record.uid === person.uid && record.dayKey >= from && record.dayKey <= to)
+        .reduce((sum, record) => sum + (Number(record.workedMinutes) || 0), 0);
 
       for (const [leadId, entries] of Object.entries(state.followUps)) {
         const lead = state.leads.find((row) => row.id === leadId);
@@ -1708,6 +1773,7 @@ export const demo = {
             kind: entry.kind,
             connect: entry.connect,
             meetingAligned: entry.meetingAligned,
+            callMade: entry.callMade,
           }));
           if (entry.meetingHeld) metrics.meetings += 1;
           if (entry.siteVisit) metrics.siteVisits += 1;
@@ -1755,6 +1821,8 @@ export const demo = {
           followUps: row.followUps,
           newConnects: row.newConnects,
           followUpConnects: row.followUpConnects,
+          answeredCalls: row.answeredCalls,
+          workedMinutes: row.workedMinutes,
           meetingsAligned: row.meetingsAligned,
           meetings: row.meetings,
           siteVisits: row.siteVisits,
@@ -1920,6 +1988,7 @@ export const demo = {
       customer: { name: string; phone: string; email?: string; cnic?: string; address?: string; city?: string };
       serviceDescription: string; dealType?: string;
       totalPrice?: number; downPayment?: number; confirmationAmount?: number; adjustment?: number;
+      discount?: number; downPaymentKind?: string;
       receivedAmount?: number; payableAmount?: number; commission?: number;
       paymentMethod?: string; dealCategory?: string; dealDate?: string; notes?: string;
     },
@@ -1961,6 +2030,7 @@ export const demo = {
         dealType: amounts.dealType,
         totalPrice: amounts.totalPrice, downPayment: amounts.downPayment,
         confirmationAmount: amounts.confirmationAmount, adjustment: amounts.adjustment,
+        discount: amounts.discount, downPaymentKind: amounts.downPaymentKind,
         remaining: amounts.remaining, receivedAmount: amounts.receivedAmount,
         commission: amounts.commission,
         cutBase: amounts.cutBase, payoutSource: amounts.payoutSource,

@@ -14,6 +14,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  sortExpenses,
+  isExpenseSort,
+  EXPENSE_SORTS,
+  EXPENSE_SORT_LABELS,
+  DEFAULT_EXPENSE_SORT,
+  type ExpenseSort,
+} from "@/lib/expenseSort";
 import { Paperclip } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -58,6 +66,7 @@ import {
   HeroTile,
   ICON,
   MobileSearch,
+  MobileSort,
   PeriodPill,
   Segmented,
   StatCards,
@@ -173,6 +182,8 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<ExpenseStatus | "ALL">("ALL");
   const [category, setCategory] = useState("ALL");
+  // By the date typed on the expense, newest first, unless changed.
+  const [sort, setSort] = useState<ExpenseSort>(DEFAULT_EXPENSE_SORT);
   /**
    * Whose expenses the screen is about — `ALL`, or one recorder's uid.
    *
@@ -265,7 +276,7 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return inRange.filter((expense) => {
+    return sortExpenses(inRange.filter((expense) => {
       if (status !== "ALL" && expense.status !== status) return false;
       if (category !== "ALL" && expense.category !== category) return false;
       if (!needle) return true;
@@ -274,8 +285,8 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
         (expense.paidBy ?? "").toLowerCase().includes(needle) ||
         (expense.description ?? "").toLowerCase().includes(needle)
       );
-    });
-  }, [inRange, search, status, category]);
+    }), sort);
+  }, [inRange, search, status, category, sort]);
 
   // The dashboard describes the **range**, not the filter. A total that fell
   // when somebody clicked "Pending" would read as the company having spent
@@ -578,6 +589,7 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
         */
         <>
           <MobileSearch value={search} onChange={setSearch} placeholder="Title, payee or note" />
+          <MobileSort value={sort} onChange={(next) => isExpenseSort(next) && setSort(next)} options={EXPENSE_SORTS.map((value) => ({ value, label: EXPENSE_SORT_LABELS[value] }))} />
           {/*
             Whose expenses, on its own labelled row above the cuts — it changes
             every figure on the screen, and an unlabelled second chip row would
@@ -623,6 +635,7 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
           from={from} to={to} maxTo={karachiDayKey()} onFrom={setFrom} onTo={setTo}
           search={search} onSearch={setSearch}
           onDownload={download} canDownload={filtered.length > 0}
+          sort={{ value: sort, onChange: (next) => isExpenseSort(next) && setSort(next), options: EXPENSE_SORTS.map((value) => ({ value, label: EXPENSE_SORT_LABELS[value] })) }}
           selects={[
             // Absent when there is only one person recording expenses: a
             // selector with a single choice is furniture, not a control.

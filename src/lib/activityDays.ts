@@ -41,6 +41,9 @@ export const ACTIVITY_FIELDS = [
   "meetingsAligned",
   "meetings",
   "siteVisits",
+  // Calls logged under `CONNECT_MIN_SECONDS` (1:10) — answered, but too short
+  // to be a Connect (owner, 2026-09-24). Disjoint from the connect columns.
+  "answeredCalls",
 ] as const;
 
 export type ActivityField = (typeof ACTIVITY_FIELDS)[number];
@@ -53,6 +56,8 @@ export interface EntryFacts {
   meetingAligned?: boolean | null;
   meetingHeld?: boolean | null;
   siteVisit?: boolean | null;
+  /** A call was logged on the entry. With `connect` false it is an answered call. */
+  callMade?: boolean | null;
 }
 
 export function activityDayId(uid: string, dayKey: string): string {
@@ -60,7 +65,10 @@ export function activityDayId(uid: string, dayKey: string): string {
 }
 
 export function emptyCounts(): ActivityCounts {
-  return { remarks: 0, followUps: 0, newConnects: 0, followUpConnects: 0, meetingsAligned: 0, meetings: 0, siteVisits: 0 };
+  return {
+    remarks: 0, followUps: 0, newConnects: 0, followUpConnects: 0,
+    meetingsAligned: 0, meetings: 0, siteVisits: 0, answeredCalls: 0,
+  };
 }
 
 /**
@@ -78,6 +86,9 @@ export function countsOf(entry: EntryFacts): ActivityCounts {
     meetingsAligned: entry.meetingAligned === true ? 1 : 0,
     meetings: entry.meetingHeld === true ? 1 : 0,
     siteVisits: entry.siteVisit === true ? 1 : 0,
+    // A logged call always carries a duration, so every call is either a
+    // Connect (1:10 or longer) or an answered call — never both, never neither.
+    answeredCalls: entry.callMade === true && !connected ? 1 : 0,
   };
 }
 
@@ -105,6 +116,24 @@ export function readCounts(raw: Record<string, unknown> | null | undefined): Act
     counts[field] = Number.isFinite(value) ? value : 0;
   }
   return counts;
+}
+
+/**
+ * Minutes worked that day, copied from `attendance/{uid}_{dayKey}` whenever the
+ * attendance action writes it (owner, 2026-09-24). Kept here so Reports gets
+ * hours from the documents it already reads — no extra read per report.
+ */
+export function readWorkedMinutes(raw: Record<string, unknown> | null | undefined): number {
+  const value = Number(raw?.workedMinutes ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** Minutes as `7h 05m`, or `0h` for none. */
+export function formatWorkedHours(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m === 0 ? `${h}h` : `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
 /** The day before a `YYYY-MM-DD` key, by calendar, in UTC so no zone can shift it. */

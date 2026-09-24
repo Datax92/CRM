@@ -19,10 +19,16 @@
  *
  * | type | Cut calculated on | Cut paid out of |
  * |---|---|---|
- * | Down Payment | **Total Price** | Remaining |
- * | Confirmation | **Total Price** | Remaining |
+ * | Down Payment | **Remaining** (Total − Discount − Adjustment) | **Down Payment** |
+ * | Confirmation | **Remaining** (Total − Discount − Adjustment) | **Confirmation** |
  * | Installments | **Amount Received** | Remaining |
  * | Lump Sum | **Amount Received** | **Commission** |
+ *
+ * **Priced types changed 2026-09-24 (owner):** the base was the Total Price and
+ * the source Remaining. Now the base is Remaining — which *is* the Total Price
+ * when no discount or adjustment is typed — and the Cut is paid out of the
+ * money actually handed over. A split larger than that is refused. The
+ * paragraph below describes the rule it replaced.
  *
  * On the owner's own examples: a 50 lakh sale with a 10 lakh adjustment leaves
  * 40 lakh Remaining, and a 1% Cut is **1% of 50 lakh = 50,000** — taken out of
@@ -106,21 +112,52 @@ export const DEAL_TYPE_HINTS: Record<DealType, string> = {
   LUMP_SUM: 'The client pays the builder; the builder pays us a commission.',
 };
 
-/** What the Cut percentage multiplies, per type — shown beside the figure. */
+/**
+ * What the Cut percentage multiplies, per type — shown beside the figure.
+ *
+ * On the two priced types it is **Remaining** (owner, 2026-09-24): Total Price
+ * less any Discount and Adjustment. With neither, Remaining *is* the Total
+ * Price, so "the cut is on the total price when there is no adjustment" and
+ * "on the remaining when there is one" are the same single expression.
+ */
 export const CUT_BASE_LABELS: Record<DealType, string> = {
-  DOWN_PAYMENT: 'Total Price',
-  CONFIRMATION: 'Total Price',
+  DOWN_PAYMENT: 'Remaining',
+  CONFIRMATION: 'Remaining',
   INSTALLMENTS: 'Amount Received',
   LUMP_SUM: 'Amount Received',
 };
 
-/** Where the finalised Cut is taken from, per type. */
+/**
+ * Where the finalised Cut is taken from, per type. On the priced types it is
+ * the money the client has actually handed over (owner, 2026-09-24).
+ */
 export const CUT_SOURCE_LABELS: Record<DealType, string> = {
-  DOWN_PAYMENT: 'Remaining',
-  CONFIRMATION: 'Remaining',
+  DOWN_PAYMENT: 'Down Payment',
+  CONFIRMATION: 'Confirmation',
   INSTALLMENTS: 'Remaining',
   LUMP_SUM: 'Commission',
 };
+
+/**
+ * What the Down Payment on a Down Payment deal is called. **A label only** —
+ * the arithmetic is identical for both (owner, 2026-09-24).
+ */
+export const DOWN_PAYMENT_KINDS = ['DOWN_PAYMENT', 'TOKEN_RECEIVED'] as const;
+export type DownPaymentKind = (typeof DOWN_PAYMENT_KINDS)[number];
+export const DOWN_PAYMENT_KIND_LABELS: Record<DownPaymentKind, string> = {
+  DOWN_PAYMENT: 'Down Payment',
+  TOKEN_RECEIVED: 'Token Received',
+};
+
+export function normalizeDownPaymentKind(value: unknown): DownPaymentKind {
+  return value === 'TOKEN_RECEIVED' ? 'TOKEN_RECEIVED' : 'DOWN_PAYMENT';
+}
+
+/** The name of the money the Cut is paid from, in this deal's own words. */
+export function payoutSourceLabel(type: DealType, kind?: unknown): string {
+  if (type === 'DOWN_PAYMENT') return DOWN_PAYMENT_KIND_LABELS[normalizeDownPaymentKind(kind)];
+  return CUT_SOURCE_LABELS[type];
+}
 
 export function isDealType(value: unknown): value is DealType {
   return typeof value === 'string' && (DEAL_TYPES as readonly string[]).includes(value);
@@ -152,6 +189,10 @@ export interface DealAmountsInput {
   downPayment?: number;
   confirmationAmount?: number;
   adjustment?: number;
+  /** Down Payment / Confirmation: comes off the price before anything else. */
+  discount?: number;
+  /** Down Payment only: what the down payment is called. A label. */
+  downPaymentKind?: DownPaymentKind | string | null;
 
   /** Installments / Lump Sum. */
   receivedAmount?: number;
@@ -169,6 +210,10 @@ export interface DealAmounts {
   downPayment: number;
   confirmationAmount: number;
   adjustment: number;
+  discount: number;
+  /** Total Price less the Discount. Equals `totalPrice` on the other types. */
+  netPrice: number;
+  downPaymentKind: DownPaymentKind;
   receivedAmount: number;
   payableAmount: number;
   commission: number;
@@ -218,23 +263,29 @@ export function dealAmounts(input: DealAmountsInput): DealAmounts {
   const totalPrice = money(input.totalPrice);
   const downPayment = money(input.downPayment);
   const confirmationAmount = money(input.confirmationAmount);
-  // An adjustment larger than the price would make Remaining negative. Clamped
-  // here rather than rejected — `validateDealAmounts` is where a person is told
-  // about it; this function has to return usable numbers for a live preview
-  // while they are still typing.
-  const adjustment = Math.min(money(input.adjustment), totalPrice);
+  const priced = isPricedType(dealType);
+  // Clamped here rather than rejected — `validateDealAmounts` is where a person
+  // is told about it; this function has to return usable numbers for a live
+  // preview while they are still typing.
+  const discount = priced ? Math.min(money(input.discount), totalPrice) : 0;
+  const netPrice = round(totalPrice - discount);
+  const adjustment = Math.min(money(input.adjustment), netPrice);
+  const downPaymentKind = normalizeDownPaymentKind(input.downPaymentKind);
   const receivedAmount = money(input.receivedAmount);
   const payableAmount = Math.min(money(input.payableAmount), receivedAmount);
   const commission = money(input.commission);
+  const common = {
+    dealType,
+    totalPrice, downPayment, confirmationAmount, adjustment, discount, netPrice, downPaymentKind,
+    receivedAmount, payableAmount, commission,
+  };
 
   if (dealType === 'LUMP_SUM') {
     // No Remaining, by rule. The Commission is typed and is the company's
     // revenue; the client's money is the builder's and is only ever the base
     // the Cut percentage multiplies.
     return {
-      dealType,
-      totalPrice, downPayment, confirmationAmount, adjustment,
-      receivedAmount, payableAmount, commission,
+      ...common,
       remaining: null,
       cutBase: receivedAmount,
       payoutSource: commission,
@@ -248,9 +299,7 @@ export function dealAmounts(input: DealAmountsInput): DealAmounts {
   if (dealType === 'INSTALLMENTS') {
     const remaining = round(receivedAmount - payableAmount);
     return {
-      dealType,
-      totalPrice, downPayment, confirmationAmount, adjustment,
-      receivedAmount, payableAmount, commission,
+      ...common,
       remaining,
       cutBase: receivedAmount,
       payoutSource: remaining,
@@ -265,16 +314,22 @@ export function dealAmounts(input: DealAmountsInput): DealAmounts {
   // client's payment is a Down Payment in the first and a Confirmation in the
   // second. Everything derived is identical, and saying so once here is what
   // keeps them from drifting apart.
-  const remaining = round(totalPrice - adjustment);
+  //
+  // **The owner's rule, 2026-09-24:** the Cut is a percentage of Remaining
+  // (Total − Discount − Adjustment, which is the Total Price when neither is
+  // typed) and it is paid out of what the client actually handed over — the
+  // Down Payment, or the Confirmation amount.
+  const remaining = round(netPrice - adjustment);
+  const paid = dealType === 'CONFIRMATION' ? confirmationAmount : downPayment;
   return {
-    dealType,
-    totalPrice, downPayment, confirmationAmount, adjustment,
-    receivedAmount, payableAmount, commission,
+    ...common,
     remaining,
-    cutBase: totalPrice,
-    payoutSource: remaining,
+    cutBase: remaining,
+    payoutSource: paid,
     companyRevenue: remaining,
-    amountReceived: totalPrice,
+    // The discount never reached the company, so the revenue mirror is the
+    // price after it; `profit = received − payable` still lands on Remaining.
+    amountReceived: netPrice,
     legacyPayableAmount: adjustment,
     profit: remaining,
   };
@@ -327,18 +382,28 @@ export function validateDealAmounts(input: DealAmountsInput): string[] {
   }
 
   const totalPrice = money(input.totalPrice);
+  const discount = money(input.discount);
   const adjustment = money(input.adjustment);
   const paid = dealType === 'CONFIRMATION' ? money(input.confirmationAmount) : money(input.downPayment);
-  const paidLabel = dealType === 'CONFIRMATION' ? 'confirmation amount' : 'down payment';
+  const paidLabel = dealType === 'CONFIRMATION'
+    ? 'confirmation amount'
+    : DOWN_PAYMENT_KIND_LABELS[normalizeDownPaymentKind(input.downPaymentKind)].toLowerCase();
+  const netPrice = totalPrice - discount;
 
   if (totalPrice <= 0) errors.push('Enter the total price.');
-  if (adjustment > totalPrice) {
-    errors.push('The adjustment cannot be more than the total price.');
+  if (discount > totalPrice) {
+    errors.push('The discount cannot be more than the total price.');
+  } else if (adjustment > netPrice) {
+    errors.push(discount > 0
+      ? 'The adjustment cannot be more than the price after the discount.'
+      : 'The adjustment cannot be more than the total price.');
   }
-  if (paid > totalPrice) {
+  if (paid > netPrice && discount <= totalPrice) {
     // Not a rounding slip — somebody has typed the price into the wrong box,
     // and saving it would put a wrong figure into the ledger permanently.
-    errors.push(`The ${paidLabel} cannot be more than the total price.`);
+    errors.push(discount > 0
+      ? `The ${paidLabel} cannot be more than the price after the discount.`
+      : `The ${paidLabel} cannot be more than the total price.`);
   }
 
   return errors;
@@ -356,8 +421,9 @@ export function validateDealAmounts(input: DealAmountsInput): string[] {
 export function describeDealAmounts(amounts: DealAmounts): string {
   const rs = (value: number) => value.toLocaleString('en-PK');
   const cut = `Cut is a percentage of ${CUT_BASE_LABELS[amounts.dealType].toLowerCase()} ` +
-    `${rs(amounts.cutBase)}, paid from ${CUT_SOURCE_LABELS[amounts.dealType].toLowerCase()} ` +
+    `${rs(amounts.cutBase)}, paid from ${payoutSourceLabel(amounts.dealType, amounts.downPaymentKind).toLowerCase()} ` +
     `${rs(amounts.payoutSource)}.`;
+  const discount = amounts.discount > 0 ? `, discount ${rs(amounts.discount)}` : '';
 
   switch (amounts.dealType) {
     case 'LUMP_SUM':
@@ -367,13 +433,13 @@ export function describeDealAmounts(amounts: DealAmounts): string {
       return `Installments — received ${rs(amounts.receivedAmount)}, ` +
         `payable ${rs(amounts.payableAmount)}, remaining ${rs(amounts.remaining ?? 0)}. ${cut}`;
     case 'CONFIRMATION':
-      return `Confirmation — total ${rs(amounts.totalPrice)}, ` +
+      return `Confirmation — total ${rs(amounts.totalPrice)}${discount}, ` +
         `confirmation paid ${rs(amounts.confirmationAmount)}` +
         (amounts.adjustment > 0 ? `, adjustment ${rs(amounts.adjustment)}` : '') +
         `, remaining ${rs(amounts.remaining ?? 0)}. ${cut}`;
     default:
-      return `Down payment — total ${rs(amounts.totalPrice)}, ` +
-        `down payment ${rs(amounts.downPayment)}` +
+      return `Down payment — total ${rs(amounts.totalPrice)}${discount}, ` +
+        `${DOWN_PAYMENT_KIND_LABELS[amounts.downPaymentKind].toLowerCase()} ${rs(amounts.downPayment)}` +
         (amounts.adjustment > 0 ? `, adjustment ${rs(amounts.adjustment)}` : '') +
         `, remaining ${rs(amounts.remaining ?? 0)}. ${cut}`;
   }
@@ -390,6 +456,8 @@ export interface StoredDealAmounts {
   downPayment?: number | null;
   confirmationAmount?: number | null;
   adjustment?: number | null;
+  discount?: number | null;
+  downPaymentKind?: string | null;
   remaining?: number | null;
   receivedAmount?: number | null;
   commission?: number | null;
@@ -443,6 +511,16 @@ export function readAdjustment(deal: StoredDealAmounts): number {
   return deal.adjustment != null ? num(deal.adjustment) : num(deal.payableAmount);
 }
 
+/** The discount on a priced deal. 0 on every deal entered before it existed. */
+export function readDiscount(deal: StoredDealAmounts): number {
+  return isPricedType(readDealType(deal)) ? num(deal.discount) : 0;
+}
+
+/** Down Payment or Token Received — a label. */
+export function readDownPaymentKind(deal: StoredDealAmounts): DownPaymentKind {
+  return normalizeDownPaymentKind(deal.downPaymentKind);
+}
+
 /** The "Amount Received" typed on an Installments or Lump Sum deal. */
 export function readReceivedAmount(deal: StoredDealAmounts): number {
   return deal.receivedAmount != null ? num(deal.receivedAmount) : num(deal.amountReceived);
@@ -458,7 +536,13 @@ export function readCommission(deal: StoredDealAmounts): number {
  * would be inventing a figure the business does not have.
  */
 export function readRemaining(deal: StoredDealAmounts): number | null {
-  if (readDealType(deal) === 'LUMP_SUM') return null;
+  const type = readDealType(deal);
+  if (type === 'LUMP_SUM') return null;
+  if (isPricedType(type)) {
+    // Derived from the figures so a deal saved before the Discount existed and
+    // one saved after read by the same arithmetic.
+    return Math.max(0, round(readTotalPrice(deal) - readDiscount(deal) - readAdjustment(deal)));
+  }
   if (deal.remaining != null) return num(deal.remaining);
   // For every historical deal `profit` is `received − payable`, which is
   // arithmetically the Installments Remaining.
@@ -473,20 +557,29 @@ export function readRemaining(deal: StoredDealAmounts): number | null {
  * Installments deal gets `Amount Received` exactly as a new one does.
  */
 export function readCutBase(deal: StoredDealAmounts): number {
-  if (deal.cutBase != null) return num(deal.cutBase);
   const type = readDealType(deal);
-  if (isPricedType(type)) return readTotalPrice(deal);
+  // **Priced deals are always derived, never read from the stored copy.** The
+  // stored `cutBase` on a deal entered before 2026-09-24 is the Total Price —
+  // the old rule — and a deal still waiting to be split must be split by the
+  // rule in force now. Finalised splits are frozen in `dealDistributions` and
+  // are untouched by this.
+  if (isPricedType(type)) return readRemaining(deal) ?? 0;
+  if (deal.cutBase != null) return num(deal.cutBase);
   return readReceivedAmount(deal);
 }
 
 /**
  * **What the finalised Cut is taken out of.** Never `readCutBase`.
  *
- * The Commission on a Lump Sum, and Remaining on everything else.
+ * The Down Payment / Confirmation on a priced deal, the Commission on a Lump
+ * Sum, and Remaining on an Installments deal. Derived for priced deals, for the
+ * reason given on `readCutBase`.
  */
 export function readPayoutSource(deal: StoredDealAmounts): number {
+  const type = readDealType(deal);
+  if (isPricedType(type)) return readDownPayment(deal) ?? 0;
   if (deal.payoutSource != null) return num(deal.payoutSource);
-  if (readDealType(deal) === 'LUMP_SUM') return readCommission(deal);
+  if (type === 'LUMP_SUM') return readCommission(deal);
   return readRemaining(deal) ?? 0;
 }
 
@@ -524,9 +617,12 @@ export function dealFigureRows(
     ];
   }
 
+  const discount = readDiscount(deal);
   return [
     { label: 'Total Price', value: readTotalPrice(deal) },
-    { label: type === 'CONFIRMATION' ? 'Confirmation' : 'Down Payment', value: readDownPayment(deal) },
+    // Only when there is one: a "Discount — Rs 0" box on every deal is noise.
+    ...(discount > 0 ? [{ label: 'Discount', value: discount }] : []),
+    { label: payoutSourceLabel(type, deal.downPaymentKind), value: readDownPayment(deal) },
     { label: 'Adjustment', value: readAdjustment(deal) },
     { label: 'Remaining', value: readRemaining(deal), strong: true },
   ];
@@ -549,7 +645,7 @@ export function dealCutRows(
       note: "the admin's percentage applies to this",
     },
     {
-      label: `Paid from — ${CUT_SOURCE_LABELS[type]}`,
+      label: `Paid from — ${payoutSourceLabel(type, deal.downPaymentKind)}`,
       value: readPayoutSource(deal),
       note: 'the company keeps what is left of this',
     },

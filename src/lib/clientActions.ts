@@ -23,7 +23,11 @@ import {
   type FinalizeResult,
 } from '@/app/actions/profitDistribution';
 import { addFollowUp as _addFollowUp, updateFollowUp as _updateFollowUp } from '@/app/actions/followUps';
-import { closeDeal as _closeDeal } from '@/app/actions/closedDeals';
+import {
+  closeDeal as _closeDeal,
+  updateClosedDeal as _updateClosedDeal,
+  type DealEntryInput,
+} from '@/app/actions/closedDeals';
 import { addExpense as _addExpense } from '@/app/actions/expenses';
 import { addReceivable as _addReceivable } from '@/app/actions/receivables';
 import { addCommitteeRecord as _addCommitteeRecord, addInvestmentRecord as _addInvestmentRecord, addCapitalInvestmentRecord as _addCapitalInvestmentRecord, addPersonalExpense as _addPersonalExpense } from '@/app/actions/accounts';
@@ -227,6 +231,16 @@ export async function finalizeProfitDistribution(
   return _finalizeProfitDistribution(token, dealId, shares);
 }
 
+/** The admin corrects a closed deal. A finalised split reopens when the money changes. */
+export async function updateClosedDeal(
+  token: string,
+  dealId: string,
+  input: DealEntryInput
+): Promise<ActionResult<{ dealId: string; profit: number; reopened: boolean }>> {
+  if (IS_DEMO) return demo.updateClosedDeal(dealId, input);
+  return _updateClosedDeal(token, dealId, input);
+}
+
 export async function reopenProfitDistribution(token: string, dealId: string): Promise<ActionResult> {
   if (IS_DEMO) return demo.reopenProfitDistribution(dealId);
   return _reopenProfitDistribution(token, dealId);
@@ -332,6 +346,8 @@ export async function closeDeal(
     downPayment?: number;
     confirmationAmount?: number;
     adjustment?: number;
+    discount?: number;
+    downPaymentKind?: string;
     receivedAmount?: number;
     payableAmount?: number;
     commission?: number;

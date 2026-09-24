@@ -43,6 +43,7 @@ import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
 import { E } from "@/components/employees/directoryChrome";
 import type { PersonMetrics } from "@/lib/reportScope";
+import { formatWorkedHours } from "@/lib/activityDays";
 
 /* -------------------------------------------------------------------------- */
 /* Columns                                                                     */
@@ -69,9 +70,30 @@ interface Column {
   band: Band;
   accent: string;
   hint: string;
+  /** How the figure prints. Absent: the plain count. */
+  format?: (value: number) => string;
+  /** How it goes into the CSV. Absent: the plain count. */
+  csv?: (value: number) => string | number;
+}
+
+/** A figure as its column prints it. */
+function show(column: Column, value: number): string {
+  return column.format ? column.format(value) : value.toLocaleString();
 }
 
 const COLUMNS: Column[] = [
+  {
+    // Worked time from attendance — check-in to check-out — so the activity
+    // beside it can be read against the hours it took (owner, 2026-09-24).
+    key: "workedMinutes",
+    label: "Hours Worked",
+    short: "Hours",
+    band: "WORK",
+    accent: E.ink,
+    hint: "Check-in to check-out, from attendance. A day not yet checked out counts once it is",
+    format: formatWorkedHours,
+    csv: (minutes) => (minutes / 60).toFixed(2),
+  },
   {
     key: "remarks",
     label: "Remarks",
@@ -103,6 +125,14 @@ const COLUMNS: Column[] = [
     band: "WORK",
     accent: E.teal,
     hint: "Of the follow-ups, the calls that were answered — never the same call twice",
+  },
+  {
+    key: "answeredCalls",
+    label: "Answered Calls",
+    short: "Answered",
+    band: "WORK",
+    accent: E.teal,
+    hint: "Calls logged under 1:10 — picked up, but too short to be a connect. Never counted as a connect too",
   },
   {
     /*
@@ -428,10 +458,10 @@ export function TeamReportView() {
       row.id,
       row.name,
       row.team,
-      ...COLUMNS.map((column) => row[column.key]),
+      ...COLUMNS.map((column) => (column.csv ? column.csv(row[column.key]) : row[column.key])),
     ]);
     if (totals) {
-      body.push(["", "TOTAL", "", ...COLUMNS.map((column) => totals[column.key])]);
+      body.push(["", "TOTAL", "", ...COLUMNS.map((column) => (column.csv ? column.csv(totals[column.key]) : totals[column.key]))]);
     }
 
     // Every field quoted: a name with a comma would otherwise shift every
@@ -864,7 +894,7 @@ export function TeamReportView() {
                             background: BAND_TINT[column.band],
                           }}
                         >
-                          {row[column.key]}
+                          {show(column, row[column.key])}
                         </td>
                       ))}
                     </tr>
@@ -903,7 +933,7 @@ export function TeamReportView() {
                           background: BAND_TINT[column.band],
                         }}
                       >
-                        {totals[column.key]}
+                        {show(column, totals[column.key])}
                       </td>
                     ))}
                   </tr>
@@ -1016,7 +1046,7 @@ function TotalsStrip({ totals, isMobile }: { totals: PersonMetrics; isMobile: bo
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
-                {totals[column.key].toLocaleString()}
+                {show(column, totals[column.key])}
               </div>
             </div>
           );
@@ -1132,7 +1162,7 @@ function MobileRow({
         }}
       >
         {COLUMNS.map((column) => (
-          <Figure key={column.key} label={column.short} value={row[column.key]} accent={column.accent} />
+          <Figure key={column.key} label={column.short} value={row[column.key]} display={show(column, row[column.key])} accent={column.accent} />
         ))}
       </div>
     </div>
@@ -1170,7 +1200,7 @@ function MobileTotals({ totals }: { totals: PersonMetrics }) {
         }}
       >
         {COLUMNS.map((column) => (
-          <Figure key={column.key} label={column.short} value={totals[column.key]} accent={E.ink} strong />
+          <Figure key={column.key} label={column.short} value={totals[column.key]} display={show(column, totals[column.key])} accent={E.ink} strong />
         ))}
       </div>
     </div>
@@ -1180,11 +1210,14 @@ function MobileTotals({ totals }: { totals: PersonMetrics }) {
 function Figure({
   label,
   value,
+  display,
   accent,
   strong,
 }: {
   label: string;
   value: number;
+  /** The figure as its column prints it. */
+  display: string;
   accent: string;
   strong?: boolean;
 }) {
@@ -1212,7 +1245,7 @@ function Figure({
           fontVariantNumeric: "tabular-nums",
         }}
       >
-        {value}
+        {display}
       </p>
     </div>
   );

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countsOf, activityDelta, splitRange, previousDayKey, readCounts, activityDayId } from "./activityDays.ts";
+import { countsOf, activityDelta, splitRange, previousDayKey, readCounts, activityDayId, readWorkedMinutes, formatWorkedHours } from "./activityDays.ts";
 import { entryTally } from "./leadBuckets.ts";
 
 const bools = [false, true];
@@ -9,10 +9,12 @@ test("a day's counts are exactly entryTally's, for every kind of entry", () => {
   for (const kind of ["REMARK", "FOLLOW_UP", null]) {
     for (const connect of bools) {
       for (const meetingAligned of bools) {
-        const ours = countsOf({ kind, connect, meetingAligned });
-        const theirs = entryTally({ leadId: "L", uid: "U", kind, connect, meetingAligned });
-        for (const field of ["remarks", "followUps", "newConnects", "followUpConnects", "meetingsAligned"] as const) {
-          assert.equal(ours[field], theirs[field], `${field} for ${kind}/${connect}/${meetingAligned}`);
+        for (const callMade of bools) {
+          const ours = countsOf({ kind, connect, meetingAligned, callMade });
+          const theirs = entryTally({ leadId: "L", uid: "U", kind, connect, meetingAligned, callMade });
+          for (const field of ["remarks", "followUps", "newConnects", "followUpConnects", "meetingsAligned", "answeredCalls"] as const) {
+            assert.equal(ours[field], theirs[field], `${field} for ${kind}/${connect}/${meetingAligned}/${callMade}`);
+          }
         }
       }
     }
@@ -54,4 +56,28 @@ test("stored counts read safely", () => {
   assert.deepEqual(readCounts({ remarks: 3, followUps: "x" }).followUps, 0);
   assert.equal(readCounts(null).remarks, 0);
   assert.equal(activityDayId("u1", "2026-09-24"), "u1_2026-09-24");
+});
+
+test("a call under 1:10 is an answered call, never a connect as well", () => {
+  // callMade with connect false: the call was logged but was shorter than 1:10.
+  assert.equal(countsOf({ kind: "FOLLOW_UP", callMade: true, connect: false }).answeredCalls, 1);
+  assert.equal(countsOf({ kind: "FOLLOW_UP", callMade: true, connect: false }).followUpConnects, 0);
+  // A connect is not also an answered call.
+  assert.equal(countsOf({ kind: "REMARK", callMade: true, connect: true }).answeredCalls, 0);
+  // No call logged, nothing answered.
+  assert.equal(countsOf({ kind: "FOLLOW_UP", callMade: false }).answeredCalls, 0);
+  // An edit that lengthens a call past 1:10 moves it from answered to connect.
+  assert.deepEqual(
+    activityDelta({ kind: "FOLLOW_UP", callMade: true, connect: false }, { kind: "FOLLOW_UP", callMade: true, connect: true }),
+    { followUpConnects: 1, answeredCalls: -1 }
+  );
+});
+
+test("worked minutes read safely and print as hours", () => {
+  assert.equal(readWorkedMinutes({ workedMinutes: 425 }), 425);
+  assert.equal(readWorkedMinutes({ workedMinutes: "junk" }), 0);
+  assert.equal(readWorkedMinutes(null), 0);
+  assert.equal(formatWorkedHours(425), "7h 05m");
+  assert.equal(formatWorkedHours(480), "8h");
+  assert.equal(formatWorkedHours(0), "0h");
 });
