@@ -12,6 +12,8 @@ import {
 import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { useLive } from './useLive';
+import { LEAD_WINDOW_FLOOR, leadWindowSize, windowIsFull } from '@/lib/leadWindow';
+import { countState, subscribeCount } from '@/lib/liveCount';
 import { subscribeSyncedLeads, syncedLeadsState } from '@/lib/leadSync';
 import { SERVER_STATE } from '@/lib/liveCollection';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
@@ -230,17 +232,17 @@ export interface AuditEventRecord {
  * displayed **14**. The other 20 were simply older than the 500th newest lead.
  * Nothing was lost; the screen could not see them.
  *
- * 2000 is headroom, not a solution: at the current intake (~25 leads a day)
- * this is about two months. What makes the next time survivable is
- * `truncated` below — the cap now says when it is holding leads back instead
- * of quietly answering as though the missing ones do not exist. The permanent
- * answer is paging, or a query scoped to the leads a screen actually needs.
+ * **The size is no longer a number anybody chose.** `size` below is the
+ * collection's own count plus 25%, rounded to 500, floored at
+ * `LEAD_WINDOW_FLOOR` and capped at `LEAD_WINDOW_CEILING` — see `lib/leadWindow`
+ * for the arithmetic and `lib/liveCount` for how the count is shared. A constant
+ * was a promise somebody had to remember to renew, and the cost of forgetting it
+ * was this incident.
  *
- * The read cost of raising it is paid once: `persistentLocalCache` is wired up
- * in `firebase/client`, so a warm re-subscribe is served from IndexedDB and
- * only changed documents are billed.
+ * The ceiling is a circuit breaker rather than a limit — past it the binding
+ * constraint is the browser, not the read bill, and `truncated` says so on
+ * screen instead of dropping the oldest leads in silence.
  */
-const LEAD_PAGE_SIZE = 2000;
 
 /**
  * Every lead the signed-in person is entitled to see.
@@ -277,6 +279,26 @@ export function useLeads(
   const key = !role || (!wholePipeline && !uid) ? 'idle' : wholePipeline ? 'all' : `${role}:${uid}`;
 
   /*
+    **The window sizes itself to the collection.** Only the whole pipeline is
+    counted: it is the one scope that can plausibly reach the floor, and an
+    employee or a Sales manager holding two thousand leads is not a thing — if it
+    ever became one, `truncated` says so. So a count is one read per admin or HR
+    device per half hour, never one per person on the roster.
+
+    A count that has not arrived, or cannot be had, leaves `size` at the floor,
+    so nothing waits on it and nothing renders differently for want of it.
+  */
+  const counted = key === 'all' && !IS_DEMO;
+  const buildCount = useCallback(() => collection(db, 'leads'), []);
+  const subscribeToCount = useCallback(
+    (notify: () => void) => (counted ? subscribeCount('leads:all', buildCount, notify) : () => {}),
+    [counted, buildCount]
+  );
+  const readCount = useCallback(() => (counted ? countState('leads:all') : null), [counted]);
+  const leadCount = useSyncExternalStore(subscribeToCount, readCount, () => null);
+  const size = counted ? leadWindowSize(leadCount) : LEAD_WINDOW_FLOOR;
+
+  /*
     **Shared, because `leads` is the most expensive thing this app reads and it
     is read everywhere.** 296 documents, opened by the dashboard, the leads
     workspace, the directory and the deals screen — four separate listeners for
@@ -287,12 +309,13 @@ export function useLeads(
     const leadsRef = collection(db, 'leads');
     const scopeField = role === 'subadmin' ? 'subAdminUid' : 'assignedUserId';
     return key === 'all'
-      ? query(leadsRef, orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE))
-      : query(leadsRef, where(scopeField, '==', uid), orderBy('createdAt', 'desc'), limit(LEAD_PAGE_SIZE));
-    // `uid` and `role` are both encoded in `key`, so the key alone identifies
-    // the query — depending on them as well would rebuild it every render.
+      ? query(leadsRef, orderBy('createdAt', 'desc'), limit(size))
+      : query(leadsRef, where(scopeField, '==', uid), orderBy('createdAt', 'desc'), limit(size));
+    // `uid` and `role` are both encoded in `key`, so the key and the size
+    // together identify the query — depending on the rest as well would rebuild
+    // it every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, size]);
 
   /*
     **The whole pipeline syncs only what changed** (owner, 2026-09-23 — the day
@@ -303,6 +326,19 @@ export function useLeads(
     `lib/leadSync` for why a delta cannot serve them.
   */
   const synced = key === 'all' && !IS_DEMO;
+  /*
+    **The size is part of the sync key, and that is deliberate.** `leadSync`
+    stores its watermark under this key, so a key it has not seen has no meta and
+    `planSync` returns FULL — which is exactly right: the device's cached copy
+    holds the *old*, smaller window, and serving a delta on top of it would leave
+    the admin looking at 2000 leads while the window had grown to 2500. Growing
+    therefore costs one full sync per device, once per step — about one every
+    twenty days at ~25 leads a day, against the six-hourly full sync that already
+    happens. The stale key's meta is left in `localStorage`; it is two numbers,
+    and reading it again would mean a device that shrank back to a smaller window
+    trusting a watermark from a larger one.
+  */
+  const syncKey = `leads:all:${size}`;
   const buildDelta = useCallback(
     (since: Timestamp) =>
       query(collection(db, 'leads'), where('updatedAt', '>', since), orderBy('updatedAt', 'asc')),
@@ -310,13 +346,21 @@ export function useLeads(
   );
   const subscribeSynced = useCallback(
     (notify: () => void) =>
-      synced ? subscribeSyncedLeads('leads:all', build, buildDelta, describeLiveError, notify) : () => {},
-    [synced, build, buildDelta]
+      synced ? subscribeSyncedLeads(syncKey, build, buildDelta, describeLiveError, notify) : () => {},
+    [synced, syncKey, build, buildDelta]
   );
-  const readSynced = useCallback(() => (synced ? syncedLeadsState('leads:all') : SERVER_STATE), [synced]);
+  const readSynced = useCallback(
+    () => (synced ? syncedLeadsState(syncKey) : SERVER_STATE),
+    [synced, syncKey]
+  );
   const syncedState = useSyncExternalStore(subscribeSynced, readSynced, () => SERVER_STATE);
 
-  const plain = useLive(`leads:${key}`, build, !IS_DEMO && key !== 'idle' && !synced, describeLiveError);
+  const plain = useLive(
+    `leads:${key}:${size}`,
+    build,
+    !IS_DEMO && key !== 'idle' && !synced,
+    describeLiveError
+  );
   const live = synced ? syncedState : plain;
 
   if (IS_DEMO) {
@@ -337,13 +381,13 @@ export function useLeads(
     /**
      * The window is full, so there are probably older leads it does not hold.
      *
-     * A full page cannot prove more exist — the pipeline may be exactly
-     * `LEAD_PAGE_SIZE` long — which is why every reader words this as a
-     * possibility. It is deliberately not answered with a `count()` query:
-     * that is a second round trip on every screen, to sharpen a warning that
-     * is already actionable.
+     * A full window cannot prove more exist — the pipeline may be exactly that
+     * long — which is why every reader words this as a possibility. Now that the
+     * window grows with the collection, this can only be true at
+     * `LEAD_WINDOW_CEILING`, where it means what the notice says: this needs
+     * server-side paging, not a bigger number.
      */
-    truncated: !live.loading && rows.length >= LEAD_PAGE_SIZE,
+    truncated: !live.loading && windowIsFull(rows.length, size),
   };
 }
 

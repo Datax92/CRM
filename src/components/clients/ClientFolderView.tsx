@@ -15,11 +15,12 @@
  * drift.
  */
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useClientFolders, useClientFolderMembers, useOwnClientLeads } from "@/hooks/useClients";
 import { ownClientLeadIds } from "@/lib/clientFolderScope";
+import { useLeadsByIds } from "@/hooks/useLeadsByIds";
 import { LeadsWorkspace } from "@/components/leads/LeadsWorkspace";
 import { FullPageSpinner } from "@/components/admin/AdminShared";
 import { FolderHeart, ChevronLeft } from "lucide-react";
@@ -57,6 +58,26 @@ export function ClientFolderView({
   const folder = folders.find((entry) => entry.id === folderId) ?? null;
   const ownerUid = user?.uid ?? "";
 
+  /*
+    **A folder is its membership rows, not the subset of them the window holds.**
+    `assignee` comes from the pipeline window, so a member older than the window
+    was read as somebody else's and dropped — 14 clients shown in a folder of 34
+    on 2026-09-23. Those leads are now fetched by the ids the folder already
+    knows. Below the window's ceiling `missing` is empty and this opens no
+    listener, so the normal case costs nothing.
+  */
+  const memberIds = useMemo(() => members.map((member) => member.leadId), [members]);
+  const inWindow = useCallback((leadId: string) => assignee.has(leadId), [assignee]);
+  const extraLeads = useLeadsByIds(memberIds, inWindow, isManager, {
+    role,
+    uid: user?.uid,
+    managerKind,
+  });
+  const extraAssignee = useMemo(
+    () => new Map(extraLeads.map((lead) => [lead.id, lead.assignedUserId ?? null])),
+    [extraLeads]
+  );
+
   /**
    * The membership rows are the folder's whole definition, narrowed to the
    * leads still assigned to the owner. A `Set` because the workspace asks "is
@@ -64,10 +85,8 @@ export function ClientFolderView({
    */
   const scope = useMemo(() => {
     if (!folder) return null;
-    const leadIds = ownClientLeadIds(
-      members.map((member) => member.leadId),
-      ownerUid,
-      (leadId) => assignee.get(leadId)
+    const leadIds = ownClientLeadIds(memberIds, ownerUid, (leadId) =>
+      assignee.has(leadId) ? assignee.get(leadId) : extraAssignee.get(leadId)
     );
     return {
       leadIds,
@@ -76,8 +95,9 @@ export function ClientFolderView({
         folder.dataBankFolderName ? ` · from ${folder.dataBankFolderName}` : ""
       }`,
       backHref: basePath,
+      extraLeads,
     };
-  }, [folder, members, ownerUid, assignee, basePath]);
+  }, [folder, memberIds, ownerUid, assignee, extraAssignee, extraLeads, basePath]);
 
   if (authLoading || foldersLoading || membersLoading || ownLoading) return <FullPageSpinner />;
 

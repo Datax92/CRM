@@ -29,12 +29,18 @@
  *   changed. So query listeners are opened with metadata changes on, counted,
  *   and only the answers the screen would have received are passed on.
  * - `getDocs` counts its size (one for an empty result); `getDoc` one.
+ * - `getCountFromServer` is billed differently by Google — **one read per up to
+ *   a thousand index entries matched**, not one per document — so it is counted
+ *   that way rather than as its own answer. Today's pipeline is one read. It is
+ *   here at all because a read source the meter cannot see is worse than an
+ *   expensive one it can.
  */
 
 import {
   onSnapshot as fsOnSnapshot,
   getDocs as fsGetDocs,
   getDoc as fsGetDoc,
+  getCountFromServer as fsGetCountFromServer,
   DocumentReference,
   type DocumentData,
   type DocumentSnapshot,
@@ -220,5 +226,15 @@ export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QueryS
 export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promise<DocumentSnapshot<T>> {
   const snap = await fsGetDoc(ref);
   if (!snap.metadata.fromCache) count(ref, 'get', 1);
+  return snap;
+}
+
+/**
+ * `getCountFromServer`, counted the way Google bills it: one read per up to a
+ * thousand index entries matched, and never fewer than one.
+ */
+export async function getCountFromServer<T = DocumentData>(query: Query<T>) {
+  const snap = await fsGetCountFromServer(query);
+  count(query, 'get', Math.max(1, Math.ceil(snap.data().count / 1000)));
   return snap;
 }

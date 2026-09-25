@@ -114,6 +114,17 @@ export interface LeadScope {
   title: string;
   subtitle?: string;
   backHref?: string;
+  /**
+   * Leads in the scope that the pipeline window does not hold, fetched by id by
+   * whoever built the scope (`useLeadsByIds`).
+   *
+   * A scoped workspace's membership is decided elsewhere and is not a function
+   * of how many leads exist, so it must not silently lose the ones that fall
+   * outside the window — which is exactly what showed 14 clients in a folder of
+   * 34 on 2026-09-23. Normally empty, because the window now covers the whole
+   * pipeline up to its ceiling.
+   */
+  extraLeads?: Lead[];
 }
 
 export function LeadsWorkspace({
@@ -236,10 +247,18 @@ export function LeadsWorkspace({
    * search so every count on the screen describes the folder, not the
    * pipeline behind it.
    */
-  const inScope = useMemo(
-    () => (scope ? leads.filter((lead) => scope.leadIds.has(lead.id)) : leads),
-    [leads, scope]
-  );
+  const inScope = useMemo(() => {
+    if (!scope) return leads;
+    const within = leads.filter((lead) => scope.leadIds.has(lead.id));
+    if (!scope.extraLeads?.length) return within;
+    // The window's own rows win: they are the live subscription, and a lead is
+    // only fetched by id *because* the window lacks it, so a collision can only
+    // be a snapshot arriving from both at once.
+    const have = new Set(within.map((lead) => lead.id));
+    return within.concat(
+      scope.extraLeads.filter((lead) => scope.leadIds.has(lead.id) && !have.has(lead.id))
+    );
+  }, [leads, scope]);
 
   /** Every origin present, with counts, for the source picker. */
   const sources = useMemo(() => sourceOptions(inScope, describeLeadSource), [inScope]);
