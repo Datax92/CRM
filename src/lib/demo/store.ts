@@ -1145,7 +1145,7 @@ export const demo = {
       // A wrap starts a new lap, so the exclusion list is replaced.
       attemptedAssignees: wrapped ? [nextUid] : attempted,
       status: 'ASSIGNED',
-      acceptDeadlineAt: ts(acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS)),
+      acceptDeadlineAt: ts(acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS, lead.id)),
       lastActivityAt: now(),
     });
 
@@ -1157,7 +1157,7 @@ export const demo = {
         targetRole: 'employee',
         targetUid: nextUid,
         payload: {
-          message: `"${lead.name}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
+          message: `"${lead.name}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES, lead.id)}`,
         },
         createdAt: now(),
         readAt: null,

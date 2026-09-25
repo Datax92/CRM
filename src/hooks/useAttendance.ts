@@ -7,7 +7,7 @@ import {
   where,
 } from 'firebase/firestore';
 // Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
+import { onSnapshotLive } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState, demo } from '@/lib/demo/store';
@@ -349,7 +349,8 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
   useEffect(() => {
     if (IS_DEMO || !uid) return;
 
-    const unsubscribe = onSnapshot(
+    // Live even in quiet hours (meteredFirestore): a punch must show at once.
+    const unsubscribe = onSnapshotLive(
       // Scoped by uid only, not by month. The phone layout shows a
       // year-to-date attendance figure beside the month-to-date one, and a
       // second month-scoped listener per year would be twelve listeners; one

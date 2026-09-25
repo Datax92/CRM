@@ -468,6 +468,16 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-25 (night) — quiet hours until noon, a held morning lane · TEMPORARY, remove after 2026-09-26 12:00
+
+Reads were at 46k of the free 50k with ~15 hours to the reset, and Blaze could not be enabled (Google refuses the billing profile, `OR_BACR2_59` — a support form, not code). Owner's instructions: nothing on screen may say so; attendance must work; no lead popups until 10:40, then one or two at a time; normal from 12:00.
+
+- **Quiet hours** (`meteredFirestore`, `QUIET_UNTIL` = 2026-09-26 12:00 Karachi): every client listener answers **once** from the device's IndexedDB copy, and reads the server only when the device holds nothing for that query; `getDocs`/`getDoc` the same; `getCountFromServer` refuses (the lead window stays at its floor). `onSnapshotLive` keeps two listeners live: the new-lead offer (`leads:offered:*` in `liveCollection`) and the person's own attendance (`useAttendance`). A tab still open at noon reloads the next time it is shown. Server Actions, the cron and the webhooks are unchanged — writes and intake work throughout.
+- **The morning hold** (`LANE_HOLD_UNTIL` = 2026-09-26 10:40, `lib/distribution`): an offer made from the evening of the 25th until 10:40 gets `acceptDeadlineAt` = its slot + the window, the slot being 10:40 plus 0–20 minutes in four-minute steps chosen by the lead id (`holdSlot`), so nothing expires or cascades overnight and the backlog reaches people one or two at a time. `useIncomingLead` opens no listener before 10:40 and shows an offer only once `offerOpensAt` has passed. Every `acceptDeadlineFrom` / `acceptWindowPhrase` caller now passes the lead id.
+- **Owed after noon on the 26th:** delete `QUIET_UNTIL`/`quietAnswer`/`onSnapshotLive`'s purpose (or keep `onSnapshotLive` as a plain alias), `LANE_HOLD_*`/`holdSlot`, the popup's `holdOver`, and the `__quietHoursOff` test flag. All of it is inert after its date, so leaving it costs nothing but reading time.
+- **Validation**: typecheck 0, `test` 852/852 (2 new on the hold), `test:sync` 15/15 (1 new: in quiet hours a listener answers once from the device copy, counts no server read and receives no live update), `eslint src` 7 / 33, `next build` compiles.
+
+
 ### 2026-09-24 (small hours) — a short server-side cache for what every request reads
 
 `lib/server/serverCache`: an in-memory, per-instance cache with a time limit, one shared load for simultaneous callers, and failures never remembered. Used **only for reads that decide what to show or who is asking — never inside a transaction**, where a stale value could write something wrong.

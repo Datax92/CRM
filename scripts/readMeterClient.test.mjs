@@ -19,6 +19,9 @@ Object.defineProperty(globalThis, 'navigator', {
   value: { sendBeacon: (_url, blob) => { beacons.push(blob); return true; } },
 });
 
+// Counting is tested with quiet hours off; the last test turns them on.
+globalThis.__quietHoursOff = true;
+
 // The module imports the app's own auth; the test gives it none.
 const src = new URL('../src/lib/firebase/meteredFirestore.ts', import.meta.url);
 const copy = new URL('../src/lib/firebase/_metered.clienttest.ts', import.meta.url);
@@ -95,4 +98,31 @@ test('getDoc counts one', async () => {
   await metered.getDoc(doc(db, 'meterc', 'a'));
   const items = await flushed();
   assert.equal(items['/admin/leads|meterc|get'], 1);
+});
+
+test('quiet hours: a listener answers once from the device copy and reads nothing from the server', async () => {
+  // Warm this client's copy with a live listener first.
+  await new Promise((resolve) => {
+    const stop = metered.onSnapshot(query(collection(db, 'meterc'), where('tag', '==', 'x')), () => { stop(); resolve(); });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await flushed();
+
+  globalThis.__quietHoursOff = false;
+  try {
+    const delivered = [];
+    const stop = metered.onSnapshot(query(collection(db, 'meterc'), where('tag', '==', 'x')), (snap) => delivered.push(snap));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await updateDoc(doc(db, 'meterc', 'c'), { n: 'cc' });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    stop();
+
+    assert.equal(delivered.length, 1, 'one answer, no live updates');
+    assert.equal(delivered[0].metadata.fromCache, true);
+    assert.equal(delivered[0].size, 3);
+    const items = await flushed();
+    assert.deepEqual(Object.keys(items).filter((key) => !key.endsWith('|get')), [], 'no listener reads counted');
+  } finally {
+    globalThis.__quietHoursOff = true;
+  }
 });

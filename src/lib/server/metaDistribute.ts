@@ -186,7 +186,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
         subAdminUid: (profile.subAdminUid as string | undefined) ?? null,
       }),
       distributionMethod: 'AUTO',
-      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS, leadRef.id),
       attemptedAssignees: [assignee],
       autoRotationCycleSnapshot: newState,
       /*
@@ -246,7 +246,7 @@ export async function offerMetaRecordToLane(recordId: string): Promise<MetaOffer
       targetRole,
       targetUid: assignee,
       payload: {
-        message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
+        message: `New Facebook lead: ${record.name ?? 'Unnamed lead'}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES, leadRef.id)}`,
       },
       createdAt: now,
       readAt: null,

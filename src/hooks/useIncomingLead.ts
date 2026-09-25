@@ -26,6 +26,7 @@ import { useLive } from './useLive';
 import { describeLiveError, type Lead } from './useLeads';
 import { ACCEPT_WINDOW_MS } from '@/lib/constants/distribution';
 import { timestampMillis } from '@/lib/dates';
+import { LANE_HOLD_UNTIL, offerOpensAt } from '@/lib/distribution';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 
 export interface LeadOffer {
@@ -54,8 +55,26 @@ export function useIncomingLead(
     outright and only a lane offer is ever `ASSIGNED`.
   */
   const isManager = role === 'subadmin';
+
+  /*
+    The morning hold (`LANE_HOLD_UNTIL`, 2026-09-26 10:40): no listener at all
+    before it — nothing is offered until then anyway. Checked from a timer,
+    because the lint rule refuses `Date.now()` in a render or effect body.
+  */
+  const [holdOver, setHoldOver] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const check = () => {
+      const wait = LANE_HOLD_UNTIL - Date.now();
+      if (wait <= 0) setHoldOver(true);
+      else timer = setTimeout(check, Math.min(wait, 60_000));
+    };
+    timer = setTimeout(check, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
   const active =
-    enabled && (role === 'employee' || isManager || role === 'admin') && Boolean(uid);
+    enabled && holdOver && (role === 'employee' || isManager || role === 'admin') && Boolean(uid);
 
   const build = useCallback(
     () =>
@@ -119,7 +138,9 @@ export function useIncomingLead(
         cron sweep will move it on, and until then there is nothing useful the
         employee can do with it.
       */
-      .filter((row) => row.expiresAt === null || row.expiresAt > now);
+      .filter((row) => row.expiresAt === null || row.expiresAt > now)
+      // Not before its window opens: a held offer waits for its slot.
+      .filter((row) => row.expiresAt === null || offerOpensAt(row.expiresAt, ACCEPT_WINDOW_MS) <= now);
 
     if (open.length === 0) return null;
 

@@ -311,7 +311,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
         cascadeLap: (Number(lead.cascadeLap) || 0) + (wrapped ? 1 : 0),
         // Always an offer: the lane has no floor to force it on anybody.
         status: "ASSIGNED",
-        acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
+        acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS, leadId),
       });
 
       t.create(adminDb.collection("notifications").doc(), {
@@ -325,7 +325,7 @@ export async function passLead(token: string, leadId: string): Promise<ActionRes
               : "employee",
         targetUid: nextAssignee,
         payload: {
-          message: `"${lead.name ?? leadId}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
+          message: `"${lead.name ?? leadId}" has been passed to you. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES, leadId)}`,
         },
         createdAt: now,
         readAt: null,

@@ -193,7 +193,7 @@ async function autoAssignLead(leadId: string, roster: RosterShare): Promise<bool
       lastActivityAt: now,
       distributionMethod: 'AUTO',
       status: 'ASSIGNED',
-      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS, leadId),
       adminAssignDeadlineAt: FieldValue.delete(),
       autoRotationCycleSnapshot: newState,
       attemptedAssignees: FieldValue.arrayUnion(assignee),
@@ -211,7 +211,7 @@ async function autoAssignLead(leadId: string, roster: RosterShare): Promise<bool
       leadId,
       targetRole: recipients.get(assignee)?.targetRole ?? 'employee',
       targetUid: assignee,
-      message: `You have been assigned a new lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
+      message: `You have been assigned a new lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES, leadId)}`,
     });
 
     t.set(configRef, cyclePatch(newState, now), { merge: true });
@@ -338,7 +338,7 @@ async function reassignExpiredLead(leadId: string, roster: RosterShare): Promise
       lastActivityAt: now,
       distributionMethod: 'AUTO_REASSIGN',
       status: 'ASSIGNED',
-      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS),
+      acceptDeadlineAt: acceptDeadlineFrom(Date.now(), ACCEPT_WINDOW_MS, leadId),
       attemptedAssignees: wrapped ? [nextAssignee] : FieldValue.arrayUnion(nextAssignee),
       // How many complete laps of the lane this lead has been round. Nothing
       // acts on it — it is what makes "this has been going round for hours"
@@ -361,7 +361,7 @@ async function reassignExpiredLead(leadId: string, roster: RosterShare): Promise
       leadId,
       targetRole: recipients.get(nextAssignee)?.targetRole ?? 'employee',
       targetUid: nextAssignee,
-      message: `You have been reassigned a lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES)}`,
+      message: `You have been reassigned a lead: ${lead.name ?? leadId}. ${acceptWindowPhrase(Date.now(), ACCEPT_WINDOW_MINUTES, leadId)}`,
     });
 
     return true;

@@ -40,6 +40,8 @@ import {
   onSnapshot as fsOnSnapshot,
   getDocs as fsGetDocs,
   getDoc as fsGetDoc,
+  getDocsFromCache as fsGetDocsFromCache,
+  getDocFromCache as fsGetDocFromCache,
   getCountFromServer as fsGetCountFromServer,
   DocumentReference,
   type DocumentData,
@@ -114,6 +116,73 @@ function flush(): void {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Quiet hours (2026-09-25 night → 2026-09-26 12:00 Karachi)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Until the daily read allowance resets at noon Karachi, every screen answers
+ * from the device's own copy and opens no live connection; it goes to the
+ * server only when the device holds nothing for that query. Deliberately
+ * silent on screen, at the owner's instruction. The new-lead offer stays live
+ * (`onSnapshotLive`). It ends by itself at `QUIET_UNTIL`, and a tab left open
+ * reloads the next time it is shown after that.
+ */
+const QUIET_UNTIL = Date.parse('2026-09-26T12:00:00+05:00');
+
+function quiet(): boolean {
+  if ((globalThis as { __quietHoursOff?: boolean }).__quietHoursOff) return false; // tests
+  return typeof window !== 'undefined' && Date.now() < QUIET_UNTIL;
+}
+
+let reloadArmed = false;
+function armNoonReload(): void {
+  if (reloadArmed || typeof window === 'undefined') return;
+  reloadArmed = true;
+  const reloadWhenSeen = () => {
+    if (Date.now() >= QUIET_UNTIL && document.visibilityState === 'visible') window.location.reload();
+  };
+  document.addEventListener('visibilitychange', reloadWhenSeen);
+  setTimeout(() => {
+    // Hidden tabs reload when next shown; a hidden one is reloaded then.
+    if (document.visibilityState === 'hidden') return;
+    reloadWhenSeen();
+  }, Math.max(0, QUIET_UNTIL - Date.now()) + 60_000 + Math.random() * 240_000);
+}
+
+/** One answer for a listener during quiet hours: the device's copy, else one server read. */
+function quietAnswer<T>(target: Query<T> | DocumentReference<T>, observer: Observer<unknown>): Unsubscribe {
+  armNoonReload();
+  let cancelled = false;
+  void (async () => {
+    try {
+      let snap: QuerySnapshot<T> | DocumentSnapshot<T> | null = null;
+      if (target instanceof DocumentReference) {
+        try {
+          snap = await fsGetDocFromCache(target);
+        } catch {
+          snap = null;
+        }
+        if (!snap) snap = await getDoc(target);
+      } else {
+        try {
+          const cached = await fsGetDocsFromCache(target);
+          snap = cached.empty ? null : cached;
+        } catch {
+          snap = null;
+        }
+        if (!snap) snap = await getDocs(target);
+      }
+      if (!cancelled) observer.next?.(snap);
+    } catch (error) {
+      if (!cancelled) observer.error?.(error as Error);
+    }
+  })();
+  return () => {
+    cancelled = true;
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* The three reads                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -132,6 +201,23 @@ function isOptions(value: unknown): value is SnapshotListenOptions {
     typeof (value as Observer<unknown>).next !== 'function' &&
     ('includeMetadataChanges' in value || 'source' in value)
   );
+}
+
+/** Set for the duration of an `onSnapshotLive` call: that listener stays live in quiet hours. */
+let liveThrough = false;
+
+/** `onSnapshot` that stays live during quiet hours — the new-lead offer only. */
+export function onSnapshotLive<T = DocumentData>(
+  query: Query<T>,
+  onNext: (snapshot: QuerySnapshot<T>) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  liveThrough = true;
+  try {
+    return onSnapshot(query, onNext, onError);
+  } finally {
+    liveThrough = false;
+  }
 }
 
 // The same call shapes as `firebase/firestore`'s own, so every caller's
@@ -176,6 +262,8 @@ export function onSnapshot<T = DocumentData>(
     observer = (args[0] ?? {}) as Observer<unknown>;
   }
 
+  if (quiet() && !liveThrough) return quietAnswer(target, observer);
+
   if (target instanceof DocumentReference) {
     let seenServer = false;
     return fsOnSnapshot(target, options, {
@@ -218,12 +306,27 @@ export function onSnapshot<T = DocumentData>(
 }
 
 export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QuerySnapshot<T>> {
+  if (quiet()) {
+    try {
+      const cached = await fsGetDocsFromCache(query);
+      if (!cached.empty) return cached;
+    } catch {
+      // not on the device — fall through to one server read
+    }
+  }
   const snap = await fsGetDocs(query);
   if (!snap.metadata.fromCache) count(query, 'get', Math.max(1, snap.size));
   return snap;
 }
 
 export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promise<DocumentSnapshot<T>> {
+  if (quiet()) {
+    try {
+      return await fsGetDocFromCache(ref);
+    } catch {
+      // not on the device — fall through to one server read
+    }
+  }
   const snap = await fsGetDoc(ref);
   if (!snap.metadata.fromCache) count(ref, 'get', 1);
   return snap;
@@ -234,6 +337,8 @@ export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promi
  * thousand index entries matched, and never fewer than one.
  */
 export async function getCountFromServer<T = DocumentData>(query: Query<T>) {
+  // Quiet hours: refused, which `liveCount` already treats as "use the floor".
+  if (quiet()) throw new Error('count skipped until noon');
   const snap = await fsGetCountFromServer(query);
   count(query, 'get', Math.max(1, Math.ceil(snap.data().count / 1000)));
   return snap;

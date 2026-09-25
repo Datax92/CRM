@@ -359,8 +359,28 @@ export const LANE_QUIET_UNTIL_HOUR = 9;
 const KARACHI_OFFSET_MS = 5 * 3_600_000; // UTC+5, no daylight saving
 const DAY_MS = 86_400_000;
 
+/**
+ * A one-morning hold (owner, 2026-09-25, while the day's read allowance ran
+ * out): every offer made before 10:40 Karachi on 2026-09-26 opens at 10:40 or
+ * a few minutes after, spread by the lead's id into four-minute slots, so the
+ * waiting leads reach people one or two at a time instead of all at once. The
+ * popup shows an offer only once its slot has opened (`offerOpensAt`). It
+ * applies to nothing before the evening of the 25th or after 10:40 on the 26th.
+ */
+export const LANE_HOLD_UNTIL = Date.parse("2026-09-26T10:40:00+05:00");
+const LANE_HOLD_FROM = LANE_HOLD_UNTIL - 18 * 3_600_000;
+const HOLD_SLOTS = 6;
+const HOLD_GAP_MS = 4 * 60_000;
+
+function holdSlot(seed: string | undefined): number {
+  let hash = 0;
+  for (const char of seed ?? "") hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return (hash % HOLD_SLOTS) * HOLD_GAP_MS;
+}
+
 /** When the lane resumes, in epoch ms, if `nowMs` is inside quiet hours; else null. */
-export function laneResumesAt(nowMs: number): number | null {
+export function laneResumesAt(nowMs: number, seed?: string): number | null {
+  if (nowMs >= LANE_HOLD_FROM && nowMs < LANE_HOLD_UNTIL) return LANE_HOLD_UNTIL + holdSlot(seed);
   const local = nowMs + KARACHI_OFFSET_MS;
   const hour = new Date(local).getUTCHours();
   if (hour < LANE_QUIET_FROM_HOUR && hour >= LANE_QUIET_UNTIL_HOUR) return null;
@@ -370,8 +390,13 @@ export function laneResumesAt(nowMs: number): number | null {
 }
 
 /** The accept deadline for an offer made at `nowMs`: the window, from now or from the morning. */
-export function acceptDeadlineFrom(nowMs: number, windowMs: number): Date {
-  return new Date((laneResumesAt(nowMs) ?? nowMs) + windowMs);
+export function acceptDeadlineFrom(nowMs: number, windowMs: number, seed?: string): Date {
+  return new Date((laneResumesAt(nowMs, seed) ?? nowMs) + windowMs);
+}
+
+/** When an offer's window opened (or opens) — the popup waits for it. */
+export function offerOpensAt(deadlineMs: number, windowMs: number): number {
+  return deadlineMs - windowMs;
 }
 
 /**
@@ -395,8 +420,8 @@ export function formatTimeLeft(seconds: number): string {
  * "5 minutes" at 23:00 would send somebody scrambling for a lead that waits
  * until 09:05.
  */
-export function acceptWindowPhrase(nowMs: number, windowMinutes: number): string {
-  const resume = laneResumesAt(nowMs);
+export function acceptWindowPhrase(nowMs: number, windowMinutes: number, seed?: string): string {
+  const resume = laneResumesAt(nowMs, seed);
   if (resume === null) return `You have ${windowMinutes} minutes to accept.`;
   const by = new Date(resume + windowMinutes * 60_000 + KARACHI_OFFSET_MS);
   const hh = String(by.getUTCHours()).padStart(2, "0");

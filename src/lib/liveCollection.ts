@@ -35,7 +35,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 // Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
+import { onSnapshot, onSnapshotLive } from '@/lib/firebase/meteredFirestore';
 
 /** How long a listener outlives its last subscriber. */
 const KEEP_ALIVE_MS = 60_000;
@@ -100,7 +100,8 @@ export function subscribeLive(
   }
 
   if (!entry.stop) {
-    entry.stop = onSnapshot(
+    // The new-lead offer stays live during quiet hours; see meteredFirestore.
+    entry.stop = (key.startsWith('leads:offered:') ? onSnapshotLive : onSnapshot)(
       buildQuery(),
       (snap) => publish(entry, {
         rows: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
