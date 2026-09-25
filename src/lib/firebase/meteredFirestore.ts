@@ -52,6 +52,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth } from '@/lib/firebase/client';
+import { isQuotaExhausted } from '@/lib/quotaError';
 
 /* -------------------------------------------------------------------------- */
 /* The tally, and getting it to the server log                                 */
@@ -221,6 +222,29 @@ function quietAnswer<T>(target: Query<T> | DocumentReference<T>, observer: Obser
   };
 }
 
+/**
+ * **A spent read allowance never shows as an error on a screen that loads
+ * data** (owner, 2026-09-25): the listener or read is answered from the
+ * device's copy instead, and the screen simply does not update. Saving still
+ * reports its own failure — a save that did not happen must not look done.
+ */
+function quotaFallback<T>(target: Query<T> | DocumentReference<T>, observer: Observer<unknown>): (error: Error) => void {
+  return (error: Error) => {
+    if (!isQuotaExhausted(error)) {
+      observer.error?.(error);
+      return;
+    }
+    void (async () => {
+      try {
+        const snap = target instanceof DocumentReference ? await fsGetDocFromCache(target) : await fsGetDocsFromCache(target);
+        observer.next?.(snap);
+      } catch {
+        // nothing on the device either: stay as the screen is, without an error
+      }
+    })();
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* The three reads                                                             */
 /* -------------------------------------------------------------------------- */
@@ -318,7 +342,7 @@ export function onSnapshot<T = DocumentData>(
         }
         observer.next?.(snap);
       },
-      error: observer.error,
+      error: quotaFallback(target, observer),
       complete: observer.complete,
     });
   }
@@ -344,7 +368,7 @@ export function onSnapshot<T = DocumentData>(
         observer.next?.(snap);
       }
     },
-    error: observer.error,
+    error: quotaFallback(target, observer),
     complete: observer.complete,
   });
 }
@@ -358,13 +382,25 @@ export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QueryS
       // not on the device — fall through to one server read
     }
   }
-  const snap = await fsGetDocs(query);
+  let snap: QuerySnapshot<T>;
+  try {
+    snap = await fsGetDocs(query);
+  } catch (error) {
+    if (isQuotaExhausted(error)) return fsGetDocsFromCache(query);
+    throw error;
+  }
   if (!snap.metadata.fromCache) count(query, 'get', Math.max(1, snap.size));
   return snap;
 }
 
 export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promise<DocumentSnapshot<T>> {
-  const snap = await fsGetDoc(ref);
+  let snap: DocumentSnapshot<T>;
+  try {
+    snap = await fsGetDoc(ref);
+  } catch (error) {
+    if (isQuotaExhausted(error)) return fsGetDocFromCache(ref);
+    throw error;
+  }
   if (!snap.metadata.fromCache) count(ref, 'get', 1);
   return snap;
 }

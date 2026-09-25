@@ -35,6 +35,15 @@ export async function savedOrLoad<T>(name: string, args: unknown[], load: () => 
   }
 
   const result = await load();
+  // A spent allowance shows the last saved answer rather than an error.
+  if (!result.ok && key) {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw) return { ok: true, data: JSON.parse(raw) as T } as ActionResult<T>;
+    } catch {
+      // nothing saved — the caller shows its failure
+    }
+  }
   if (key && result.ok) {
     try {
       window.localStorage.setItem(key, JSON.stringify((result as { data: T }).data));
