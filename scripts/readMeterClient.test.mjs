@@ -25,7 +25,7 @@ globalThis.__quietHoursOff = true;
 // The module imports the app's own auth; the test gives it none.
 const src = new URL('../src/lib/firebase/meteredFirestore.ts', import.meta.url);
 const copy = new URL('../src/lib/firebase/_metered.clienttest.ts', import.meta.url);
-writeFileSync(copy, readFileSync(src, 'utf8').replace("import { auth } from '@/lib/firebase/client';", 'const auth = null as { currentUser?: { uid?: string } } | null;'));
+writeFileSync(copy, readFileSync(src, 'utf8').replace("import { auth } from '@/lib/firebase/client';", 'const auth = null as { currentUser?: { uid?: string } } | null;').replace("from '@/lib/quotaError';", "from '../quotaError.ts';"));
 const metered = await import(copy.href);
 rmSync(copy);
 
