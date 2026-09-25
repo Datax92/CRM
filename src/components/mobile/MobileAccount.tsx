@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { HIDDEN_IN_QUIET, useQuietHours } from "@/hooks/useQuietHours";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { M } from "./mobileChrome";
@@ -294,7 +295,11 @@ function AccountSheet({ onClose }: { onClose: () => void }) {
   const [signingOut, setSigningOut] = useState(false);
 
   const name = user?.email?.split("@")[0] ?? "User";
-  const sections = sectionsFor(role ?? undefined, isHr);
+  const quietHours = useQuietHours();
+  // Team → Reports is out of the menu during quiet hours (owner, 2026-09-25).
+  const sections = sectionsFor(role ?? undefined, isHr)
+    .map((entry) => (quietHours ? { ...entry, items: entry.items.filter((item) => !HIDDEN_IN_QUIET.has(item.path)) } : entry))
+    .filter((entry) => entry.items.length > 0);
   /** `null` at the top level; a section title once drilled in. */
   const [openSection, setOpenSection] = useState<string | null>(null);
 

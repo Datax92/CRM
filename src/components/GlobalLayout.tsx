@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { HIDDEN_IN_QUIET, useQuietHours } from "@/hooks/useQuietHours";
 import { MobileShell } from "./mobile/MobileShell";
 import { NotificationsPanel } from "./NotificationsPanel";
 import Link from "next/link";
@@ -31,6 +32,7 @@ const FLYOUT_ITEM_HEIGHT = 38;
 
 export function GlobalLayout({ children }: { children: React.ReactNode }) {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
+  const quietHours = useQuietHours();
   // Collapsed by default: the rail is the design's resting state, and the
   // toggle in the footer opens the full labelled sidebar for anyone who
   // prefers it. The choice survives navigation because this layout never
@@ -151,7 +153,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
     router.replace("/");
   };
 
-  const menuItems = role === "admin"
+  const allMenuItems = role === "admin"
     ? [
       { title: "Dashboard", icon: Home, path: "/home" },
       {
@@ -334,6 +336,13 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
         }
       ]
       : [];
+
+  // Team → Reports is out of the menu during quiet hours (owner, 2026-09-25).
+  const menuItems = quietHours
+    ? allMenuItems.map((item) =>
+        item.subItems ? { ...item, subItems: item.subItems.filter((sub) => !HIDDEN_IN_QUIET.has(sub.path)) } : item
+      )
+    : allMenuItems;
 
   const userName = user.email?.split('@')[0] || "User";
   const userInitial = userName.charAt(0).toUpperCase();

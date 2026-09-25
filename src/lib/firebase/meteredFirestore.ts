@@ -136,17 +136,27 @@ export function inQuietHours(): boolean {
 }
 
 /**
- * The admin and HR are never quiet: they are the two people adding expenses
- * and payments at any hour, and what they add must show at once. Set by
- * `AuthContext` when the role is known.
+ * The admin and HR add expenses, payments and deals at any hour, so for them
+ * the money lists they write to stay live (`MONEY_LIVE`) and what they add
+ * shows at once; every other list they open is served from the device's copy
+ * like everybody else's. Set by `AuthContext` when the role is known.
  */
-let quietExempt = false;
-export function setQuietHoursExempt(exempt: boolean): void {
-  quietExempt = exempt;
+let financeRole = false;
+export function setQuietHoursExempt(isFinanceRole: boolean): void {
+  financeRole = isFinanceRole;
 }
 
+const MONEY_LIVE = new Set([
+  'expenses', 'personalExpenses', 'accounts', 'transactions',
+  'receivables', 'receivableEntries', 'receivableSheetConfig',
+  'investmentBooks', 'investmentRounds', 'groupMonths', 'groupFinanceConfig',
+  'closedDeals', 'dealDistributions', 'dealPayouts',
+  'capitalSpendings', 'carSales', 'marketingIncome', 'stateLifePolicies',
+  'committee', 'investments', 'capitalInvestments',
+]);
+
 function quiet(): boolean {
-  return !quietExempt && inQuietHours();
+  return inQuietHours();
 }
 
 /**
@@ -158,7 +168,9 @@ const LIVE_IN_QUIET = new Set(['leads/*/followUps', 'leads/*/events', 'personalE
 
 function quietFor(target: unknown): boolean {
   if (!quiet() || target instanceof DocumentReference) return false;
-  return !LIVE_IN_QUIET.has(collectionKey(target));
+  const path = collectionKey(target);
+  if (financeRole && MONEY_LIVE.has(path)) return false;
+  return !LIVE_IN_QUIET.has(path);
 }
 
 let reloadArmed = false;
@@ -363,7 +375,7 @@ export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promi
  */
 export async function getCountFromServer<T = DocumentData>(query: Query<T>) {
   // Quiet hours: refused, which `liveCount` already treats as "use the floor".
-  if (quiet()) throw new Error('count skipped until noon');
+  if (inQuietHours()) throw new Error('count skipped until noon');
   const snap = await fsGetCountFromServer(query);
   count(query, 'get', Math.max(1, Math.ceil(snap.data().count / 1000)));
   return snap;

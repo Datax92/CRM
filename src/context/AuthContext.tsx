@@ -70,7 +70,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [managerKind, setManagerKind] = useState<ManagerKind | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
 
-  // The admin and HR see what they add at once, quiet hours or not.
+  // The admin and HR see the money they add at once, quiet hours or not.
   useEffect(() => {
     setQuietHoursExempt(role === "admin" || (role === "subadmin" && managerKind === "HR"));
   }, [role, managerKind]);

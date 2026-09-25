@@ -2,6 +2,10 @@
 
 import { TeamReportView } from "@/components/reports/TeamReportView";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useQuietHours } from "@/hooks/useQuietHours";
+
 
 /**
  * Reports (§4–§6).
@@ -12,5 +16,12 @@ import { useProtectedRoute } from "@/hooks/useProtectedRoute";
  */
 export default function ReportsPage() {
   useProtectedRoute(["subadmin"]);
+  const quietHours = useQuietHours();
+  const router = useRouter();
+  // Out of use during quiet hours (owner, 2026-09-25): a direct link goes to the team.
+  useEffect(() => {
+    if (quietHours) router.replace("/subadmin/team");
+  }, [quietHours, router]);
+  if (quietHours) return null;
   return <TeamReportView />;
 }

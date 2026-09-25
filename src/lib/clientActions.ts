@@ -10,6 +10,7 @@ import {
 import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
+import { forgetSaved, savedOrLoad } from '@/lib/quietSaved';
 
 import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
   passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
@@ -505,7 +506,9 @@ export async function punchAttendance(
   context: PunchContext = {}
 ): Promise<ActionResult<AttendancePunchResult>> {
   if (IS_DEMO) return demo.punchAttendance(actor().uid, kind) as ActionResult<AttendancePunchResult>;
-  return _punchAttendance(token, kind, context);
+  const result = await _punchAttendance(token, kind, context);
+  if (result.ok) forgetSaved('getTeamAttendance', 'getAttendanceSummary', 'getPayroll');
+  return result;
 }
 
 /**
@@ -532,7 +535,9 @@ export async function setAttendanceOverride(
   note?: string
 ): Promise<ActionResult> {
   if (IS_DEMO) return demo.setAttendanceOverride(uid, dayKey, status, note);
-  return _setAttendanceOverride(token, uid, dayKey, status, note);
+  const result = await _setAttendanceOverride(token, uid, dayKey, status, note);
+  if (result.ok) forgetSaved('getTeamAttendance', 'getAttendanceSummary', 'getPayroll');
+  return result;
 }
 
 export async function getAttendanceConfig(
@@ -763,7 +768,7 @@ export async function buildActivityBreakdown(
   to: string
 ): Promise<ActionResult<ActivityBreakdown>> {
   if (IS_DEMO) return demo.buildActivityBreakdown(uids, from, to);
-  return _buildActivityBreakdown(token, uids, from, to);
+  return savedOrLoad('buildActivityBreakdown', [uids, from, to], () => _buildActivityBreakdown(token, uids, from, to));
 }
 
 export type { ActivityBreakdown } from '@/app/actions/activity';
@@ -832,7 +837,9 @@ export async function adjustAttendance(
   change: AttendanceAdjustment
 ): Promise<ActionResult> {
   if (IS_DEMO) return demo.adjustAttendance(uid, dayKey, change);
-  return _adjustAttendance(token, uid, dayKey, change);
+  const result = await _adjustAttendance(token, uid, dayKey, change);
+  if (result.ok) forgetSaved('getTeamAttendance', 'getAttendanceSummary', 'getPayroll');
+  return result;
 }
 
 export async function requestLeave(
@@ -903,7 +910,7 @@ export async function getTeamAttendance(
       session?.managerKind
     ) as ActionResult<TeamAttendanceResult>;
   }
-  return _getTeamAttendance(token, input);
+  return savedOrLoad('getTeamAttendance', [input], () => _getTeamAttendance(token, input));
 }
 
 export type { TeamAttendanceResult, TeamAttendanceRow, TeamAttendanceDay } from '@/app/actions/attendance';
@@ -921,7 +928,7 @@ export async function getAttendanceSummary(
   if (IS_DEMO) {
     return demo.getAttendanceSummary(uid, monthKey, actor().uid) as ActionResult<AttendanceSummary>;
   }
-  return _getAttendanceSummary(token, uid, monthKey);
+  return savedOrLoad('getAttendanceSummary', [uid ?? null, monthKey ?? null], () => _getAttendanceSummary(token, uid, monthKey));
 }
 
 export type { AttendanceSummary, AttendanceRules } from '@/app/actions/attendance';
@@ -937,13 +944,17 @@ export async function finalizeAttendanceDeductions(
   monthKey: string
 ): Promise<ActionResult<{ monthKey: string; total: number; people: number }>> {
   if (IS_DEMO) return demo.finalizeAttendanceDeductions(monthKey, actor().uid);
-  return _finalizeAttendanceDeductions(token, monthKey);
+  const result = await _finalizeAttendanceDeductions(token, monthKey);
+  if (result.ok) forgetSaved('getTeamAttendance', 'getAttendanceSummary', 'getPayroll');
+  return result;
 }
 
 /** Undoing a payroll decision — deliberately its own action, not a second press. */
 export async function reopenAttendancePeriod(token: string, monthKey: string): Promise<ActionResult> {
   if (IS_DEMO) return demo.reopenAttendancePeriod(monthKey);
-  return _reopenAttendancePeriod(token, monthKey);
+  const result = await _reopenAttendancePeriod(token, monthKey);
+  if (result.ok) forgetSaved('getTeamAttendance', 'getAttendanceSummary', 'getPayroll');
+  return result;
 }
 
 export async function getAttendancePeriod(
@@ -964,7 +975,7 @@ export async function listSalaryProfiles(
   token: string
 ): Promise<ActionResult<{ profiles: SalaryProfileRecord[] }>> {
   if (IS_DEMO) return demo.listSalaryProfiles() as ActionResult<{ profiles: SalaryProfileRecord[] }>;
-  return _listSalaryProfiles(token);
+  return savedOrLoad('listSalaryProfiles', [], () => _listSalaryProfiles(token));
 }
 
 export async function saveSalaryProfile(
@@ -973,7 +984,9 @@ export async function saveSalaryProfile(
   input: { salary: number; allowance: number; joinedAt: string | null }
 ): Promise<ActionResult<{ salary: number; allowance: number }>> {
   if (IS_DEMO) return demo.saveSalaryProfile(uid, input, actor().uid);
-  return _saveSalaryProfile(token, uid, input);
+  const result = await _saveSalaryProfile(token, uid, input);
+  if (result.ok) forgetSaved('listSalaryProfiles', 'getPayroll');
+  return result;
 }
 
 /** A month's payroll, live — see `getPayroll`. */
@@ -982,7 +995,7 @@ export async function getPayroll(
   monthKey: string
 ): Promise<ActionResult<PayrollPeriod>> {
   if (IS_DEMO) return demo.getPayroll(monthKey) as ActionResult<PayrollPeriod>;
-  return _getPayroll(token, monthKey);
+  return savedOrLoad('getPayroll', [monthKey], () => _getPayroll(token, monthKey));
 }
 
 /** Pays one person's month out of real accounts — see `payPayrollLine`. Admin only. */
@@ -992,7 +1005,9 @@ export async function payPayrollLine(
   uid: string,
   input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string; note?: string | null }
 ) {
-  return _payPayrollLine(token, monthKey, uid, input);
+  const result = await _payPayrollLine(token, monthKey, uid, input);
+  if (result.ok) forgetSaved('getPayroll');
+  return result;
 }
 
 /** Somebody's salary history. An employee gets their own and nobody else's. */
