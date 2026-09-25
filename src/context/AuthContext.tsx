@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import type { User } from "firebase/auth";
 import { IS_DEMO, useDemoSession, signInDemo, signOutDemo, DEMO_ACCOUNTS, DEMO_PASSWORD } from "@/lib/demo/store";
 import { setQuietHoursExempt } from "@/lib/firebase/meteredFirestore";
+import { startOutboxFlusher } from "@/lib/outbox";
 
 /**
  * The three access roles. `subadmin` reads the same screens an admin does,
@@ -73,6 +74,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // The admin and HR see the money they add at once, quiet hours or not.
   useEffect(() => {
     setQuietHoursExempt(role === "admin" || (role === "subadmin" && managerKind === "HR"));
+    // Saves kept while the allowance was spent go out once it resets (`lib/outbox`).
+    if (role) startOutboxFlusher();
   }, [role, managerKind]);
   const [loading, setLoading] = useState(true);
 

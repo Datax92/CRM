@@ -17,6 +17,7 @@ import { countState, subscribeCount } from '@/lib/liveCount';
 import { subscribeSyncedLeads, syncedLeadsState } from '@/lib/leadSync';
 import { SERVER_STATE } from '@/lib/liveCollection';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
+import { overlayFollowUps, overlayLeads, useOutbox } from '@/lib/outbox';
 import { QUOTA_MESSAGE, isQuotaExhausted } from '@/lib/quotaError';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { PipelineStage } from '@/lib/pipelineStage';
@@ -271,6 +272,7 @@ export function useLeads(
   companyWide = false
 ) {
   const demoState = useDemoState();
+  const outbox = useOutbox();
 
   // The admin and an HR manager ask the same question of Firestore, so they
   // share one subscription key: two keys for one query would resubscribe for
@@ -390,7 +392,8 @@ export function useLeads(
   const rows = live.rows as unknown as Lead[];
 
   return {
-    leads: rows,
+    // Saves waiting in the outbox (`lib/outbox`) are shown as already made.
+    leads: overlayLeads(rows, outbox),
     loading: key !== 'idle' && live.loading,
     error: live.error,
     /**
@@ -462,6 +465,7 @@ interface HistoryState {
 export function useLeadHistory(leadId: string | null) {
   const [state, setState] = useState<HistoryState | null>(null);
   const demoState = useDemoState();
+  const outbox = useOutbox();
   const key = leadId ?? 'idle';
 
   useEffect(() => {
@@ -518,7 +522,7 @@ export function useLeadHistory(leadId: string | null) {
   const current = state?.key === key ? state : null;
 
   return {
-    followUps: current?.followUps ?? [],
+    followUps: overlayFollowUps(leadId, current?.followUps ?? [], outbox),
     events: current?.events ?? [],
     loading: Boolean(leadId) && current === null,
     error: current?.error ?? null,

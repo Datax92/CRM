@@ -11,6 +11,7 @@ import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
 import { forgetSaved, savedOrLoad } from '@/lib/quietSaved';
+import { enqueue, patchQueuedFollowUp, registerReplayers, shouldQueue } from '@/lib/outbox';
 
 import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
   passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
@@ -184,18 +185,27 @@ export async function reassignLeadManual(token: string, leadId: string, userId: 
 
 export async function acceptLead(token: string, leadId: string): Promise<ActionResult> {
   if (IS_DEMO) return demo.acceptLead(leadId, actor().uid);
-  return _acceptLead(token, leadId);
+  const result = await _acceptLead(token, leadId);
+  if (!shouldQueue(result)) return result;
+  enqueue('acceptLead', [leadId]);
+  return { ok: true, data: undefined };
 }
 
 /** "Pass on" — hand the lead to the next person in the lane. See `passLead`. */
 export async function passLead(token: string, leadId: string) {
   if (IS_DEMO) return demo.passLead(leadId, actor().uid);
-  return _passLead(token, leadId);
+  const result = await _passLead(token, leadId);
+  if (!shouldQueue(result)) return result;
+  enqueue('passLead', [leadId]);
+  return { ok: true as const, data: { passedTo: null, wrapped: false } };
 }
 
 export async function setLeadStatus(token: string, leadId: string, status: LeadStatus): Promise<ActionResult> {
   if (IS_DEMO) return demo.setLeadStatus(leadId, status, actor().uid);
-  return _setLeadStatus(token, leadId, status);
+  const result = await _setLeadStatus(token, leadId, status);
+  if (!shouldQueue(result)) return result;
+  enqueue('setLeadStatus', [leadId, status]);
+  return { ok: true, data: undefined };
 }
 
 export async function setLeadPipelineStage(
@@ -286,7 +296,14 @@ export async function addFollowUp(
   }
 ): Promise<ActionResult<{ followUpId: string; connect: boolean; kind: 'REMARK' | 'FOLLOW_UP' }>> {
   if (IS_DEMO) return demo.addFollowUp(leadId, input, actor().uid, actor().email);
-  return _addFollowUp(token, leadId, input);
+  const result = await _addFollowUp(token, leadId, input);
+  if (!shouldQueue(result)) return result;
+  // Kept with its real time, so sending it after noon does not re-date it.
+  const item = enqueue('addFollowUp', [leadId, { ...input, occurredAt: input.occurredAt ?? new Date().toISOString() }]);
+  return {
+    ok: true,
+    data: { followUpId: `pending-${item.id}`, connect: (input.durationSeconds ?? 0) >= 70, kind: 'FOLLOW_UP' },
+  };
 }
 
 /** Edits the newest entry on a lead. Older ones are locked — see §2. */
@@ -306,7 +323,14 @@ export async function updateFollowUp(
   }
 ): Promise<ActionResult<{ connect: boolean }>> {
   if (IS_DEMO) return demo.updateFollowUp(leadId, followUpId, input, actor().uid, actor().email);
-  return _updateFollowUp(token, leadId, followUpId, input);
+  // An entry still waiting in the outbox is edited where it waits.
+  if (followUpId.startsWith('pending-') && patchQueuedFollowUp(followUpId, input)) {
+    return { ok: true, data: { connect: (input.durationSeconds ?? 0) >= 70 } };
+  }
+  const result = await _updateFollowUp(token, leadId, followUpId, input);
+  if (!shouldQueue(result)) return result;
+  enqueue('updateFollowUp', [leadId, followUpId, input]);
+  return { ok: true, data: { connect: (input.durationSeconds ?? 0) >= 70 } };
 }
 
 /** The Cold review (§3): an admin or the lead's manager rules on it. */
@@ -1374,3 +1398,16 @@ export async function importLegacyReceivables(token: string) {
 export async function countLegacyReceivables(token: string) {
   return _countLegacyReceivables(token);
 }
+
+/*
+  What the outbox sends after noon (`lib/outbox`): the same Server Actions,
+  called with a fresh token and the arguments kept at the time.
+*/
+registerReplayers({
+  acceptLead: (token, [leadId]) => _acceptLead(token, leadId as string),
+  passLead: (token, [leadId]) => _passLead(token, leadId as string),
+  setLeadStatus: (token, [leadId, status]) => _setLeadStatus(token, leadId as string, status as LeadStatus),
+  addFollowUp: (token, [leadId, input]) => _addFollowUp(token, leadId as string, input as Parameters<typeof _addFollowUp>[2]),
+  updateFollowUp: (token, [leadId, followUpId, input]) =>
+    _updateFollowUp(token, leadId as string, followUpId as string, input as Parameters<typeof _updateFollowUp>[3]),
+});

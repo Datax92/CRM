@@ -28,6 +28,7 @@ import { ACCEPT_WINDOW_MS } from '@/lib/constants/distribution';
 import { timestampMillis } from '@/lib/dates';
 import { LANE_HOLD_UNTIL, offerOpensAt } from '@/lib/distribution';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
+import { useOutbox } from '@/lib/outbox';
 
 export interface LeadOffer {
   lead: Lead;
@@ -41,6 +42,7 @@ export function useIncomingLead(
   enabled = true
 ): { offer: LeadOffer | null; loading: boolean } {
   const demoState = useDemoState();
+  const outbox = useOutbox();
   /*
     Employees, managers an admin has put in the rotation — **and the admin
     themselves, when a folder is routed to them by name** (`setFolderLane`).
@@ -122,8 +124,11 @@ export function useIncomingLead(
         ? demoState.leads.filter(
             (lead) => lead.assignedUserId === uid && lead.status === 'ASSIGNED'
           )
-        : (live.rows as unknown as Lead[]),
-    [demoState.leads, live.rows, uid]
+        : (live.rows as unknown as Lead[]).filter(
+            // Accepted or passed from the outbox: no longer an offer.
+            (lead) => !outbox.some((item) => (item.name === 'acceptLead' || item.name === 'passLead') && item.args[0] === lead.id)
+          ),
+    [demoState.leads, live.rows, uid, outbox]
   );
 
   const offer = useMemo<LeadOffer | null>(() => {
