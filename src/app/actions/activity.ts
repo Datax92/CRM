@@ -138,7 +138,13 @@ export async function buildActivityBreakdown(
 
     const [{ entries, warning }, minutesByUid] = await Promise.all([
       loadEntries(from, to, leadIdsForFallback, wanted),
-      loadWorkedMinutes(wanted, from, to),
+      // Hours are one figure beside the activity, not the activity itself: a
+      // failed read (a missing index, 2026-09-24) shows no hours rather than
+      // taking the whole section down with "Something went wrong".
+      loadWorkedMinutes(wanted, from, to).catch((error) => {
+        console.warn("[activity] worked minutes unavailable:", (error as Error)?.message ?? error);
+        return new Map<string, number>();
+      }),
     ]);
     const workedMinutes = [...minutesByUid.values()].reduce((sum, minutes) => sum + minutes, 0);
     const { byUid, byLead } = tallyEntries(toCountableEntries(entries), new Set(wanted));

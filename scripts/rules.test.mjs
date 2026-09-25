@@ -92,8 +92,9 @@ beforeEach(async () => {
     });
     // A deal on S's team, so the sub admin financial scope has something to
     // return — and so the *other* sub admin has something to be refused.
-    await setDoc(doc(db, 'closedDeals', 'lead-a'), {
-      leadId: 'lead-a', userId: EMP_A, subAdminUid: SUB_S, amountReceived: 500,
+    // Its own id, not 'lead-a': lead-a must stay dealless for the test above.
+    await setDoc(doc(db, 'closedDeals', 'deal-s'), {
+      leadId: 'lead-s', userId: EMP_A, subAdminUid: SUB_S, amountReceived: 500,
       profit: 200, enteredAt: new Date(),
     });
 
@@ -241,7 +242,7 @@ describe('closedDeals — a missing deal must read as absent, not as denied', ()
     const snap = await assertSucceeds(
       getDocs(query(collection(asAdmin(), 'closedDeals'), orderBy('enteredAt', 'desc')))
     );
-    assert.equal(snap.size, 1);
+    assert.equal(snap.size, 2);
   });
 
   test('nobody writes a deal from the client', async () => {
@@ -382,9 +383,9 @@ describe('sub admin — scoped to their own team, and nothing beside it', () => 
     const snap = await assertSucceeds(
       getDocs(query(collection(db, 'closedDeals'), where('subAdminUid', '==', SUB_S)))
     );
-    assert.deepEqual(snap.docs.map((d) => d.id), ['lead-a']);
+    assert.deepEqual(snap.docs.map((d) => d.id), ['deal-s']);
 
-    await assertFails(getDoc(doc(asSubAdmin(SUB_T), 'closedDeals', 'lead-a')));
+    await assertFails(getDoc(doc(asSubAdmin(SUB_T), 'closedDeals', 'deal-s')));
   });
 
   test('a folder assigned to them is readable; one that is not, is not', async () => {

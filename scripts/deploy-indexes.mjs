@@ -119,7 +119,17 @@ for (const group of groups) {
     console.error(`  Could not list indexes for ${group}: ${result.data?.error?.message ?? result.status}`);
     process.exit(1);
   }
-  live.set(group, new Set((result.data.indexes ?? []).map((index) => signature(index.fields ?? []))));
+  // The API answers with every index in the database, whatever group the URL
+  // names — so filter by the index's own name, or an `attendance (uid, dayKey)`
+  // index is taken for an `activityDays (uid, dayKey)` one (2026-09-24).
+  live.set(
+    group,
+    new Set(
+      (result.data.indexes ?? [])
+        .filter((index) => String(index.name ?? '').includes(`/collectionGroups/${group}/`))
+        .map((index) => signature(index.fields ?? []))
+    )
+  );
 }
 
 const missing = wanted.filter(

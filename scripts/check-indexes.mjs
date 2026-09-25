@@ -64,7 +64,11 @@ for (const group of groups) {
 
   live.set(
     group,
-    (result.data.indexes ?? []).map((index) => ({
+    // Filtered by the index's own name: the API returns every index in the
+    // database whatever group the URL names.
+    (result.data.indexes ?? [])
+      .filter((index) => String(index.name ?? '').includes(`/collectionGroups/${group}/`))
+      .map((index) => ({
       signature: signature(index.fields ?? []),
       state: index.state,
     }))
