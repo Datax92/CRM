@@ -70,19 +70,13 @@ import {
   type PunchKind,
 } from '@/app/actions/attendance';
 import type { AttendanceStatus } from '@/lib/attendance';
-import type { SalaryProfile, PayrollLine, PayrollStatus } from '@/lib/payroll';
 import type { ExpenseStatus } from '@/lib/officeExpenses';
 import {
   listSalaryProfiles as _listSalaryProfiles,
   saveSalaryProfile as _saveSalaryProfile,
-  generatePayroll as _generatePayroll,
   getPayroll as _getPayroll,
-  adjustPayrollLine as _adjustPayrollLine,
-  setPayrollStatus as _setPayrollStatus,
   payPayrollLine as _payPayrollLine,
-  deletePayroll as _deletePayroll,
   getPayslips as _getPayslips,
-  setSalaryAccess as _setSalaryAccess,
   type PayrollPeriod,
   type Payslip,
   type SalaryProfileRecord,
@@ -976,24 +970,13 @@ export async function listSalaryProfiles(
 export async function saveSalaryProfile(
   token: string,
   uid: string,
-  input: Partial<SalaryProfile>
-): Promise<ActionResult<{ profile: SalaryProfile }>> {
+  input: { salary: number; allowance: number; joinedAt: string | null }
+): Promise<ActionResult<{ salary: number; allowance: number }>> {
   if (IS_DEMO) return demo.saveSalaryProfile(uid, input, actor().uid);
   return _saveSalaryProfile(token, uid, input);
 }
 
-/**
- * Builds a month's payroll as a draft. Safe to re-run while it is still a
- * draft; refused once it is approved or paid.
- */
-export async function generatePayroll(
-  token: string,
-  monthKey: string
-): Promise<ActionResult<{ monthKey: string; people: number; net: number }>> {
-  if (IS_DEMO) return demo.generatePayroll(monthKey, actor().uid);
-  return _generatePayroll(token, monthKey);
-}
-
+/** A month's payroll, live — see `getPayroll`. */
 export async function getPayroll(
   token: string,
   monthKey: string
@@ -1002,26 +985,7 @@ export async function getPayroll(
   return _getPayroll(token, monthKey);
 }
 
-export async function adjustPayrollLine(
-  token: string,
-  monthKey: string,
-  uid: string,
-  patch: Partial<PayrollLine>
-): Promise<ActionResult<{ net: number }>> {
-  if (IS_DEMO) return demo.adjustPayrollLine(monthKey, uid, patch, actor().uid);
-  return _adjustPayrollLine(token, monthKey, uid, patch);
-}
-
-export async function setPayrollStatus(
-  token: string,
-  monthKey: string,
-  status: PayrollStatus
-): Promise<ActionResult<{ status: PayrollStatus }>> {
-  if (IS_DEMO) return demo.setPayrollStatus(monthKey, status, actor().uid);
-  return _setPayrollStatus(token, monthKey, status);
-}
-
-/** Pays one person's month out of real accounts — see `payPayrollLine`. */
+/** Pays one person's month out of real accounts — see `payPayrollLine`. Admin only. */
 export async function payPayrollLine(
   token: string,
   monthKey: string,
@@ -1031,11 +995,6 @@ export async function payPayrollLine(
   return _payPayrollLine(token, monthKey, uid, input);
 }
 
-/** Deletes a month's payroll so it can be started again. Admin only. */
-export async function deletePayroll(token: string, monthKey: string) {
-  return _deletePayroll(token, monthKey);
-}
-
 /** Somebody's salary history. An employee gets their own and nobody else's. */
 export async function getPayslips(
   token: string,
@@ -1043,15 +1002,6 @@ export async function getPayslips(
 ): Promise<ActionResult<{ slips: Payslip[] }>> {
   if (IS_DEMO) return demo.getPayslips(uid ?? actor().uid) as ActionResult<{ slips: Payslip[] }>;
   return _getPayslips(token, uid);
-}
-
-export async function setSalaryAccess(
-  token: string,
-  uid: string,
-  granted: boolean
-): Promise<ActionResult> {
-  if (IS_DEMO) return demo.setSalaryAccess(uid, granted);
-  return _setSalaryAccess(token, uid, granted);
 }
 
 /* -------------------------------------------------------------------------- */

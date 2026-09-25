@@ -87,16 +87,31 @@ export interface PayrollLine {
   /** Free text an approver added — why a figure was adjusted. */
   note: string | null;
   net: number;
+  /**
+   * The monthly figures before a mid-month joining cut them down, and the days
+   * that cut was worked from. Absent on lines written before 2026-09-25.
+   */
+  salary?: number;
+  allowance?: number;
+  joinedAt?: string | null;
+  paidDays?: number;
+  monthDays?: number;
 }
 
 /** Payroll moves in one direction until somebody deliberately sends it back. */
 export const PAYROLL_STATUSES = ["DRAFT", "REVIEWED", "APPROVED", "PAID"] as const;
 export type PayrollStatus = (typeof PAYROLL_STATUSES)[number];
 
+/**
+ * Since the simple payroll (2026-09-25) a status only says how much of a
+ * person's month has been paid: a payslip is written `APPROVED` on its first
+ * payment and becomes `PAID` when it is settled. `DRAFT` and `REVIEWED` are no
+ * longer written; they read as not paid.
+ */
 export const PAYROLL_STATUS_LABELS: Record<PayrollStatus, string> = {
-  DRAFT: "Draft",
-  REVIEWED: "Reviewed",
-  APPROVED: "Approved",
+  DRAFT: "Not paid",
+  REVIEWED: "Not paid",
+  APPROVED: "Part paid",
   PAID: "Paid",
 };
 
@@ -310,6 +325,105 @@ export function payrollTotals(lines: PayrollLine[]): PayrollTotals & {
     },
     { people: 0, additions: 0, deductions: 0, net: 0, commission: 0, attendanceDeduction: 0 }
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The simple payroll (owner, 2026-09-25)                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How much of a month somebody is paid for, from their joining date.
+ *
+ * `null` means they are not on this month at all — they joined after it ended.
+ * No date, or a date before the month, is the whole month. Calendar days, not
+ * working days: "joined on the 12th of a 30-day month" is 19/30 of a salary,
+ * which is a figure anybody can check on a phone calculator.
+ */
+export function joiningShare(
+  joinedDayKey: string | null | undefined,
+  monthKey: string
+): { paidDays: number; monthDays: number } | null {
+  const [year, month] = monthKey.split("-").map(Number);
+  const monthDays = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (!joinedDayKey || !/^\d{4}-\d{2}-\d{2}$/.test(joinedDayKey)) return { paidDays: monthDays, monthDays };
+  const joinedMonth = joinedDayKey.slice(0, 7);
+  if (joinedMonth > monthKey) return null;
+  if (joinedMonth < monthKey) return { paidDays: monthDays, monthDays };
+  const day = Number(joinedDayKey.slice(8, 10));
+  return { paidDays: Math.max(0, monthDays - day + 1), monthDays };
+}
+
+/**
+ * One person's month: salary + allowance (cut down for a mid-month joining)
+ * + commission − the attendance deduction Attendance Settings produced.
+ * `null` when they had not joined yet.
+ */
+export function buildMonthLine(input: {
+  uid: string;
+  name: string;
+  email?: string | null;
+  jobTitle?: string | null;
+  monthKey: string;
+  salary: number;
+  allowance: number;
+  joinedDayKey?: string | null;
+  commission: number;
+  attendanceDeduction: number;
+  deductionBasis?: string[];
+  lateCount?: number;
+  absentCount?: number;
+  leaveCount?: number;
+  presentCount?: number;
+}): PayrollLine | null {
+  const share = joiningShare(input.joinedDayKey, input.monthKey);
+  if (!share) return null;
+  const part = (value: number) => money((money(value) * share.paidDays) / share.monthDays);
+
+  const parts = {
+    basic: part(input.salary),
+    allowances: part(input.allowance),
+    bonus: 0,
+    extraAdditions: 0,
+    commission: money(input.commission),
+    attendanceDeduction: money(input.attendanceDeduction),
+    otherDeductions: 0,
+  };
+
+  return {
+    uid: input.uid,
+    name: input.name,
+    email: input.email ?? null,
+    jobTitle: input.jobTitle ?? null,
+    ...parts,
+    lateCount: Math.max(0, Math.floor(input.lateCount ?? 0)),
+    absentCount: Math.max(0, Math.floor(input.absentCount ?? 0)),
+    leaveCount: Math.max(0, Math.floor(input.leaveCount ?? 0)),
+    presentCount: Math.max(0, Math.floor(input.presentCount ?? 0)),
+    deductionBasis: parts.attendanceDeduction > 0 ? (input.deductionBasis ?? []) : [],
+    note: null,
+    net: computeLineTotals(parts).net,
+    salary: money(input.salary),
+    allowance: money(input.allowance),
+    joinedAt: input.joinedDayKey ?? null,
+    paidDays: share.paidDays,
+    monthDays: share.monthDays,
+  };
+}
+
+/**
+ * Salary and allowance off a user document. The allowance gathers every extra
+ * the old five-part profile could hold (allowances, bonus, other additions), so
+ * the Rs 3,000 three people already had is still paid.
+ */
+export function readSalary(data: {
+  monthlySalary?: unknown;
+  salaryProfile?: Partial<SalaryProfile> | null;
+}): { salary: number; allowance: number } {
+  const profile = data.salaryProfile ?? {};
+  return {
+    salary: money(profile.basic ?? data.monthlySalary),
+    allowance: money(profile.allowances) + money(profile.bonus) + money(profile.otherAdditions),
+  };
 }
 
 /** Fills anything missing on a stored profile with the default. */

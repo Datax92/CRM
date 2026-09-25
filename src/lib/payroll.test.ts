@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_SALARY_PROFILE,
+  buildMonthLine,
+  joiningShare,
+  readSalary,
   allowedTransitions,
   buildPayrollLine,
   canTransition,
@@ -255,4 +258,48 @@ test('a missing profile is a zero profile, not a crash', () => {
   assert.equal(stored.basic, 0);
   assert.equal(stored.allowances, 0);
   assert.equal(stored.otherDeductions, 0);
+});
+
+/* ---- the simple payroll (2026-09-25) ---- */
+
+test('no joining date, or one before the month, is the whole month', () => {
+  assert.deepEqual(joiningShare(null, '2026-09'), { paidDays: 30, monthDays: 30 });
+  assert.deepEqual(joiningShare('2025-09-01', '2026-09'), { paidDays: 30, monthDays: 30 });
+  assert.deepEqual(joiningShare('junk', '2026-02'), { paidDays: 28, monthDays: 28 });
+});
+
+test('joining mid-month pays from the joining day, counted inclusively', () => {
+  assert.deepEqual(joiningShare('2026-09-01', '2026-09'), { paidDays: 30, monthDays: 30 });
+  assert.deepEqual(joiningShare('2026-09-04', '2026-09'), { paidDays: 27, monthDays: 30 });
+  assert.deepEqual(joiningShare('2026-10-31', '2026-10'), { paidDays: 1, monthDays: 31 });
+});
+
+test('somebody who joins after the month is not on it', () => {
+  assert.equal(joiningShare('2026-10-01', '2026-09'), null);
+  assert.equal(buildMonthLine({ uid: 'a', name: 'A', monthKey: '2026-09', salary: 30000, allowance: 0, joinedDayKey: '2026-10-02', commission: 0, attendanceDeduction: 0 }), null);
+});
+
+test('a month line is salary + allowance + commission − attendance, cut for joining', () => {
+  // Sundus: 32,000 + 3,000, joined the 4th of a 30-day month → 27/30.
+  const line = buildMonthLine({
+    uid: 's', name: 'Sundus', monthKey: '2026-09', salary: 32000, allowance: 3000,
+    joinedDayKey: '2026-09-04', commission: 5000, attendanceDeduction: 1000, deductionBasis: ['Late #3'],
+  })!;
+  assert.equal(line.basic, 28800);
+  assert.equal(line.allowances, 2700);
+  assert.equal(line.net, 28800 + 2700 + 5000 - 1000);
+  assert.equal(line.salary, 32000);
+  assert.equal(line.paidDays, 27);
+  assert.deepEqual(line.deductionBasis, ['Late #3']);
+});
+
+test('deductions larger than the pay give a net of zero, never negative', () => {
+  const line = buildMonthLine({ uid: 'x', name: 'X', monthKey: '2026-09', salary: 1000, allowance: 0, commission: 0, attendanceDeduction: 5000 })!;
+  assert.equal(line.net, 0);
+});
+
+test('the allowance gathers every extra the old profile held', () => {
+  assert.deepEqual(readSalary({ monthlySalary: 22000, salaryProfile: { basic: 22000, allowances: 1000, bonus: 2000, otherAdditions: 0 } }), { salary: 22000, allowance: 3000 });
+  assert.deepEqual(readSalary({ monthlySalary: 18000 }), { salary: 18000, allowance: 0 });
+  assert.deepEqual(readSalary({}), { salary: 0, allowance: 0 });
 });

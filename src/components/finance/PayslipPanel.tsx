@@ -103,9 +103,15 @@ export function PayslipPanel({
         </OverlayCard>
 
         <OverlayCard title="Earnings">
-          <Row label="Basic salary" value={rupees(line.basic)} />
-          <Row label="Allowances" value={rupees(line.allowances)} />
-          <Row label="Bonus" value={rupees(line.bonus)} />
+          <Row
+            label="Salary"
+            value={rupees(line.basic)}
+          />
+          {line.paidDays && line.monthDays && line.paidDays < line.monthDays ? (
+            <Row label="Days paid" value={`${line.paidDays} of ${line.monthDays} (joined ${line.joinedAt ?? ""})`} />
+          ) : null}
+          <Row label="Allowance" value={rupees(line.allowances)} />
+          {line.bonus > 0 && <Row label="Bonus" value={rupees(line.bonus)} />}
           {line.extraAdditions > 0 && (
             <Row label="Other additions" value={rupees(line.extraAdditions)} />
           )}

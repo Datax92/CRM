@@ -16,15 +16,12 @@ import type { AttendanceRecord } from '@/hooks/useAttendance';
 import { statusOfRecord, type AttendanceStatus } from '@/lib/attendance';
 import { dealAmounts, readCutBase, readDealType, readPayoutSource, validateDealAmounts } from '@/lib/dealAmounts';
 import {
-  buildPayrollLine,
-  canTransition,
-  isEditable,
+  buildMonthLine,
   normalizeSalaryProfile,
   payrollTotals,
-  repriceLine,
+  readSalary,
   type PayrollLine,
   type PayrollStatus,
-  type SalaryProfile,
 } from '@/lib/payroll';
 import {
   DEFAULT_EXPENSE_CATEGORIES,
@@ -37,6 +34,7 @@ import {
   DEFAULT_ATTENDANCE_POLICY,
   classifyCheckIn,
   formatClockValue,
+  monthAttendanceDeductions,
   monthDeductions,
   parseClock,
   leaveBalances,
@@ -174,6 +172,12 @@ function ts(date: Date) {
     toMillis: () => date.getTime(),
     seconds: Math.floor(date.getTime() / 1000),
   };
+}
+
+/** A demo person's joining date as a Karachi day key, as the real payroll reads it. */
+function demoJoinedDayKey(employee: { joinedAt?: { toDate?: () => Date } | null }): string | null {
+  const joined = employee.joinedAt?.toDate?.();
+  return joined && !Number.isNaN(joined.getTime()) ? karachiDayKey(joined) : null;
 }
 /**
  * The report selector, mirroring `buildOptions` on the server.
@@ -2681,277 +2685,117 @@ export const demo = {
 
   listSalaryProfiles() {
     return ok({
-      profiles: state.employees.map((employee) => ({
-        uid: employee.uid,
-        name: employee.name,
-        email: employee.email ?? null,
-        jobTitle: employee.jobTitle ?? null,
-        role: employee.accessRole ?? 'employee',
-        ...normalizeSalaryProfile({
-          ...(employee.salaryProfile ?? {}),
-          basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
-        }),
-      })),
+      profiles: state.employees
+        .filter((employee) => employee.status !== 'DISABLED')
+        .map((employee) => ({
+          uid: employee.uid,
+          name: employee.name,
+          email: employee.email ?? null,
+          jobTitle: employee.jobTitle ?? null,
+          role: employee.accessRole ?? 'employee',
+          ...readSalary(employee),
+          joinedAt: demoJoinedDayKey(employee),
+        })),
     });
   },
 
-  saveSalaryProfile(uid: string, input: Partial<SalaryProfile>, actorUid: string) {
+  saveSalaryProfile(uid: string, input: { salary: number; allowance: number; joinedAt: string | null }, actorUid: string) {
     const employee = state.employees.find((row) => row.uid === uid);
-    if (!employee) return fail('That employee no longer exists.');
-
-    const previous = normalizeSalaryProfile({
-      ...(employee.salaryProfile ?? {}),
-      basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
-    });
-    const next = normalizeSalaryProfile({ ...previous, ...input });
+    if (!employee) return fail('That person no longer exists.');
+    const salary = Math.max(0, Math.round(Number(input.salary) || 0));
+    const allowance = Math.max(0, Math.round(Number(input.allowance) || 0));
+    const joined = (input.joinedAt ?? '').trim();
 
     state.employees = state.employees.map((row) =>
       row.uid === uid
         ? {
             ...row,
-            salaryProfile: next,
-            // One salary figure, shared with the attendance deduction.
-            monthlySalary: next.basic,
+            salaryProfile: normalizeSalaryProfile({ basic: salary, allowances: allowance }),
+            monthlySalary: salary,
+            joinedAt: joined ? ts(new Date(`${joined}T12:00:00+05:00`)) : null,
             salaryHistory: [
               ...(row.salaryHistory ?? []),
-              { at: new Date().toISOString(), byUid: actorUid, from: previous, to: next },
+              {
+                at: new Date().toISOString(),
+                byUid: actorUid,
+                from: normalizeSalaryProfile(row.salaryProfile ?? { basic: row.monthlySalary ?? 0 }),
+                to: normalizeSalaryProfile({ basic: salary, allowances: allowance }),
+              },
             ],
           }
         : row
     );
     emit();
-    return ok({ profile: next });
+    return ok({ salary, allowance });
   },
 
-  generatePayroll(monthKey: string, actorUid: string) {
+  /** Mirrors the live `getPayroll`: everybody's month worked out now, paid slips frozen. */
+  getPayroll(monthKey: string) {
     const month = monthKey.slice(0, 7);
-    if (month > karachiMonthKey()) return fail('That month has not started yet.');
 
-    const existing = state.payrollPeriods[month];
-    if (existing && !isEditable(existing.status)) {
-      return fail(
-        `${month} is ${existing.status.toLowerCase()} and cannot be regenerated. Send it back for review first.`
-      );
-    }
-
-    // Commission comes from the payouts the distribution module wrote — never
-    // recalculated here.
     const commission = new Map<string, number>();
     for (const payout of state.payouts) {
       if (payout.current === false) continue;
       const stamp = payout.finalizedAt?.toDate?.();
-      if (!stamp) continue;
-      const key = karachiMonthKey(stamp);
-      if (key !== month) continue;
+      if (!stamp || karachiMonthKey(stamp) !== month) continue;
       commission.set(payout.recipientUid, (commission.get(payout.recipientUid) ?? 0) + payout.amount);
     }
 
     const closed = state.attendancePeriods[month];
-    const frozen = new Map(
-      closed?.finalized ? closed.lines.map((line) => [line.uid, line.amount]) : []
-    );
+    const frozen = new Map(closed?.finalized ? closed.lines.map((line) => [line.uid, line.amount]) : []);
 
-    const lines = state.employees.map((employee) => {
+    const lines: PayrollLine[] = [];
+    for (const employee of state.employees) {
+      if (employee.status === 'DISABLED') continue;
+      const joined = demoJoinedDayKey(employee);
       const days = state.attendance.filter(
-        (row) => row.uid === employee.uid && row.dayKey.startsWith(month)
+        (row) => row.uid === employee.uid && row.dayKey.startsWith(month) && (!joined || row.dayKey >= joined)
       );
-      const statusOf = (row: (typeof days)[number]): AttendanceStatus => statusOfRecord(row);
+      const count = (status: AttendanceStatus) => days.filter((row) => statusOfRecord(row) === status).length;
+      const late = count('LATE');
+      const absent = count('ABSENT');
+      const { salary, allowance } = readSalary(employee);
+      const charges = monthAttendanceDeductions({ late, absent }, state.attendancePolicy, salary);
 
-      const late = days.filter((row) => statusOf(row) === 'LATE').length;
-
-      return buildPayrollLine({
+      const line = buildMonthLine({
         uid: employee.uid,
         name: employee.name,
         email: employee.email ?? null,
         jobTitle: employee.jobTitle ?? null,
-        profile: normalizeSalaryProfile({
-          ...(employee.salaryProfile ?? {}),
-          basic: employee.salaryProfile?.basic ?? employee.monthlySalary ?? 0,
-        }),
+        monthKey: month,
+        salary,
+        allowance,
+        joinedDayKey: joined,
         commission: commission.get(employee.uid) ?? 0,
-        attendanceDeduction:
-          frozen.get(employee.uid) ??
-          monthDeductions(late, state.attendancePolicy, employee.monthlySalary ?? 0).total,
+        attendanceDeduction: frozen.get(employee.uid) ?? charges.total,
+        deductionBasis: [...charges.late, ...charges.absent].filter((o) => o.deducted).map((o) => o.basis),
         lateCount: late,
-        absentCount: days.filter((row) => statusOf(row) === 'ABSENT').length,
-        leaveCount: days.filter((row) => statusOf(row) === 'LEAVE').length,
-        presentCount: days.filter((row) => ['PRESENT', 'LATE'].includes(statusOf(row))).length,
+        absentCount: absent,
+        leaveCount: count('LEAVE'),
+        presentCount: late + count('PRESENT'),
       });
+      if (line) lines.push(line);
+    }
+
+    const byUid = new Map(lines.map((line) => [line.uid, line]));
+    const payments: Record<string, { amount: number; paidAmount: number; status: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' }> = {};
+    for (const slip of Object.values(state.payslips)) {
+      if (slip.monthKey !== month || slip.current === false || slip.status !== 'PAID') continue;
+      byUid.set(slip.uid, slip.line);
+      payments[slip.uid] = { amount: slip.line.net, paidAmount: slip.line.net, status: 'PAID' };
+    }
+    const all = [...byUid.values()].sort((a, b) => a.name.localeCompare(b.name));
+    for (const line of all) payments[line.uid] ??= { amount: line.net, paidAmount: 0, status: 'UNPAID' };
+
+    const totals = payrollTotals(all);
+    return ok({
+      monthKey: month,
+      lines: all,
+      totals,
+      amount: totals.net,
+      paidAmount: Object.values(payments).reduce((sum, entry) => sum + entry.paidAmount, 0),
+      payments,
     });
-
-    lines.sort((a, b) => a.name.localeCompare(b.name));
-    const totals = payrollTotals(lines);
-
-    state.payrollPeriods = {
-      ...state.payrollPeriods,
-      [month]: {
-        monthKey: month,
-        status: 'DRAFT',
-        lines,
-        generatedAt: new Date().toISOString(),
-        generatedByUid: actorUid,
-        history: [
-          ...(existing?.history ?? []),
-          {
-            at: new Date().toISOString(),
-            byUid: actorUid,
-            byName: getDemoSession()?.name ?? null,
-            action: existing ? 'REGENERATED' : 'GENERATED',
-            detail: `${lines.length} employees, net ${totals.net}`,
-          },
-        ],
-      },
-    };
-    emit();
-    return ok({ monthKey: month, people: lines.length, net: totals.net });
-  },
-
-  getPayroll(monthKey: string) {
-    const month = monthKey.slice(0, 7);
-    const period = state.payrollPeriods[month];
-
-    if (!period) {
-      return ok({
-        monthKey: month,
-        status: 'DRAFT' as PayrollStatus,
-        lines: [],
-        totals: payrollTotals([]),
-        generatedAt: null,
-        generatedByUid: null,
-        history: [],
-        exists: false,
-      });
-    }
-
-    return ok({ ...period, totals: payrollTotals(period.lines), exists: true });
-  },
-
-  adjustPayrollLine(monthKey: string, uid: string, patch: Partial<PayrollLine>, actorUid: string) {
-    const month = monthKey.slice(0, 7);
-    const period = state.payrollPeriods[month];
-    if (!period) return fail('Generate the payroll for this month first.');
-    if (!isEditable(period.status)) {
-      return fail(
-        `${month} is ${period.status.toLowerCase()}. Send it back for review before changing a figure.`
-      );
-    }
-
-    const index = period.lines.findIndex((line) => line.uid === uid);
-    if (index === -1) return fail('That employee is not on this payroll.');
-
-    const before = period.lines[index];
-    const after = repriceLine(before, patch);
-    const lines = [...period.lines];
-    lines[index] = after;
-
-    state.payrollPeriods = {
-      ...state.payrollPeriods,
-      [month]: {
-        ...period,
-        lines,
-        history: [
-          ...period.history,
-          {
-            at: new Date().toISOString(),
-            byUid: actorUid,
-            byName: getDemoSession()?.name ?? null,
-            action: 'LINE_ADJUSTED',
-            detail: `${before.name}: net ${before.net} → ${after.net}`,
-          },
-        ],
-      },
-    };
-    emit();
-    return ok({ net: after.net });
-  },
-
-  setPayrollStatus(monthKey: string, status: PayrollStatus, actorUid: string) {
-    const month = monthKey.slice(0, 7);
-    const period = state.payrollPeriods[month];
-    if (!period) return fail('Generate the payroll for this month first.');
-
-    if (!canTransition(period.status, status)) {
-      return fail(
-        period.status === 'PAID'
-          ? 'This payroll has been paid. Correct it with an adjustment on the next month rather than rewriting a paid one.'
-          : `A ${period.status.toLowerCase()} payroll cannot go straight to ${status.toLowerCase()}.`
-      );
-    }
-
-    const session = getDemoSession();
-    if (status === 'PAID' && session?.role !== 'admin') {
-      return fail('Only an administrator can mark a payroll as paid.');
-    }
-
-    const wasApproved = period.status === 'APPROVED';
-    state.payrollPeriods = {
-      ...state.payrollPeriods,
-      [month]: {
-        ...period,
-        status,
-        history: [
-          ...period.history,
-          {
-            at: new Date().toISOString(),
-            byUid: actorUid,
-            byName: session?.name ?? null,
-            action: `STATUS_${status}`,
-            detail: `${period.status} → ${status}`,
-          },
-        ],
-      },
-    };
-
-    if (status === 'APPROVED' || status === 'PAID') {
-      const slips = { ...state.payslips };
-      for (const line of period.lines) {
-        const id = `${line.uid}_${month}`;
-        slips[id] = {
-          id,
-          uid: line.uid,
-          monthKey: month,
-          status,
-          line,
-          current: true,
-          approvedAt: new Date().toISOString(),
-          approvedByName: session?.name ?? null,
-        };
-      }
-      state.payslips = slips;
-
-      state.notifications = [
-        ...period.lines.map((line) => ({
-          id: nextId('n'),
-          type: status === 'PAID' ? 'SALARY_PAID' : 'SALARY_APPROVED',
-          leadId: '',
-          targetRole: 'employee' as const,
-          targetUid: line.uid,
-          payload: {
-            message:
-              status === 'PAID'
-                ? `Your salary for ${month} has been paid: Rs ${line.net.toLocaleString('en-PK')}.`
-                : `Your salary slip for ${month} is ready: Rs ${line.net.toLocaleString('en-PK')}.`,
-          },
-          createdAt: now(),
-          readAt: null,
-        })),
-        ...state.notifications,
-      ];
-    }
-
-    if (status === 'REVIEWED' && wasApproved) {
-      // Reopened — the slips stay, marked not current, so what was approved is
-      // still readable after the correction.
-      const slips = { ...state.payslips };
-      for (const line of period.lines) {
-        const id = `${line.uid}_${month}`;
-        if (slips[id]) slips[id] = { ...slips[id], current: false };
-      }
-      state.payslips = slips;
-    }
-
-    emit();
-    return ok({ status });
   },
 
   getPayslips(uid: string) {
@@ -2960,20 +2804,6 @@ export const demo = {
         .filter((slip) => slip.uid === uid)
         .sort((a, b) => b.monthKey.localeCompare(a.monthKey)),
     });
-  },
-
-  setSalaryAccess(uid: string, granted: boolean): Result {
-    const employee = state.employees.find((row) => row.uid === uid);
-    if (!employee) return fail('That account no longer exists.');
-    if (employee.accessRole !== 'subadmin') {
-      return fail('Salary access is granted to managers, not to employees.');
-    }
-
-    state.employees = state.employees.map((row) =>
-      row.uid === uid ? { ...row, salaryAccess: granted } : row
-    );
-    emit();
-    return ok(undefined);
   },
 
   /* ---------------------------------------------------------------- */
