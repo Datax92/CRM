@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   collection,
+  doc,
   query,
   where,
 } from 'firebase/firestore';
 // Metered: counts the reads Google bills, into the server log only.
-import { onSnapshotLive } from '@/lib/firebase/meteredFirestore';
+import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState, demo } from '@/lib/demo/store';
@@ -265,6 +266,9 @@ function monthDays(monthKey: string): { day: number; dayKey: string; weekday: nu
  */
 export function useAttendance(uid: string | undefined, getIdToken: () => Promise<string>, monthKey?: string) {
   const [records, setRecords] = useState<AttendanceRecord[] | null>(null);
+  // Today's own record, watched on its own so a punch shows at once even while
+  // the history is served from the device's copy (quiet hours, 2026-09-26).
+  const [today, setToday] = useState<AttendanceRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [punching, setPunching] = useState(false);
   const demoState = useDemoState();
@@ -349,8 +353,9 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
   useEffect(() => {
     if (IS_DEMO || !uid) return;
 
-    // Live even in quiet hours (meteredFirestore): a punch must show at once.
-    const unsubscribe = onSnapshotLive(
+    // In quiet hours this history is answered once from the device's copy;
+    // today's record below stays live (a single document, one read).
+    const unsubscribe = onSnapshot(
       // Scoped by uid only, not by month. The phone layout shows a
       // year-to-date attendance figure beside the month-to-date one, and a
       // second month-scoped listener per year would be twelve listeners; one
@@ -371,10 +376,35 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
     return () => unsubscribe();
   }, [uid, month]);
 
+  // Which day "today" is, re-read every minute so a tab left open overnight
+  // watches the new day's record. Set from a timer: the lint rule refuses a
+  // clock read in an effect body.
+  const [todayKey, setTodayKey] = useState('');
+  useEffect(() => {
+    const tick = () => setTodayKey(karachiDayKey());
+    const first = setTimeout(tick, 0);
+    const every = setInterval(tick, 60_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (IS_DEMO || !uid || !todayKey) return;
+    return onSnapshot(
+      doc(db, 'attendance', `${uid}_${todayKey}`),
+      (snap) => setToday(snap.exists() ? ({ id: snap.id, ...snap.data() } as AttendanceRecord) : null),
+      (err) => console.error('[useAttendance:today]', err)
+    );
+  }, [uid, todayKey]);
+
   const everything = useMemo<AttendanceRecord[]>(() => {
     if (IS_DEMO) return uid ? demoState.attendance.filter((r) => r.uid === uid) : [];
-    return records ?? [];
-  }, [records, demoState.attendance, uid]);
+    const list = records ?? [];
+    if (!today) return list;
+    return [...list.filter((record) => record.id !== today.id), today];
+  }, [records, today, demoState.attendance, uid]);
 
   const all = useMemo(
     () => everything.filter((r) => r.dayKey.startsWith(month)),

@@ -151,10 +151,10 @@ function quiet(): boolean {
 
 /**
  * Small, per-person lists that must reflect somebody's own action at once —
- * a remark, a check-in, a leave request, a personal expense. Single documents
- * are always live too (one read each).
+ * a remark, a leave request, a personal expense. Single documents are always
+ * live too (one read each) — which is how today's attendance record stays live.
  */
-const LIVE_IN_QUIET = new Set(['leads/*/followUps', 'leads/*/events', 'attendance', 'personalExpenses', 'leaveRequests']);
+const LIVE_IN_QUIET = new Set(['leads/*/followUps', 'leads/*/events', 'personalExpenses', 'leaveRequests']);
 
 function quietFor(target: unknown): boolean {
   if (!quiet() || target instanceof DocumentReference) return false;
@@ -243,7 +243,7 @@ export function withLive<R>(open: () => R): R {
   }
 }
 
-/** `onSnapshot` that stays live during quiet hours — the new-lead offer and attendance. */
+/** `onSnapshot` that stays live during quiet hours — the new-lead offer. */
 export function onSnapshotLive<T = DocumentData>(
   query: Query<T>,
   onNext: (snapshot: QuerySnapshot<T>) => void,
