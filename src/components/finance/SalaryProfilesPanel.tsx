@@ -146,8 +146,13 @@ export function SalaryProfilesPanel({
                       {profile.role === "subadmin" ? " · Manager" : ""}
                     </span>
                   </span>
-                  <span style={{ fontSize: 15, fontWeight: 800, color: F.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                    {rupees(profile.salary + profile.allowance)}
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: F.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                      {rupees(profile.salary + profile.allowance)}
+                    </span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, borderRadius: 999, border: `1px solid ${F.line}`, background: "#fff", color: F.teal, padding: "4px 11px", fontSize: 12, fontWeight: 700 }}>
+                      <Pencil size={12} /> Edit
+                    </span>
                   </span>
                 </div>
 
@@ -256,7 +261,7 @@ export function SalaryProfilesPanel({
   );
 }
 
-function SalaryModal({
+export function SalaryModal({
   profile,
   onClose,
   onSaved,

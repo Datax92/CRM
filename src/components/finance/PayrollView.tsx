@@ -51,7 +51,7 @@ import {
   type RowAction,
   type StatCard,
 } from "./expensesChrome";
-import { SalaryProfilesPanel, useSalaryProfiles } from "./SalaryProfilesPanel";
+import { SalaryModal, SalaryProfilesPanel, useSalaryProfiles } from "./SalaryProfilesPanel";
 import { PayslipPanel } from "./PayslipPanel";
 
 const CUTS = ["ALL", "UNPAID", "PAID", "COMMISSION", "DEDUCTIONS"] as const;
@@ -86,6 +86,7 @@ export function PayrollView() {
   const [slipFor, setSlipFor] = useState<PayrollLine | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
   const [paying, setPaying] = useState<PayrollLine | null>(null);
+  const [editingSalary, setEditingSalary] = useState<PayrollLine | null>(null);
   const [nonce, setNonce] = useState(0);
   const [search, setSearch] = useState("");
   const [cut, setCut] = useState<Cut>("ALL");
@@ -257,12 +258,17 @@ export function PayrollView() {
     const actions: RowAction[] = [
       { key: "slip", label: "Payslip", d: ICON.receipt, tone: "quiet", onClick: () => setSlipFor(line) },
     ];
+    // Admin and HR both set salaries. Not once somebody has been paid: their
+    // month is frozen, and a changed salary would only reach next month.
+    if (paymentFor(line).paidAmount <= 0) {
+      actions.push({ key: "salary", label: "Edit salary", d: ICON.edit, tone: "quiet", onClick: () => setEditingSalary(line) });
+    }
     // Absent, not disabled, once somebody is settled or for anybody but the admin.
     if (isAdmin && !isSettled(line)) {
       actions.push({ key: "pay", label: "Pay from…", d: ICON.wallet, tone: "good", onClick: () => setPaying(line) });
     }
     return actions;
-  }, [isAdmin, isSettled]);
+  }, [isAdmin, isSettled, paymentFor]);
 
   const rowModels = useMemo<ExpenseRowModel[]>(
     () =>
@@ -492,6 +498,28 @@ export function PayrollView() {
             label: `${paying.name} — salary ${monthLabel(monthKey)}`,
             amount: paymentFor(paying).amount,
             alreadyPaid: paymentFor(paying).paidAmount,
+          }}
+        />
+      )}
+
+      {editingSalary && (
+        <SalaryModal
+          profile={{
+            uid: editingSalary.uid,
+            name: editingSalary.name,
+            email: editingSalary.email,
+            jobTitle: editingSalary.jobTitle,
+            role: "",
+            salary: editingSalary.salary ?? editingSalary.basic,
+            allowance: editingSalary.allowance ?? editingSalary.allowances,
+            joinedAt: editingSalary.joinedAt ?? null,
+          }}
+          onClose={() => setEditingSalary(null)}
+          onSaved={(text) => {
+            setEditingSalary(null);
+            setBanner({ ok: true, text });
+            salaries.reload();
+            reload();
           }}
         />
       )}
