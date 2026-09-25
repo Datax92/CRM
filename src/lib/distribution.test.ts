@@ -545,14 +545,14 @@ test('the notification says the morning deadline at night, the window by day', (
   assert.equal(acceptWindowPhrase(pk(24, 2, 0), 5), 'You can accept it until 09:05.');
 });
 
-/* ---- the one-morning hold, 2026-09-26 10:40 ---- */
+/* ---- the one-morning hold, 2026-09-26 11:00 ---- */
 
-test('the hold: offers made the night before and that morning open from 10:40, in slots a few minutes apart', () => {
-  assert.equal(LANE_HOLD_UNTIL, pk(26, 10, 40));
+test('the hold: offers made the night before and that morning open from 11:00, in slots a few minutes apart', () => {
+  assert.equal(LANE_HOLD_UNTIL, pk(26, 11, 0));
   const opens = ['a1', 'b22', 'c333', 'd4444', 'e55555', 'f666666', 'g7'].map((id) => laneResumesAt(pk(25, 23, 0), id)!);
   for (const at of opens) {
-    assert.ok(at >= pk(26, 10, 40) && at <= pk(26, 11, 0), 'inside 10:40–11:00');
-    assert.equal((at - pk(26, 10, 40)) % (4 * 60_000), 0, 'on a four-minute slot');
+    assert.ok(at >= pk(26, 11, 0) && at <= pk(26, 11, 20), 'inside 11:00–11:20');
+    assert.equal((at - pk(26, 11, 0)) % (4 * 60_000), 0, 'on a four-minute slot');
   }
   assert.ok(new Set(opens).size > 1, 'spread, not all at once');
   // The same lead always lands on the same slot.
@@ -562,9 +562,9 @@ test('the hold: offers made the night before and that morning open from 10:40, i
   assert.equal(offerOpensAt(deadline, FIVE_MIN), laneResumesAt(pk(26, 10, 0), 'b22'));
 });
 
-test('the hold ends at 10:40 and touched nothing before the evening of the 25th', () => {
-  assert.equal(laneResumesAt(pk(26, 10, 40), 'x'), null);
-  assert.equal(acceptDeadlineFrom(pk(26, 11, 0), FIVE_MIN, 'x').getTime(), pk(26, 11, 5));
+test('the hold ends at 11:00 and touched nothing before the evening of the 25th', () => {
+  assert.equal(laneResumesAt(pk(26, 11, 0), 'x'), null);
+  assert.equal(acceptDeadlineFrom(pk(26, 11, 30), FIVE_MIN, 'x').getTime(), pk(26, 11, 35));
   assert.equal(laneResumesAt(pk(25, 15, 0), 'x'), null);
   assert.equal(laneResumesAt(pk(24, 23, 0), 'x'), pk(25, 9, 0));
 });

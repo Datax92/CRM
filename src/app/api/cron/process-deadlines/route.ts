@@ -10,6 +10,7 @@ import {
   type CycleState,
   acceptDeadlineFrom,
   acceptWindowPhrase,
+  LANE_HOLD_UNTIL,
 } from '@/lib/distribution';
 import { readLaneRoster, type RosterShare } from '@/lib/server/laneRoster';
 import { ACCEPT_WINDOW_MS, ACCEPT_WINDOW_MINUTES } from '@/lib/constants/distribution';
@@ -49,6 +50,16 @@ async function handleGET(request: Request) {
   if (denied) return denied;
 
   const startedAt = Date.now();
+
+  /*
+    The morning hold (2026-09-26, `LANE_HOLD_UNTIL`): every offer made before it
+    opens at it or later, so nothing can expire until then and the sweep would
+    only spend reads finding that out. Leads waiting in the admin queue wait
+    with it. Inert after the date.
+  */
+  if (startedAt < LANE_HOLD_UNTIL && startedAt > LANE_HOLD_UNTIL - 18 * 3_600_000) {
+    return NextResponse.json({ ok: true, skipped: 'MORNING_HOLD' });
+  }
 
   try {
     // The whole rotation, read once for every lead this run moves.

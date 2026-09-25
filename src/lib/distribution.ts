@@ -361,13 +361,13 @@ const DAY_MS = 86_400_000;
 
 /**
  * A one-morning hold (owner, 2026-09-25, while the day's read allowance ran
- * out): every offer made before 10:40 Karachi on 2026-09-26 opens at 10:40 or
+ * out): every offer made before 11:00 Karachi on 2026-09-26 opens at 11:00 or
  * a few minutes after, spread by the lead's id into four-minute slots, so the
  * waiting leads reach people one or two at a time instead of all at once. The
  * popup shows an offer only once its slot has opened (`offerOpensAt`). It
- * applies to nothing before the evening of the 25th or after 10:40 on the 26th.
+ * applies to nothing before the evening of the 25th or after 11:00 on the 26th.
  */
-export const LANE_HOLD_UNTIL = Date.parse("2026-09-26T10:40:00+05:00");
+export const LANE_HOLD_UNTIL = Date.parse("2026-09-26T11:00:00+05:00");
 const LANE_HOLD_FROM = LANE_HOLD_UNTIL - 18 * 3_600_000;
 const HOLD_SLOTS = 6;
 const HOLD_GAP_MS = 4 * 60_000;

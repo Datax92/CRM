@@ -57,7 +57,7 @@ export function useIncomingLead(
   const isManager = role === 'subadmin';
 
   /*
-    The morning hold (`LANE_HOLD_UNTIL`, 2026-09-26 10:40): no listener at all
+    The morning hold (`LANE_HOLD_UNTIL`, 2026-09-26 11:00): no listener at all
     before it — nothing is offered until then anyway. Checked from a timer,
     because the lint rule refuses `Date.now()` in a render or effect body.
   */
