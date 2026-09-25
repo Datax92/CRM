@@ -129,9 +129,36 @@ function flush(): void {
  */
 const QUIET_UNTIL = Date.parse('2026-09-26T12:00:00+05:00');
 
-function quiet(): boolean {
+/** Quiet hours by the clock alone — `leadSync` asks this to avoid a full sync before noon. */
+export function inQuietHours(): boolean {
   if ((globalThis as { __quietHoursOff?: boolean }).__quietHoursOff) return false; // tests
   return typeof window !== 'undefined' && Date.now() < QUIET_UNTIL;
+}
+
+/**
+ * The admin and HR are never quiet: they are the two people adding expenses
+ * and payments at any hour, and what they add must show at once. Set by
+ * `AuthContext` when the role is known.
+ */
+let quietExempt = false;
+export function setQuietHoursExempt(exempt: boolean): void {
+  quietExempt = exempt;
+}
+
+function quiet(): boolean {
+  return !quietExempt && inQuietHours();
+}
+
+/**
+ * Small, per-person lists that must reflect somebody's own action at once —
+ * a remark, a check-in, a leave request, a personal expense. Single documents
+ * are always live too (one read each).
+ */
+const LIVE_IN_QUIET = new Set(['leads/*/followUps', 'leads/*/events', 'attendance', 'personalExpenses', 'leaveRequests']);
+
+function quietFor(target: unknown): boolean {
+  if (!quiet() || target instanceof DocumentReference) return false;
+  return !LIVE_IN_QUIET.has(collectionKey(target));
 }
 
 let reloadArmed = false;
@@ -203,21 +230,26 @@ function isOptions(value: unknown): value is SnapshotListenOptions {
   );
 }
 
-/** Set for the duration of an `onSnapshotLive` call: that listener stays live in quiet hours. */
+/** Set for the duration of a `withLive` call: listeners opened inside it stay live in quiet hours. */
 let liveThrough = false;
 
-/** `onSnapshot` that stays live during quiet hours — the new-lead offer only. */
+/** Opens listeners that stay live during quiet hours — the lead lists' own delta sync. */
+export function withLive<R>(open: () => R): R {
+  liveThrough = true;
+  try {
+    return open();
+  } finally {
+    liveThrough = false;
+  }
+}
+
+/** `onSnapshot` that stays live during quiet hours — the new-lead offer and attendance. */
 export function onSnapshotLive<T = DocumentData>(
   query: Query<T>,
   onNext: (snapshot: QuerySnapshot<T>) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  liveThrough = true;
-  try {
-    return onSnapshot(query, onNext, onError);
-  } finally {
-    liveThrough = false;
-  }
+  return withLive(() => onSnapshot(query, onNext, onError));
 }
 
 // The same call shapes as `firebase/firestore`'s own, so every caller's
@@ -262,7 +294,7 @@ export function onSnapshot<T = DocumentData>(
     observer = (args[0] ?? {}) as Observer<unknown>;
   }
 
-  if (quiet() && !liveThrough) return quietAnswer(target, observer);
+  if (!liveThrough && quietFor(target)) return quietAnswer(target, observer);
 
   if (target instanceof DocumentReference) {
     let seenServer = false;
@@ -306,7 +338,7 @@ export function onSnapshot<T = DocumentData>(
 }
 
 export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QuerySnapshot<T>> {
-  if (quiet()) {
+  if (quietFor(query)) {
     try {
       const cached = await fsGetDocsFromCache(query);
       if (!cached.empty) return cached;
@@ -320,13 +352,6 @@ export async function getDocs<T = DocumentData>(query: Query<T>): Promise<QueryS
 }
 
 export async function getDoc<T = DocumentData>(ref: DocumentReference<T>): Promise<DocumentSnapshot<T>> {
-  if (quiet()) {
-    try {
-      return await fsGetDocFromCache(ref);
-    } catch {
-      // not on the device — fall through to one server read
-    }
-  }
   const snap = await fsGetDoc(ref);
   if (!snap.metadata.fromCache) count(ref, 'get', 1);
   return snap;

@@ -142,3 +142,15 @@ test('a cached document is dropped when the server writes it, in a transaction t
   await admin.doc('users/emp-uid').set({ status: 'DISABLED' }, { merge: true });
   assert.equal(await serverCache.cached('roster:everyone', 60_000, load), 5, 'a profile write drops the roster');
 });
+
+test('an employee may run their own scoped delta, and only their own (2026-09-25)', async () => {
+  const me = () => env.authenticatedContext('emp2-uid', { role: 'employee' }).firestore();
+  await admin.doc('users/emp2-uid').set({ role: 'employee', status: 'ACTIVE' });
+  await admin.doc('leads/MINE').set({ name: 'Mine', assignedUserId: 'emp2-uid', status: 'ACCEPTED', createdAt: new Date() });
+  await admin.doc('leads/THEIRS').set({ name: 'Theirs', assignedUserId: 'other-uid', status: 'ACCEPTED', createdAt: new Date() });
+  const since = Timestamp.fromMillis(0);
+  const scoped = (db, uid) =>
+    query(collection(db, 'leads'), where('assignedUserId', '==', uid), where('updatedAt', '>', since), orderBy('updatedAt', 'asc'));
+  assert.deepEqual((await getDocs(scoped(me(), 'emp2-uid'))).docs.map((d) => d.id), ['MINE']);
+  await assertFails(getDocs(scoped(me(), 'other-uid')));
+});

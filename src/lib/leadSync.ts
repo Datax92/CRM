@@ -40,9 +40,9 @@ import {
   type QuerySnapshot,
 } from 'firebase/firestore';
 // Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
+import { inQuietHours, onSnapshot, withLive } from '@/lib/firebase/meteredFirestore';
 import { timestampMillis } from '@/lib/dates';
-import { advanceWatermark, planSync, readSyncMeta, type SyncMeta } from '@/lib/leadSyncPlan';
+import { advanceWatermark, DELTA_SKEW_MS, planSync, readSyncMeta, type SyncMeta } from '@/lib/leadSyncPlan';
 import type { LiveRow, LiveState } from '@/lib/liveCollection';
 
 const KEEP_ALIVE_MS = 60_000;
@@ -103,7 +103,7 @@ function startFull(key: string, entry: Entry, fullQuery: Query<DocumentData>, on
   // Metadata changes on: the server confirming a result identical to the
   // device's copy raises no ordinary event, and that confirmation is the only
   // moment the sync may record that the device is current.
-  entry.stop = onSnapshot(
+  entry.stop = withLive(() => onSnapshot(
     fullQuery,
     { includeMetadataChanges: true },
     (snap) => {
@@ -121,7 +121,7 @@ function startFull(key: string, entry: Entry, fullQuery: Query<DocumentData>, on
       console.error(`[leadSync:${key}] full`, error);
       fail(entry, onError(error));
     }
-  );
+  ));
 }
 
 async function startDelta(
@@ -149,7 +149,7 @@ async function startDelta(
   publish(entry);
 
   let watermark = meta.watermark;
-  entry.stop = onSnapshot(
+  entry.stop = withLive(() => onSnapshot(
     deltaQuery(Timestamp.fromMillis(since)),
     { includeMetadataChanges: true },
     (snap) => {
@@ -171,7 +171,48 @@ async function startDelta(
       entry.stop = null;
       startFull(key, entry, fullQuery, onError);
     }
-  );
+  ));
+}
+
+/**
+ * **No bulk download where the device already holds the list** (owner,
+ * 2026-09-25). A key this device has never synced — every employee's, the
+ * first time after this shipped — would otherwise start with a full download
+ * of their whole list. If the device's copy of that query is not empty, it is
+ * trusted as a full sync taken at the newest `updatedAt` it contains, and only
+ * what changed since is fetched. Before noon on quiet-hours days a list due its
+ * six-hourly full sync does a delta instead, and keeps its old `fullAt`, so the
+ * full sync happens after the allowance resets.
+ */
+async function startSeededOrFull(
+  key: string,
+  entry: Entry,
+  meta: SyncMeta | null,
+  fullQuery: Query<DocumentData>,
+  deltaQuery: (since: Timestamp) => Query<DocumentData>,
+  onError: (e: unknown) => string
+): Promise<void> {
+  if (meta && inQuietHours()) {
+    await startDelta(key, entry, meta, meta.watermark - DELTA_SKEW_MS, fullQuery, deltaQuery, onError);
+    return;
+  }
+  if (!meta) {
+    let cached: QuerySnapshot<DocumentData> | null = null;
+    try {
+      cached = await getDocsFromCache(fullQuery);
+    } catch {
+      cached = null;
+    }
+    if (entry.closed) return;
+    const watermark = cached ? advanceWatermark(0, stampsIn(cached)) : 0;
+    if (cached && !cached.empty && watermark > 0) {
+      const seeded: SyncMeta = { fullAt: Date.now(), watermark };
+      writeMeta(key, seeded);
+      await startDelta(key, entry, seeded, watermark - DELTA_SKEW_MS, fullQuery, deltaQuery, onError);
+      return;
+    }
+  }
+  startFull(key, entry, fullQuery, onError);
 }
 
 export function subscribeSyncedLeads(
@@ -201,7 +242,7 @@ export function subscribeSyncedLeads(
     if (plan.mode === 'DELTA' && meta) {
       void startDelta(key, current, meta, plan.since, fullQuery(), deltaQuery, onError);
     } else {
-      startFull(key, current, fullQuery(), onError);
+      void startSeededOrFull(key, current, meta, fullQuery(), deltaQuery, onError);
     }
   }
 

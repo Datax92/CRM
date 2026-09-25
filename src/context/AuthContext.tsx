@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { User } from "firebase/auth";
 import { IS_DEMO, useDemoSession, signInDemo, signOutDemo, DEMO_ACCOUNTS, DEMO_PASSWORD } from "@/lib/demo/store";
+import { setQuietHoursExempt } from "@/lib/firebase/meteredFirestore";
 
 /**
  * The three access roles. `subadmin` reads the same screens an admin does,
@@ -68,6 +69,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [role, setRole] = useState<Role | null>(null);
   const [managerKind, setManagerKind] = useState<ManagerKind | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
+
+  // The admin and HR see what they add at once, quiet hours or not.
+  useEffect(() => {
+    setQuietHoursExempt(role === "admin" || (role === "subadmin" && managerKind === "HR"));
+  }, [role, managerKind]);
   const [loading, setLoading] = useState(true);
 
   const demoSession = useDemoSession();

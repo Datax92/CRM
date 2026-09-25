@@ -325,7 +325,8 @@ export function useLeads(
     sync every six hours. Scoped lists keep the ordinary listener — see
     `lib/leadSync` for why a delta cannot serve them.
   */
-  const synced = key === 'all' && !IS_DEMO;
+  // Every list syncs by delta since 2026-09-25 — see the scoped `buildDelta`.
+  const synced = key !== 'idle' && !IS_DEMO;
   /*
     **The size is part of the sync key, and that is deliberate.** `leadSync`
     stores its watermark under this key, so a key it has not seen has no meta and
@@ -338,11 +339,25 @@ export function useLeads(
     and reading it again would mean a device that shrank back to a smaller window
     trusting a watermark from a larger one.
   */
-  const syncKey = `leads:all:${size}`;
+  const syncKey = `leads:${key}:${size}`;
+  /*
+    **Scoped lists too, since 2026-09-25** — an employee's My Leads was the
+    single biggest read in the app (one employee: ~60 full re-downloads of ~200
+    leads in a day). The delta carries the same scope clause as the full query,
+    so the rule proves it. What a scoped delta cannot see is a lead that *left*
+    the scope (passed on, reassigned away): it stays in the device's list until
+    the next six-hourly full sync. That is the accepted cost.
+  */
   const buildDelta = useCallback(
-    (since: Timestamp) =>
-      query(collection(db, 'leads'), where('updatedAt', '>', since), orderBy('updatedAt', 'asc')),
-    []
+    (since: Timestamp) => {
+      const leadsRef = collection(db, 'leads');
+      if (key === 'all') return query(leadsRef, where('updatedAt', '>', since), orderBy('updatedAt', 'asc'));
+      const scopeField = role === 'subadmin' ? 'subAdminUid' : 'assignedUserId';
+      return query(leadsRef, where(scopeField, '==', uid), where('updatedAt', '>', since), orderBy('updatedAt', 'asc'));
+    },
+    // `uid` and `role` are encoded in `key`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key]
   );
   const subscribeSynced = useCallback(
     (notify: () => void) =>

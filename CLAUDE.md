@@ -468,6 +468,16 @@ out of the script.
 
 # Session log (last 5 days)
 
+### 2026-09-25 (late night) — every lead list syncs by delta; quiet hours spare the admin, HR and people's own actions
+
+*"it shouldnt make reads in bulk … if something is added like expense it should be added and shown."*
+
+- **Employees' and managers' lead lists now sync like the admin's** (`useLeads`: `synced` for every key, `buildDelta` carries the scope clause — `assignedUserId`/`subAdminUid == me` + `updatedAt >`; indexes `leads (assignedUserId, updatedAt)` and `(subAdminUid, updatedAt)` deployed and READY). The biggest read in the app — one employee re-downloading ~200 leads ~60 times a day — becomes the few leads that changed. **Accepted cost:** a lead that *leaves* a scoped list (passed on, reassigned away) stays on that device until its next six-hourly full sync, because a scoped delta cannot see it.
+- **No first-time bulk download** (`leadSync.startSeededOrFull`): a key with no stored meta, whose device copy of the query is not empty, is trusted as a full sync taken at the newest `updatedAt` in that copy, and runs a delta from there. During quiet hours a list due its six-hourly full sync runs a delta instead and keeps its old `fullAt`, so the full sync lands after the reset. Both sync listeners open inside `withLive`, so quiet hours never freeze them.
+- **Quiet hours narrowed** (`meteredFirestore`): **the admin and HR are exempt** (`setQuietHoursExempt`, from `AuthContext`) — they add expenses and payments at any hour; **single documents are always live**; and `LIVE_IN_QUIET` keeps a person's own lists live — `leads/*/followUps`, `leads/*/events`, `attendance`, `personalExpenses`, `leaveRequests` — so a remark, a check-in or a leave request shows at once.
+- **Validation**: typecheck 0, `test` 852/852, `test:sync` **16/16** (1 new: an employee may run their own scoped delta and is refused anybody else's, against the real rules), `eslint src` 7 / 33, `next build` compiles. **The cache seeding itself is not exercised by a test** — it is the existing `getDocsFromCache` + `advanceWatermark` pieces joined, reasoned rather than run.
+
+
 ### 2026-09-25 (night) — quiet hours until noon, a held morning lane · TEMPORARY, remove after 2026-09-26 12:00
 
 Reads were at 46k of the free 50k with ~15 hours to the reset, and Blaze could not be enabled (Google refuses the billing profile, `OR_BACR2_59` — a support form, not code). Owner's instructions: nothing on screen may say so; attendance must work; no lead popups until 11:00 (moved from 10:40), then one or two at a time; normal from 12:00.
