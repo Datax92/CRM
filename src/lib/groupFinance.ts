@@ -79,6 +79,11 @@ export interface GroupField {
   accountIds?: string[];
   /** …and by kind (`COMMITTEE`, `INVESTMENT`…), so an account added later is picked up. */
   accountKinds?: string[];
+  /**
+   * …and by the module that moved the money (`INVESTMENT_WITH_X`, `PAYROLL`…),
+   * so every book of a module fills the field, including one opened later.
+   */
+  sourceModules?: string[];
 }
 
 /** The three columns the modules fill. Their labels are editable; they cannot be removed. */
@@ -94,13 +99,26 @@ export const DEFAULT_BUILTIN_LABELS: Record<BuiltinColumn, string> = {
 };
 
 /**
- * Which accounts a field starts linked to. Read only when a saved field has no
- * link at all — once the owner saves the field, what they chose wins, including
- * choosing none.
+ * What a field starts linked to. Read only when a saved field has no link at
+ * all — once the owner saves the field, what they chose wins, including
+ * choosing none. `investment_with_x` is the column the owner added by hand on
+ * 2026-09-15; it sat empty while the rounds' profit went into Total Income.
  */
-export const DEFAULT_FIELD_LINKS: Record<string, { accountKinds: string[] }> = {
+export const DEFAULT_FIELD_LINKS: Record<string, { accountKinds?: string[]; sourceModules?: string[] }> = {
   committee_kist: { accountKinds: ['COMMITTEE'] },
   investor: { accountKinds: ['INVESTMENT'] },
+  investment_with_x: { sourceModules: ['INVESTMENT_WITH_X'] },
+};
+
+/** The modules a field can be linked to, by the kind of field. */
+export const LINKABLE_MODULES: Record<GroupFieldType, Array<{ key: string; label: string }>> = {
+  INCOME: [
+    { key: 'MARKETING_INCOME', label: 'Marketing Income' },
+    { key: 'CAR_SALE', label: 'Car Sale' },
+    { key: 'STATELIFE', label: 'StateLife' },
+    { key: 'INVESTMENT_WITH_X', label: 'Investment with X' },
+  ],
+  EXPENSE: [{ key: 'PAYROLL', label: 'Salaries (Payroll)' }],
 };
 
 /** The owner's sheet's own hand-filled columns, in its order. */
@@ -111,16 +129,21 @@ export const DEFAULT_GROUP_FIELDS: GroupField[] = [
   { key: 'misc', label: 'Misc / Plot / Tour', type: 'EXPENSE' },
 ];
 
-/** The live field of this type that claims an account, if any. First link wins. */
+/**
+ * The live field of this type that claims a movement, if any. The most
+ * particular link wins: a named account, then the module, then the kind.
+ */
 export function fieldForAccount(
   fields: readonly GroupField[],
   type: GroupFieldType,
   accountId: string,
-  accountKind: string | null | undefined
+  accountKind: string | null | undefined,
+  sourceModule?: string | null
 ): GroupField | null {
   const live = fields.filter((field) => !field.archived && field.type === type);
   return (
     live.find((field) => field.accountIds?.includes(accountId)) ??
+    live.find((field) => Boolean(sourceModule) && field.sourceModules?.includes(sourceModule as string)) ??
     live.find((field) => Boolean(accountKind) && field.accountKinds?.includes(accountKind as string)) ??
     null
   );
@@ -463,7 +486,7 @@ export function computeGroupMonth(input: {
     if (!inMonth(txn.dayKey)) continue;
     if (isIncomeMovement(txn)) {
       const auto = roundMoney(txn.direction === 'OUT' ? -num(txn.amount) : num(txn.amount));
-      const columnKey = fieldForAccount(input.fields, 'INCOME', txn.accountId, kindOf(txn.accountId))?.key ?? 'income';
+      const columnKey = fieldForAccount(input.fields, 'INCOME', txn.accountId, kindOf(txn.accountId), txn.sourceModule)?.key ?? 'income';
       const figures = corrected(txn.id, auto, txn.note ?? null);
       const label = (txn.sourceLabel ?? '').trim() || INCOME_SOURCE_LABELS[txn.sourceModule] || 'Income';
       incomeLines.push({
@@ -481,7 +504,7 @@ export function computeGroupMonth(input: {
     }
     const spend = accountSpendOf(txn);
     if (spend === null) continue;
-    const columnKey = fieldForAccount(input.fields, 'EXPENSE', txn.accountId, kindOf(txn.accountId))?.key ?? 'accounts';
+    const columnKey = fieldForAccount(input.fields, 'EXPENSE', txn.accountId, kindOf(txn.accountId), txn.sourceModule)?.key ?? 'accounts';
     lines.push({
       id: txn.id,
       kind: 'ACCOUNT',
@@ -716,6 +739,7 @@ export function normalizeGroupFields(
     archived?: boolean | null;
     accountIds?: unknown;
     accountKinds?: unknown;
+    sourceModules?: unknown;
   }>
 ): GroupField[] {
   const out: GroupField[] = [];
@@ -728,10 +752,13 @@ export function normalizeGroupFields(
     const key = keyOk ? (raw.key as string) : fieldKeyFor(label, taken);
     taken.add(key);
     const accountIds = cleanList(raw.accountIds);
+    const savedKinds = cleanList(raw.accountKinds);
+    const savedModules = cleanList(raw.sourceModules);
     // A field never saved with links starts with its default ones; once saved,
     // what was chosen stands — an empty list included.
-    const accountKinds =
-      cleanList(raw.accountKinds) ?? (accountIds === undefined ? DEFAULT_FIELD_LINKS[key]?.accountKinds : undefined);
+    const neverLinked = accountIds === undefined && savedKinds === undefined && savedModules === undefined;
+    const accountKinds = savedKinds ?? (neverLinked ? DEFAULT_FIELD_LINKS[key]?.accountKinds : undefined);
+    const sourceModules = savedModules ?? (neverLinked ? DEFAULT_FIELD_LINKS[key]?.sourceModules : undefined);
     out.push({
       key,
       label,
@@ -739,6 +766,7 @@ export function normalizeGroupFields(
       ...(raw.archived ? { archived: true } : {}),
       ...(accountIds ? { accountIds } : {}),
       ...(accountKinds ? { accountKinds: [...accountKinds] } : {}),
+      ...(sourceModules ? { sourceModules: [...sourceModules] } : {}),
     });
     if (out.length >= MAX_GROUP_FIELDS) break;
   }

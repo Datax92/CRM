@@ -227,6 +227,22 @@ test('a debt settling, capital, transfers and module-paid expenses are never acc
   assert.equal(accountSpendOf(transactions.find((t) => t.id === 'loss')!), null);
 });
 
+test('a hand-added Investment with X column fills from every round, whatever book it is in', () => {
+  const [field] = normalizeGroupFields([{ key: 'investment_with_x', label: 'Investment with X', type: 'INCOME' }]);
+  assert.deepEqual(field.sourceModules, ['INVESTMENT_WITH_X']);
+  const rounds = [
+    txn({ id: 'r1', accountId: 'invx_a', sourceModule: 'INVESTMENT_WITH_X', amount: 51_000, dayKey: '2026-09-21' }),
+    txn({ id: 'r2', accountId: 'invx_b', sourceModule: 'INVESTMENT_WITH_X', amount: 9_000, dayKey: '2026-09-22' }),
+  ];
+  const month = computeGroupMonth({ ...base, transactions: [...transactions, ...rounds], fields: [...DEFAULT_GROUP_FIELDS, field], month: null });
+  assert.equal(month.columns.find((c) => c.key === 'investment_with_x')!.value, 60_000);
+  assert.equal(month.columns.find((c) => c.key === 'income')!.value, 145_000);
+  assert.equal(month.income, 205_000);
+  // Unlinked once saved: back to Total Income.
+  const [unlinked] = normalizeGroupFields([{ key: 'investment_with_x', label: 'Investment with X', type: 'INCOME', sourceModules: [] }]);
+  assert.deepEqual(unlinked.sourceModules, []);
+});
+
 test('a field saved with no links takes no account; one never saved keeps its default', () => {
   const [saved] = normalizeGroupFields([{ key: 'investor', label: 'Investor', accountKinds: [] }]);
   assert.deepEqual(saved.accountKinds, []);

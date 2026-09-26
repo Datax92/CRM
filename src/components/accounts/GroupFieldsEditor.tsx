@@ -20,7 +20,7 @@ import { useState } from "react";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { saveGroupConfig } from "@/lib/clientActions";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import { DEFAULT_BUILTIN_LABELS, type BuiltinColumn, type GroupField, type GroupFieldType } from "@/lib/groupFinance";
+import { DEFAULT_BUILTIN_LABELS, LINKABLE_MODULES, type BuiltinColumn, type GroupField, type GroupFieldType } from "@/lib/groupFinance";
 import { ACCOUNT_KINDS, ACCOUNT_KIND_LABELS, type AccountKind } from "@/lib/ledger";
 import { ICON, X } from "@/components/finance/expensesChrome";
 import { Field, FooterButtons, FormError, FormGrid, Glyph, fieldStyle } from "./sheetForms";
@@ -179,8 +179,15 @@ function AccountLinks({
 }) {
   const kinds = row.accountKinds ?? [];
   const ids = row.accountIds ?? [];
+  const modules = row.sourceModules ?? [];
   const nameOf = new Map(accounts.map((account) => [account.id, account.name]));
+  const moduleOptions = LINKABLE_MODULES[row.type];
+  const moduleLabel = new Map(moduleOptions.map((option) => [option.key, option.label]));
+  // Every change saves all three lists, so a field once edited never falls
+  // back to its default links.
+  const links = { accountIds: ids, accountKinds: kinds, sourceModules: modules };
   const summary = [
+    ...modules.map((key) => `every ${moduleLabel.get(key) ?? key} entry`),
     ...kinds.map((kind) => `every ${ACCOUNT_KIND_LABELS[kind as AccountKind] ?? kind} account`),
     ...ids.map((id) => nameOf.get(id) ?? "a deleted account"),
   ];
@@ -203,10 +210,18 @@ function AccountLinks({
       </button>
       {open && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px", borderRadius: 12, background: X.tint }}>
+          <span style={heading}>Every entry from</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {moduleOptions.map((option) => (
+              <button key={option.key} type="button" aria-pressed={modules.includes(option.key)} onClick={() => onChange({ ...links, sourceModules: toggle(modules, option.key) })} style={chip(modules.includes(option.key))}>
+                {option.label}
+              </button>
+            ))}
+          </div>
           <span style={heading}>Every account of a kind</span>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {kindsInUse.map((kind) => (
-              <button key={kind} type="button" aria-pressed={kinds.includes(kind)} onClick={() => onChange({ accountKinds: toggle(kinds, kind), accountIds: ids })} style={chip(kinds.includes(kind))}>
+              <button key={kind} type="button" aria-pressed={kinds.includes(kind)} onClick={() => onChange({ ...links, accountKinds: toggle(kinds, kind) })} style={chip(kinds.includes(kind))}>
                 {ACCOUNT_KIND_LABELS[kind]}
               </button>
             ))}
@@ -214,7 +229,7 @@ function AccountLinks({
           <span style={heading}>Particular accounts</span>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {accounts.map((account) => (
-              <button key={account.id} type="button" aria-pressed={ids.includes(account.id)} onClick={() => onChange({ accountIds: toggle(ids, account.id), accountKinds: kinds })} style={chip(ids.includes(account.id))}>
+              <button key={account.id} type="button" aria-pressed={ids.includes(account.id)} onClick={() => onChange({ ...links, accountIds: toggle(ids, account.id) })} style={chip(ids.includes(account.id))}>
                 {account.name}
               </button>
             ))}
