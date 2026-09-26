@@ -3,9 +3,13 @@
 /**
  * Receivables and Payables — the owner's two sheets, as records.
  *
- * **No account moves**, by the owner's choice: this is who owes whom and how
- * much of it has come back. `lib/receivableSheet` holds the arithmetic;
- * `AMOUNT PENDING` is derived and never stored.
+ * **Settling moves money** (owner, 2026-09-26): `settleSheetEntryThroughAccounts`
+ * puts a receivable's money into the account(s) it landed in, or takes a
+ * payable's out of the account(s) it was paid from, split exactly as an office
+ * expense is. `settleSheetEntry` is kept for money that never touched a company
+ * account (paid in kind, settled before the ledger existed) and says so in the
+ * history. `lib/receivableSheet` holds the arithmetic; `AMOUNT PENDING` is
+ * derived and never stored.
  *
  * Settling part of an entry **adds** to what has been settled and writes the
  * amount, the date and who recorded it into the entry's history, so "Bhatti
@@ -18,11 +22,12 @@ import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth, requireAdmin, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { karachiDayKey } from "@/lib/dates";
-import { money } from "@/lib/ledger";
+import { allocationsToTransactions, checkAllocations, money } from "@/lib/ledger";
 import {
   DEFAULT_PAYABLE_GROUPS,
   DEFAULT_RECEIVABLE_GROUPS,
   normalizeGroups,
+  settlementDirection,
   type LedgerSide,
 } from "@/lib/receivableSheet";
 import { FieldValue } from "firebase-admin/firestore";
@@ -66,6 +71,7 @@ export async function saveSheetEntry(
     if (amount <= 0) throw new UserFacingError("Enter the pending amount.");
     const settled = money(input.settled);
     if (settled < 0) throw new UserFacingError("The amount settled cannot be negative.");
+    if (settled > amount) throw new UserFacingError("The amount settled cannot be more than the pending amount.");
     const group = (input.group ?? "").trim().slice(0, 50) || (side === "PAYABLE" ? DEFAULT_PAYABLE_GROUPS[0] : DEFAULT_RECEIVABLE_GROUPS[0]);
 
     const payload = {
@@ -86,6 +92,16 @@ export async function saveSheetEntry(
     await adminDb.runTransaction(async (t) => {
       const snap = await t.get(ref);
       if (entryId && !snap.exists) throw new UserFacingError("That entry no longer exists.");
+      // Money that went through an account is on that account's statement;
+      // typing the settled figure below it would leave the sheet disagreeing
+      // with the ledger. Deleting the movement from the account un-settles it.
+      const throughAccounts = money(snap.data()?.accountSettled);
+      if (entryId && settled < throughAccounts) {
+        throw new UserFacingError(
+          `Rs ${throughAccounts.toLocaleString("en-PK")} of this was settled through an account. ` +
+            "Remove that movement from the account first, or keep the settled figure at least that much."
+        );
+      }
       const entry = {
         at: new Date().toISOString(),
         action: entryId ? "EDITED" : "CREATED",
@@ -147,11 +163,121 @@ export async function settleSheetEntry(
           byUid: auth.uid,
           byName: auth.name ?? auth.email ?? null,
           amount,
-          detail: [dayOrNull(input.dayKey) ?? karachiDayKey(), (input.note ?? "").trim()].filter(Boolean).join(" · "),
+          detail: [dayOrNull(input.dayKey) ?? karachiDayKey(), "no account", (input.note ?? "").trim()].filter(Boolean).join(" · "),
         }),
       });
       return { settled, pending: Math.round((owed - settled) * 100) / 100 };
     });
+  });
+}
+
+/**
+ * Settles part or all of an entry **through the accounts**: a receivable's
+ * money lands in the account(s) named, a payable's leaves them.
+ *
+ * One Firestore transaction re-reads the entry, so a double click or two people
+ * settling at once cannot take it past what is pending, and writes every leg
+ * with the entry's new figures. The legs are `sourceModule: RECEIVABLE`,
+ * `type: LOAN`, so the account statement names the person and opens back to
+ * the entry, and no income or spending reading counts a debt coming home.
+ */
+export async function settleSheetEntryThroughAccounts(
+  token: string,
+  entryId: string,
+  input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string | null; note?: string | null }
+): Promise<ActionResult<{ settled: number; pending: number; posted: number; fullyPaid: boolean }>> {
+  return runAction("settleSheetEntryThroughAccounts", async () => {
+    const auth = await requireFinance(token);
+    const allocations = (input.allocations ?? [])
+      .map((line) => ({ accountId: (line.accountId ?? "").trim(), amount: money(line.amount) }))
+      .filter((line) => line.accountId);
+    if (allocations.length === 0) throw new UserFacingError("Choose at least one account.");
+    const dayKey = dayOrNull(input.dayKey) ?? karachiDayKey();
+    const note = (input.note ?? "").trim() || null;
+    const groupId = adminDb.collection("transactions").doc().id;
+    const ref = adminDb.collection(ENTRIES).doc(entryId);
+
+    const result = await adminDb.runTransaction(async (t) => {
+      const snap = await t.get(ref);
+      if (!snap.exists) throw new UserFacingError("That entry no longer exists.");
+      const data = snap.data()!;
+      const side: LedgerSide = data.side === "PAYABLE" ? "PAYABLE" : "RECEIVABLE";
+      const owed = money(data.amount);
+      const before = money(data.settled);
+
+      // The ledger's own check: nothing over what is pending, no account twice.
+      const check = checkAllocations(owed, allocations, before);
+      if (!check.valid) throw new UserFacingError(check.errors[0]);
+
+      const accountSnaps = await Promise.all(allocations.map((a) => t.get(adminDb.collection("accounts").doc(a.accountId))));
+      for (const account of accountSnaps) {
+        if (!account.exists) throw new UserFacingError("One of those accounts no longer exists.");
+        if (account.data()?.status === "ARCHIVED") {
+          throw new UserFacingError(`${account.data()?.name ?? "That account"} is archived and cannot be used.`);
+        }
+      }
+
+      const name = String(data.name ?? "").trim() || "Unnamed";
+      const legs = allocationsToTransactions({
+        allocations,
+        direction: settlementDirection(side),
+        type: "LOAN",
+        dayKey,
+        sourceModule: "RECEIVABLE",
+        sourceId: entryId,
+        sourceLabel: side === "PAYABLE" ? `Paid back — ${name}` : `Received — ${name}`,
+        groupId,
+        createdByUid: auth.uid,
+        note,
+      });
+      for (const leg of legs) {
+        const { idempotencyKey, ...row } = leg;
+        t.create(adminDb.collection("transactions").doc(), {
+          ...row,
+          idempotencyKey,
+          createdByName: auth.name ?? auth.email ?? null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      const settled = money(before + check.allocated);
+      t.update(ref, {
+        settled,
+        accountSettled: money(money(data.accountSettled) + check.allocated),
+        updatedAt: FieldValue.serverTimestamp(),
+        history: FieldValue.arrayUnion({
+          at: new Date().toISOString(),
+          action: side === "PAYABLE" ? "PAID_BACK" : "RECEIVED",
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          amount: check.allocated,
+          groupId,
+          allocations,
+          detail: [dayKey, note].filter(Boolean).join(" · "),
+        }),
+      });
+      return {
+        settled,
+        pending: Math.max(0, Math.round((owed - settled) * 100) / 100),
+        posted: legs.length,
+        fullyPaid: settled >= owed,
+        side,
+      };
+    });
+
+    // The balance caches, by increment — no reads. Outside the transaction for
+    // the reason `payFromAccounts` gives: a stale cache is a display problem, a
+    // refused settlement is a real one.
+    const sign = settlementDirection(result.side) === "IN" ? 1 : -1;
+    await Promise.all(
+      allocations.map((line) =>
+        adminDb
+          .collection("accounts")
+          .doc(line.accountId)
+          .update({ cachedBalance: FieldValue.increment(Math.round(sign * line.amount * 100) / 100) })
+      )
+    );
+    return { settled: result.settled, pending: result.pending, posted: result.posted, fullyPaid: result.fullyPaid };
   });
 }
 

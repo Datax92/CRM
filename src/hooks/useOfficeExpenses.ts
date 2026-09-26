@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   collection,
   query,
@@ -6,10 +6,10 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-// Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
-import { describeFirestoreError } from './useLeads';
+import { describeLiveError } from './useLeads';
+import { useLive } from './useLive';
+import { ALL_EXPENSES_KEY, allExpensesQuery } from './useFinancials';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import {
   normalizeExpenseStatus,
@@ -40,37 +40,40 @@ export function useOfficeExpenses(
   /** An HR manager's own uid. Absent means the admin's unscoped read. */
   mineOnly?: string | null
 ) {
-  const [state, setState] = useState<{ expenses: OfficeExpense[]; error: string | null } | null>(
-    null
-  );
   const demoState = useDemoState();
 
-  useEffect(() => {
-    if (IS_DEMO || !enabled) return;
+  /*
+    **Shared.** The admin's read is the same listener the income figures hold
+    (`ALL_EXPENSES_KEY`), and an HR manager's is shared by every screen that
+    asks for it — so moving between Accounts pages no longer re-reads the
+    ledger (read meter, 2026-09-26: ~50 reads per Accounts page opened).
+  */
+  const buildMine = useCallback(
+    () =>
+      query(
+        collection(db, 'expenses'),
+        where('addedByUid', '==', mineOnly ?? ''),
+        orderBy('dayKey', 'desc'),
+        limit(1000)
+      ),
+    [mineOnly]
+  );
+  const live = useLive(
+    mineOnly ? `expenses:mine:${mineOnly}` : ALL_EXPENSES_KEY,
+    mineOnly ? buildMine : allExpensesQuery,
+    !IS_DEMO && enabled,
+    describeLiveError
+  );
 
-    const unsubscribe = onSnapshot(
-      mineOnly
-        ? query(
-            collection(db, 'expenses'),
-            where('addedByUid', '==', mineOnly),
-            orderBy('dayKey', 'desc'),
-            limit(1000)
-          )
-        : query(collection(db, 'expenses'), orderBy('dayKey', 'desc'), limit(1000)),
-      (snap) => {
-        setState({
-          expenses: snap.docs.map((doc) => mapExpense(doc.id, doc.data())),
-          error: null,
-        });
-      },
-      (err) => {
-        console.error('[useOfficeExpenses]', err);
-        setState({ expenses: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [enabled, mineOnly]);
+  // Newest first by `dayKey`, which is what the ledger shows; the shared
+  // query is ordered by `date`, which agrees to the day.
+  const expenses = useMemo(
+    () =>
+      (live.rows as Array<{ id: string } & Record<string, unknown>>)
+        .map((row) => mapExpense(row.id, row))
+        .sort((a, b) => (a.dayKey < b.dayKey ? 1 : a.dayKey > b.dayKey ? -1 : 0)),
+    [live.rows]
+  );
 
   const demoExpenses = useMemo(
     () => (demoState.expenses ?? []).map((row) => mapExpense(row.id, row as unknown as Record<string, unknown>)),
@@ -82,9 +85,9 @@ export function useOfficeExpenses(
   }
 
   return {
-    expenses: state?.expenses ?? [],
-    loading: enabled && state === null,
-    error: state?.error ?? null,
+    expenses: enabled ? expenses : [],
+    loading: enabled && live.loading,
+    error: enabled ? live.error : null,
   };
 }
 

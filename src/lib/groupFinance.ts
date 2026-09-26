@@ -18,9 +18,24 @@
  * | column | source |
  * |---|---|
  * | Total income | **every income account, automatically** — posted ledger movements from Marketing Income, Car Sale, StateLife and Investment with X, plus manual income put into an account |
+ * | Deal profit | every closed deal dated in the month — the money it put in the company's hands, the pot Profit Distribution splits (`readPayoutSource`), owner 2026-09-26 |
  * | Personal expense | Personal Expenses dated in the month |
  * | Office expense | approved Office Expenses dated in the month |
- * | Committee / Kist, Investor, Daddy Media, Misc… | lines added to the month by hand, one field each — **fields can be added, renamed and removed** |
+ * | Committee / Kist, Investor, Daddy Media, Misc… | **the accounts linked to the field**, plus lines added to the month by hand — fields can be added, renamed, removed and linked |
+ * | Other account spending | money spent straight out of any account no field is linked to — committee spendings, salaries, a manual expense |
+ *
+ * **Every account is on the sheet** (owner, 2026-09-26). A field can be linked
+ * to accounts, by name or by kind: spending out of those accounts fills that
+ * field, income into them fills it if it is an income field. Committee / Kist
+ * starts linked to every Committee account and Investor to every Investment
+ * account. Whatever no field claims lands in *Total Income* or *Other account
+ * spending*, so a rupee that left an account is never missing from the year.
+ * Before this, 11 manual spendings worth Rs 1,685,000 were on no column at all.
+ *
+ * **Every figure opens onto the records behind it** (`lines`, one per record,
+ * each tagged with its column), and every one of those lines can be corrected
+ * on the sheet (`incomeEdits`, keyed by the line's id) without touching the
+ * record itself.
  *
  * **Spending is read from the obligation records, income from the ledger.**
  * That is the ledger's own rule (`lib/ledger`): an expense is 50,000 however it
@@ -60,25 +75,56 @@ export interface GroupField {
   type: GroupFieldType;
   /** Removed from the sheet. Its lines are kept, and it can be brought back. */
   archived?: boolean;
+  /** Accounts whose money fills this field, by id. */
+  accountIds?: string[];
+  /** …and by kind (`COMMITTEE`, `INVESTMENT`…), so an account added later is picked up. */
+  accountKinds?: string[];
 }
 
 /** The three columns the modules fill. Their labels are editable; they cannot be removed. */
-export const BUILTIN_COLUMNS = ['income', 'personal', 'office'] as const;
+export const BUILTIN_COLUMNS = ['income', 'deals', 'personal', 'office', 'accounts'] as const;
 export type BuiltinColumn = (typeof BUILTIN_COLUMNS)[number];
 
 export const DEFAULT_BUILTIN_LABELS: Record<BuiltinColumn, string> = {
   income: 'Total Income',
+  deals: 'Deal Profit',
   personal: 'Personal Expense',
   office: 'Office Expense',
+  accounts: 'Other Account Spending',
+};
+
+/**
+ * Which accounts a field starts linked to. Read only when a saved field has no
+ * link at all — once the owner saves the field, what they chose wins, including
+ * choosing none.
+ */
+export const DEFAULT_FIELD_LINKS: Record<string, { accountKinds: string[] }> = {
+  committee_kist: { accountKinds: ['COMMITTEE'] },
+  investor: { accountKinds: ['INVESTMENT'] },
 };
 
 /** The owner's sheet's own hand-filled columns, in its order. */
 export const DEFAULT_GROUP_FIELDS: GroupField[] = [
-  { key: 'committee_kist', label: 'Committee / Kist', type: 'EXPENSE' },
-  { key: 'investor', label: 'Investor', type: 'EXPENSE' },
+  { key: 'committee_kist', label: 'Committee / Kist', type: 'EXPENSE', accountKinds: ['COMMITTEE'] },
+  { key: 'investor', label: 'Investor', type: 'EXPENSE', accountKinds: ['INVESTMENT'] },
   { key: 'daddy_media', label: 'Daddy Media', type: 'EXPENSE' },
   { key: 'misc', label: 'Misc / Plot / Tour', type: 'EXPENSE' },
 ];
+
+/** The live field of this type that claims an account, if any. First link wins. */
+export function fieldForAccount(
+  fields: readonly GroupField[],
+  type: GroupFieldType,
+  accountId: string,
+  accountKind: string | null | undefined
+): GroupField | null {
+  const live = fields.filter((field) => !field.archived && field.type === type);
+  return (
+    live.find((field) => field.accountIds?.includes(accountId)) ??
+    live.find((field) => Boolean(accountKind) && field.accountKinds?.includes(accountKind as string)) ??
+    null
+  );
+}
 
 export const MAX_GROUP_FIELDS = 20;
 
@@ -102,6 +148,7 @@ export const INCOME_SOURCE_LABELS: Record<string, string> = {
   STATELIFE: 'StateLife',
   INVESTMENT_WITH_X: 'Investment with X',
   MANUAL: 'Added to an account',
+  DEAL: 'Closed deal',
 };
 
 export interface LedgerRowInput {
@@ -115,6 +162,7 @@ export interface LedgerRowInput {
   sourceLabel?: string | null;
   note?: string | null;
   status?: string;
+  reversalOf?: string | null;
 }
 
 /** Whether a ledger row is income, as the group sheets count it. */
@@ -124,7 +172,60 @@ export function isIncomeMovement(txn: LedgerRowInput): boolean {
   // company's own money going round — only the round's net profit earns.
   if (txn.type === 'INVESTMENT') return false;
   if ((INCOME_SOURCE_MODULES as readonly string[]).includes(txn.sourceModule)) return true;
-  return txn.sourceModule === 'MANUAL' && txn.type === 'INCOME' && txn.direction === 'IN';
+  // A reversal of manual income is an OUT typed INCOME; counted, signed, so the two cancel.
+  return txn.sourceModule === 'MANUAL' && txn.type === 'INCOME' && (txn.direction === 'IN' || Boolean(txn.reversalOf));
+}
+
+/**
+ * Spending straight out of an account, signed — `null` when the row is not
+ * spending the group sheet reads from the ledger.
+ *
+ * Office and personal expenses are left out here because they are read from
+ * their own records (an unpaid bill is still spent). Transfers, investment
+ * capital, income and a debt settling (`LOAN`) are not spending at all. What
+ * remains is a committee spending, a salary, a manual expense — and a
+ * reversal of one, which comes back negative so the two cancel.
+ */
+export function accountSpendOf(txn: LedgerRowInput): number | null {
+  if (txn.status && txn.status !== 'POSTED') return null;
+  if (txn.type !== 'EXPENSE') return null;
+  if (txn.sourceModule === 'OFFICE_EXPENSE' || txn.sourceModule === 'PERSONAL_EXPENSE') return null;
+  if (isIncomeMovement(txn)) return null;
+  const amount = num(txn.amount);
+  return txn.direction === 'OUT' ? amount : -amount;
+}
+
+/** A closed deal, as the group sheet counts it. */
+export interface DealRowInput {
+  id: string;
+  dayKey: string;
+  /** The money the deal put in the company's hands — the pot the cut is paid out of. */
+  amount: number;
+  label: string;
+}
+
+/**
+ * A closed deal as a sheet row, given the day it is dated (`dealDate`, else
+ * when it was entered — the deals screen's rule). One reader for the screen and
+ * the closing, so the two cannot count a deal differently.
+ */
+export function readDealRow(raw: Record<string, unknown>, dayKey: string | null, amount: number): DealRowInput | null {
+  if (!dayKey) return null;
+  const customer = (raw.customer as { name?: unknown } | undefined)?.name;
+  const service = raw.serviceDescription;
+  return {
+    id: String(raw.id ?? ''),
+    dayKey,
+    // The caller passes `readPayoutSource` (`lib/dealAmounts`, not imported
+    // here so the raw test loader can run this file): the down payment on a
+    // priced deal, the commission on a lump sum, the remaining on instalments.
+    // Not `received − payable`, which on a priced deal is the plot's price.
+    amount: roundMoney(num(amount)),
+    label:
+      (typeof customer === 'string' && customer.trim()) ||
+      (typeof service === 'string' && service.trim()) ||
+      'Closed deal',
+  };
 }
 
 export interface IncomeEdit {
@@ -144,6 +245,32 @@ export interface IncomeLine {
   /** Signed: a car sold at a loss is a negative line. */
   auto: number;
   /** After any edit. */
+  amount: number;
+  edited: boolean;
+  note: string | null;
+  /** Which column of the sheet this line fills. */
+  columnKey: string;
+}
+
+export type SheetLineKind = 'INCOME' | 'DEAL' | 'ACCOUNT' | 'OFFICE' | 'PERSONAL' | 'ADDED';
+
+/**
+ * One record behind one figure on the sheet — what a click on a cell lists.
+ *
+ * `id` is what a correction is stored against: the ledger row's id, or the
+ * record's id prefixed by its kind (`deal_`, `office_`, `personal_`), so no two
+ * kinds can collide. An `ADDED` line is the month's own hand line and is
+ * edited directly rather than corrected.
+ */
+export interface SheetLine {
+  id: string;
+  kind: SheetLineKind;
+  columnKey: string;
+  label: string;
+  /** The account, category or source — the second line of the row. */
+  sub: string | null;
+  dayKey: string;
+  auto: number;
   amount: number;
   edited: boolean;
   note: string | null;
@@ -198,6 +325,9 @@ export interface ExpenseRowInput {
   amount: number;
   /** Office expenses only. Pending and rejected do not count as spent. */
   status?: string | null;
+  /** What to call it on the sheet's detail. */
+  label?: string | null;
+  category?: string | null;
 }
 
 export interface ColumnValue {
@@ -214,7 +344,10 @@ export interface ColumnValue {
 
 export interface GroupMonthFigures {
   monthKey: string;
+  /** Income and deal lines — what the income side of the month is made of. */
   incomeLines: IncomeLine[];
+  /** Every record behind every column, in date order. */
+  lines: SheetLine[];
   columns: ColumnValue[];
   /** Total income: the income column plus every income field. */
   income: number;
@@ -281,10 +414,12 @@ export function columnDefinitions(
   const label = (key: BuiltinColumn) => (labels[key] ?? '').trim() || DEFAULT_BUILTIN_LABELS[key];
   return [
     { key: 'income', label: label('income'), type: 'INCOME' as const, builtin: true },
+    { key: 'deals', label: label('deals'), type: 'INCOME' as const, builtin: true },
     ...live.filter((f) => f.type === 'INCOME').map((f) => ({ key: f.key, label: f.label, type: f.type, builtin: false })),
     { key: 'personal', label: label('personal'), type: 'EXPENSE' as const, builtin: true },
     { key: 'office', label: label('office'), type: 'EXPENSE' as const, builtin: true },
     ...live.filter((f) => f.type === 'EXPENSE').map((f) => ({ key: f.key, label: f.label, type: f.type, builtin: false })),
+    { key: 'accounts', label: label('accounts'), type: 'EXPENSE' as const, builtin: true },
   ];
 }
 
@@ -299,8 +434,11 @@ export function computeGroupMonth(input: {
   monthKey: string;
   transactions: readonly LedgerRowInput[];
   accountNames: ReadonlyMap<string, string>;
+  /** Account id → kind, for fields linked by kind. Absent reads as no kind. */
+  accountKinds?: ReadonlyMap<string, string>;
   officeExpenses: readonly ExpenseRowInput[];
   personalExpenses: readonly ExpenseRowInput[];
+  deals?: readonly DealRowInput[];
   month: GroupMonthDoc | null;
   fields: readonly GroupField[];
   labels?: Partial<Record<BuiltinColumn, string>>;
@@ -308,54 +446,115 @@ export function computeGroupMonth(input: {
   const { monthKey } = input;
   const month = input.month ?? EMPTY_MONTH;
   const inMonth = (dayKey: string) => monthOfDayKey(dayKey) === monthKey;
+  const accountName = (id: string) => input.accountNames.get(id) ?? 'A deleted account';
+  const kindOf = (id: string) => input.accountKinds?.get(id) ?? null;
 
-  const incomeLines: IncomeLine[] = input.transactions
-    .filter((txn) => inMonth(txn.dayKey) && isIncomeMovement(txn))
-    .map((txn) => {
+  /** Applies the month's correction to a line, if it has one. */
+  const corrected = (id: string, auto: number, fallbackNote: string | null) => {
+    const edit = month.incomeEdits?.[id];
+    const edited = Boolean(edit) && Number.isFinite(edit!.amount);
+    return { auto, amount: edited ? roundMoney(edit!.amount) : auto, edited, note: edit?.note ?? fallbackNote };
+  };
+
+  const incomeLines: IncomeLine[] = [];
+  const lines: SheetLine[] = [];
+
+  for (const txn of input.transactions) {
+    if (!inMonth(txn.dayKey)) continue;
+    if (isIncomeMovement(txn)) {
       const auto = roundMoney(txn.direction === 'OUT' ? -num(txn.amount) : num(txn.amount));
-      const edit = month.incomeEdits?.[txn.id];
-      const edited = Boolean(edit) && Number.isFinite(edit!.amount);
-      return {
+      const columnKey = fieldForAccount(input.fields, 'INCOME', txn.accountId, kindOf(txn.accountId))?.key ?? 'income';
+      const figures = corrected(txn.id, auto, txn.note ?? null);
+      const label = (txn.sourceLabel ?? '').trim() || INCOME_SOURCE_LABELS[txn.sourceModule] || 'Income';
+      incomeLines.push({
         id: txn.id,
-        label: (txn.sourceLabel ?? '').trim() || INCOME_SOURCE_LABELS[txn.sourceModule] || 'Income',
+        label,
         accountId: txn.accountId,
-        accountName: input.accountNames.get(txn.accountId) ?? 'A deleted account',
+        accountName: accountName(txn.accountId),
         sourceModule: txn.sourceModule,
         dayKey: txn.dayKey,
-        auto,
-        amount: edited ? roundMoney(edit!.amount) : auto,
-        edited,
-        note: edit?.note ?? txn.note ?? null,
-      };
-    })
-    .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
+        columnKey,
+        ...figures,
+      });
+      lines.push({ id: txn.id, kind: 'INCOME', columnKey, label, sub: accountName(txn.accountId), dayKey: txn.dayKey, ...figures });
+      continue;
+    }
+    const spend = accountSpendOf(txn);
+    if (spend === null) continue;
+    const columnKey = fieldForAccount(input.fields, 'EXPENSE', txn.accountId, kindOf(txn.accountId))?.key ?? 'accounts';
+    lines.push({
+      id: txn.id,
+      kind: 'ACCOUNT',
+      columnKey,
+      label: (txn.sourceLabel ?? '').trim() || 'Spent from the account',
+      sub: accountName(txn.accountId),
+      dayKey: txn.dayKey,
+      ...corrected(txn.id, roundMoney(spend), txn.note ?? null),
+    });
+  }
 
-  const autoByKey: Record<string, number> = {
-    income: roundMoney(incomeLines.reduce((sum, line) => sum + line.amount, 0)),
-    personal: 0,
-    office: 0,
-  };
+  for (const deal of input.deals ?? []) {
+    if (!inMonth(deal.dayKey)) continue;
+    const id = `deal_${deal.id}`;
+    const figures = corrected(id, roundMoney(num(deal.amount)), null);
+    incomeLines.push({
+      id,
+      label: deal.label,
+      accountId: '',
+      accountName: 'Closed deal',
+      sourceModule: 'DEAL',
+      dayKey: deal.dayKey,
+      columnKey: 'deals',
+      ...figures,
+    });
+    lines.push({ id, kind: 'DEAL', columnKey: 'deals', label: deal.label, sub: 'Closed deal · money in, before the cut', dayKey: deal.dayKey, ...figures });
+  }
 
   let officeCount = 0;
   for (const expense of input.officeExpenses) {
     if (!inMonth(expense.dayKey)) continue;
     // An absent status predates approvals and reads as approved.
     if (expense.status === 'PENDING' || expense.status === 'REJECTED') continue;
-    autoByKey.office += num(expense.amount);
     officeCount += 1;
+    const id = `office_${expense.id}`;
+    lines.push({
+      id, kind: 'OFFICE', columnKey: 'office',
+      label: (expense.label ?? '').trim() || 'Office expense',
+      sub: expense.category ?? null,
+      dayKey: expense.dayKey,
+      ...corrected(id, roundMoney(num(expense.amount)), null),
+    });
   }
   let personalCount = 0;
   for (const expense of input.personalExpenses) {
     if (!inMonth(expense.dayKey)) continue;
-    autoByKey.personal += num(expense.amount);
     personalCount += 1;
+    const id = `personal_${expense.id}`;
+    lines.push({
+      id, kind: 'PERSONAL', columnKey: 'personal',
+      label: (expense.label ?? '').trim() || 'Personal expense',
+      sub: expense.category ?? null,
+      dayKey: expense.dayKey,
+      ...corrected(id, roundMoney(num(expense.amount)), null),
+    });
   }
-  autoByKey.office = roundMoney(autoByKey.office);
-  autoByKey.personal = roundMoney(autoByKey.personal);
 
+  const fieldLabel = new Map(input.fields.map((field) => [field.key, field.label]));
   for (const entry of month.entries ?? []) {
-    autoByKey[entry.fieldKey] = roundMoney((autoByKey[entry.fieldKey] ?? 0) + num(entry.amount));
+    const amount = roundMoney(num(entry.amount));
+    lines.push({
+      id: entry.id, kind: 'ADDED', columnKey: entry.fieldKey,
+      label: entry.note || fieldLabel.get(entry.fieldKey) || 'Added line',
+      sub: 'Added by hand', dayKey: entry.dayKey,
+      auto: amount, amount, edited: false, note: entry.note,
+    });
   }
+
+  incomeLines.sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
+  lines.sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
+
+  const autoByKey: Record<string, number> = {};
+  for (const line of lines) autoByKey[line.columnKey] = roundMoney((autoByKey[line.columnKey] ?? 0) + line.amount);
 
   const columns: ColumnValue[] = columnDefinitions(input.fields, input.labels).map((definition) => {
     const auto = autoByKey[definition.key] ?? 0;
@@ -370,6 +569,7 @@ export function computeGroupMonth(input: {
   return {
     monthKey,
     incomeLines,
+    lines,
     columns,
     income,
     spent,
@@ -502,8 +702,21 @@ export function fieldKeyFor(label: string, taken: Iterable<string>): string {
 }
 
 /** Fields as saved: labels trimmed, blanks dropped, keys kept, new keys generated. */
+/** An id or kind list as saved: strings only, trimmed, de-duplicated, capped. */
+function cleanList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return [...new Set(raw.map((value) => String(value ?? '').trim()).filter((value) => /^[A-Za-z0-9_-]{1,80}$/.test(value)))].slice(0, 50);
+}
+
 export function normalizeGroupFields(
-  input: ReadonlyArray<{ key?: string | null; label?: string | null; type?: string | null; archived?: boolean | null }>
+  input: ReadonlyArray<{
+    key?: string | null;
+    label?: string | null;
+    type?: string | null;
+    archived?: boolean | null;
+    accountIds?: unknown;
+    accountKinds?: unknown;
+  }>
 ): GroupField[] {
   const out: GroupField[] = [];
   const taken = new Set<string>();
@@ -514,7 +727,19 @@ export function normalizeGroupFields(
       raw.key && /^[a-z0-9_]+$/.test(raw.key) && !taken.has(raw.key) && !(BUILTIN_COLUMNS as readonly string[]).includes(raw.key);
     const key = keyOk ? (raw.key as string) : fieldKeyFor(label, taken);
     taken.add(key);
-    out.push({ key, label, type: raw.type === 'INCOME' ? 'INCOME' : 'EXPENSE', ...(raw.archived ? { archived: true } : {}) });
+    const accountIds = cleanList(raw.accountIds);
+    // A field never saved with links starts with its default ones; once saved,
+    // what was chosen stands — an empty list included.
+    const accountKinds =
+      cleanList(raw.accountKinds) ?? (accountIds === undefined ? DEFAULT_FIELD_LINKS[key]?.accountKinds : undefined);
+    out.push({
+      key,
+      label,
+      type: raw.type === 'INCOME' ? 'INCOME' : 'EXPENSE',
+      ...(raw.archived ? { archived: true } : {}),
+      ...(accountIds ? { accountIds } : {}),
+      ...(accountKinds ? { accountKinds: [...accountKinds] } : {}),
+    });
     if (out.length >= MAX_GROUP_FIELDS) break;
   }
   return out;

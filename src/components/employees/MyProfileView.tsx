@@ -54,7 +54,7 @@ export function MyProfileView({ scope }: { scope: "employee" | "subadmin" }) {
   // An employee reads `closedDeals where userId == me`; a manager their team's,
   // which includes deals on leads assigned to themselves.
   const { deals: myDeals } = useMyDeals(ready && !isManager ? uid : undefined, ALL_TIME);
-  const { allDeals: teamDeals } = useFinancials(ALL_TIME, ready && isManager, { role: scope, uid });
+  const { allDeals: teamDeals } = useFinancials(ALL_TIME, ready && isManager, { role: scope, uid }, false);
   const deals = isManager ? teamDeals : myDeals;
   const { employees: teamRoster } = useEmployees(ready && isManager, { role: scope, uid });
 

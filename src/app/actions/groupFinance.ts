@@ -21,6 +21,8 @@ import { adminDb } from "@/lib/firebase/server";
 import { verifyAuth, requireAdmin, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
 import { money } from "@/lib/ledger";
+import { karachiDayKey } from "@/lib/dates";
+import { readPayoutSource } from "@/lib/dealAmounts";
 import {
   BUILTIN_COLUMNS,
   closingFrom,
@@ -28,6 +30,7 @@ import {
   isMonthKey,
   monthLabel,
   normalizeGroupFields,
+  readDealRow,
   readGroupConfig,
   readGroupMonth,
   type BuiltinColumn,
@@ -292,12 +295,15 @@ export async function closeGroupMonth(
     const first = `${monthKey}-01`;
     const last = `${monthKey}-31`;
 
-    const [config, transactions, accounts, office, personal] = await Promise.all([
+    const [config, transactions, accounts, office, personal, deals] = await Promise.all([
       loadConfig(),
       adminDb.collection("transactions").where("dayKey", ">=", first).where("dayKey", "<=", last).get(),
       adminDb.collection("accounts").get(),
       adminDb.collection("expenses").where("dayKey", ">=", first).where("dayKey", "<=", last).get(),
       adminDb.collection("personalExpenses").where("dayKey", ">=", first).where("dayKey", "<=", last).get(),
+      // Every deal: a deal is dated by `dealDate` or `enteredAt`, whichever it
+      // has, and there are a few dozen — cheaper than two range queries.
+      adminDb.collection("closedDeals").get(),
     ]);
 
     const closing = await adminDb.runTransaction(async (t) => {
@@ -309,17 +315,28 @@ export async function closeGroupMonth(
         monthKey,
         transactions: transactions.docs.map((doc) => ({ id: doc.id, ...doc.data() }) as LedgerRowInput),
         accountNames: new Map(accounts.docs.map((doc) => [doc.id, (doc.data().name as string) ?? "Account"])),
+        accountKinds: new Map(accounts.docs.map((doc) => [doc.id, String(doc.data().kind ?? "")])),
         officeExpenses: office.docs.map((doc) => ({
           id: doc.id,
           dayKey: doc.data().dayKey as string,
           amount: money(doc.data().amount),
           status: (doc.data().status as string | undefined) ?? null,
+          label: (doc.data().title as string | undefined) ?? null,
+          category: (doc.data().category as string | undefined) ?? null,
         })),
         personalExpenses: personal.docs.map((doc) => ({
           id: doc.id,
           dayKey: doc.data().dayKey as string,
           amount: money(doc.data().amount),
+          label: (doc.data().title as string | undefined) ?? null,
+          category: (doc.data().category as string | undefined) ?? null,
         })),
+        deals: deals.docs.flatMap((doc) => {
+          const data = doc.data();
+          const at = (data.dealDate ?? data.enteredAt)?.toDate?.() as Date | undefined;
+          const row = readDealRow({ id: doc.id, ...data }, at ? karachiDayKey(at) : null, readPayoutSource(data));
+          return row ? [row] : [];
+        }),
         month,
         fields: config.fields,
         labels: config.labels,

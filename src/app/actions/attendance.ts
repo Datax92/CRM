@@ -37,6 +37,7 @@ import {
 } from "@/lib/attendancePolicy";
 import { roleTitle } from "@/lib/constants/hierarchy";
 import { cached, docKey } from "@/lib/server/serverCache";
+import { readAttendanceMonth, readRoster } from "@/lib/server/attendanceMonth";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
 
 /**
@@ -1293,20 +1294,22 @@ export async function getTeamAttendance(
       throw new UserFacingError("Pick a start date on or before the end date.");
     }
 
-    const [policy, usersSnap] = await Promise.all([
+    // The roster from the shared minute-long copy Reports and payroll use
+    // (`readRoster`), rather than the whole user collection on every open.
+    const [policy, everyone] = await Promise.all([
       readPolicy(),
-      adminDb.collection("users").get(),
+      readRoster(),
     ]);
 
-    const profiles = new Map(usersSnap.docs.map((doc) => [doc.id, doc.data()]));
+    const profiles = new Map(everyone.map((doc) => [doc.id, doc.data]));
 
     // Managers appear in the report as a name, not a uid — the person reading
     // it thinks in names.
     const nameOf = (uid: string | null | undefined) =>
       uid ? ((profiles.get(uid)?.name as string) ?? null) : null;
 
-    const visible = usersSnap.docs.filter((doc) => {
-      const data = doc.data();
+    const visible = everyone.filter((doc) => {
+      const data = doc.data;
       if (data.role === "admin") return false;
       if (hr) return true;
       // A Sales manager sees their own team, and themselves.
@@ -1321,15 +1324,49 @@ export async function getTeamAttendance(
       throw new UserFacingError("That employee is not on your team.");
     }
 
-    const records = await adminDb
-      .collection("attendance")
-      .where("dayKey", ">=", from)
-      .where("dayKey", "<=", to)
-      .get();
+    /*
+      **Only the attendance of the people being shown** (2026-09-26). This read
+      the whole company's range every time and discarded the rest, so one
+      person's calendar paid for everybody's month — the read meter put this
+      screen at ~270 reads in one walkthrough. One person, or a Sales manager's
+      team, is now asked for by uid, 30 to a query (Firestore's `in` limit), on
+      the `attendance (uid, dayKey)` index that already exists. The whole
+      company — an admin or HR looking at everybody — still reads the range,
+      because that *is* everybody.
+    */
+    const wantedUids = wanted.map((doc) => doc.id);
+    const everybody = hr && !input.uid;
+    // The whole company inside one month — the calendar's usual question —
+    // shares payroll's minute-long copy of that month (`readAttendanceMonth`).
+    const oneMonth = from.slice(0, 7) === to.slice(0, 7);
+    const recordDocs = everybody
+      ? oneMonth
+        ? (await readAttendanceMonth(from.slice(0, 7))).filter(
+            (doc) => String(doc.data.dayKey ?? "") >= from && String(doc.data.dayKey ?? "") <= to
+          )
+        : (
+            await adminDb
+              .collection("attendance")
+              .where("dayKey", ">=", from)
+              .where("dayKey", "<=", to)
+              .get()
+          ).docs.map((doc) => ({ id: doc.id, data: doc.data() }))
+      : (
+          await Promise.all(
+            Array.from({ length: Math.ceil(wantedUids.length / 30) }, (_, index) =>
+              adminDb
+                .collection("attendance")
+                .where("uid", "in", wantedUids.slice(index * 30, index * 30 + 30))
+                .where("dayKey", ">=", from)
+                .where("dayKey", "<=", to)
+                .get()
+            )
+          )
+        ).flatMap((snap) => snap.docs.map((doc) => ({ id: doc.id, data: doc.data() })));
 
     const byUid = new Map<string, TeamAttendanceDay[]>();
-    for (const doc of records.docs) {
-      const data = doc.data();
+    for (const doc of recordDocs) {
+      const data = doc.data;
       const uid = String(data.uid ?? "");
       if (!uid) continue;
 
@@ -1359,7 +1396,7 @@ export async function getTeamAttendance(
     }
 
     const rows: TeamAttendanceRow[] = wanted.map((doc) => {
-      const data = doc.data();
+      const data = doc.data;
       const days = (byUid.get(doc.id) ?? []).sort((a, b) => a.dayKey.localeCompare(b.dayKey));
 
       const count = (status: AttendanceStatus) =>

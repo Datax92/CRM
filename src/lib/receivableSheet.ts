@@ -17,9 +17,15 @@
  * - a **payable** is money *we* owe — borrowed from somebody, for a purpose, to
  *   be returned by a date. `AMOUNT GIVEN` is what has been paid back.
  *
- * **Just a sheet, by the owner's choice**: recording or settling one moves no
- * account. `AMOUNT PENDING` is never typed — it is `amount − settled`, derived
- * on read, so it cannot disagree with the two figures it comes from.
+ * **Settling moves money through the accounts** (owner, 2026-09-26). "Received"
+ * puts the money into the account(s) it landed in and "Pay back" takes it out of
+ * the account(s) it left, with the same split control as an office expense.
+ * The legs are typed `LOAN` — a debt settling is neither income nor spending —
+ * and `accountSettled` records how much of `settled` went through an account,
+ * so the rest (settled before this, or by hand) is still readable as
+ * sheet-only. It was a sheet with no account movement until then.
+ * `AMOUNT PENDING` is never typed — it is `amount − settled`, derived on read,
+ * so it cannot disagree with the two figures it comes from.
  *
  * The blocks ("Official / Unofficial", "Official / Regular") are **groups**,
  * named in a list the owner can extend, rather than two hardcoded tables.
@@ -45,6 +51,8 @@ export interface SheetEntry {
   amount: number;
   /** `AMOUNT RECEIVED` (receivable) or `AMOUNT GIVEN` (payable). */
   settled: number;
+  /** The part of `settled` that moved through an account. Never more than `settled`. */
+  accountSettled: number;
   /** Payables: `RETURN DATE`. */
   returnDayKey: string | null;
   /** Payables: `BORROW PURPOSE`. Receivables: what it was for. */
@@ -122,8 +130,18 @@ export function readSheetEntry(raw: Record<string, unknown>): SheetEntry {
     name: text(raw.name) ?? 'Unnamed',
     amount: round(Number(raw.amount) || 0),
     settled: round(Number(raw.settled) || 0),
+    accountSettled: Math.min(round(Number(raw.settled) || 0), round(Number(raw.accountSettled) || 0)),
     returnDayKey: text(raw.returnDayKey),
     purpose: text(raw.purpose),
     description: text(raw.description),
   };
+}
+
+/**
+ * Which way money moves when an entry settles: a receivable's money comes
+ * **in** to the account it lands in, a payable's goes **out** of the one it is
+ * paid from.
+ */
+export function settlementDirection(side: LedgerSide): 'IN' | 'OUT' {
+  return side === 'PAYABLE' ? 'OUT' : 'IN';
 }

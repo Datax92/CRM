@@ -65,4 +65,8 @@ export function noteWrite(path: string | undefined): void {
   if (!path) return;
   forgetCached(docKey(path));
   if (path.startsWith("users/")) forgetCached("roster:");
+  // Any attendance record written drops every cached month — see
+  // `lib/server/attendanceMonth`. Months, not just the record's own, because a
+  // record's month is in its data, not in its path.
+  if (path.startsWith("attendance/")) forgetCached("attendanceMonth:");
 }

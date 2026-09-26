@@ -12,18 +12,25 @@
  *
  * On the desktop each group is its own sheet block with a TOTAL row, as the
  * workbook lays them out; on the phone every entry is a card carrying every
- * figure. **No account moves** — by the owner's choice this is a record of who
- * owes what, and `AMOUNT PENDING` is derived, never typed.
+ * figure. `AMOUNT PENDING` is derived, never typed.
+ *
+ * **"Received" / "Pay back" moves money through the accounts** (owner,
+ * 2026-09-26), with the same split control Office Expenses pays with
+ * (`PayFromAccounts`): a receivable's money lands in the account(s) chosen, a
+ * payable's leaves them, and both show on those accounts' statements. Money
+ * that never touched a company account can still be recorded on the sheet
+ * only, from the same panel.
  *
  * Everything is editable: every entry, what has been settled, and the group
- * names. "Received" / "Paid back" adds a part payment and keeps it in the
- * entry's history.
+ * names.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useSheetEntries, useSheetGroups } from "@/hooks/useAccountSheets";
+import { useLedger } from "@/hooks/useLedger";
+import { PayFromAccounts } from "./PayFromAccounts";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { formatMoney } from "@/lib/money";
 import { karachiDayKey } from "@/lib/dates";
@@ -39,6 +46,7 @@ import {
 import {
   saveSheetEntry,
   settleSheetEntry,
+  settleSheetEntryThroughAccounts,
   deleteSheetEntry,
   saveSheetGroups,
   importLegacyReceivables,
@@ -84,13 +92,14 @@ export function ReceivablesSheetView() {
   const isMobile = useIsMobile();
   const { entries, loading, error } = useSheetEntries(ready);
   const groups = useSheetGroups(ready);
+  const ledger = useLedger(ready);
 
   const [side, setSide] = useState<LedgerSide>("RECEIVABLE");
   const [groupFilter, setGroupFilter] = useState("ALL");
   const [stateFilter, setStateFilter] = useState<"ALL" | "PENDING" | "SETTLED">("PENDING");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState<{ entry: Entry | null } | null>(null);
-  const [settling, setSettling] = useState<Entry | null>(null);
+  const [settling, setSettling] = useState<{ entry: Entry; sheetOnly: boolean } | null>(null);
   const [deleting, setDeleting] = useState<Entry | null>(null);
   const [editingGroups, setEditingGroups] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -187,7 +196,7 @@ export function ReceivablesSheetView() {
       key: "actions", header: "", align: "right",
       render: (entry) => (
         <>
-          {pendingOf(entry) > 0 && <SheetAction label={payable ? "Record money given back" : "Record money received"} d={ICON.check} tone="good" onClick={() => setSettling(entry)} />}
+          {pendingOf(entry) > 0 && <SheetAction label={payable ? "Record money given back" : "Record money received"} d={ICON.check} tone="good" onClick={() => setSettling({ entry, sheetOnly: false })} />}
           <SheetAction label="Edit" d={ICON.edit} onClick={() => setForm({ entry })} />
           {isAdmin && <SheetAction label="Delete" d={ICON.trash} tone="bad" onClick={() => setDeleting(entry)} />}
         </>
@@ -239,7 +248,7 @@ export function ReceivablesSheetView() {
         />
       ),
       actions: [
-        ...(pendingOf(entry) > 0 ? [{ key: "settle", label: payable ? "Paid back" : "Received", d: ICON.check, tone: "good" as const, onClick: () => setSettling(entry) }] : []),
+        ...(pendingOf(entry) > 0 ? [{ key: "settle", label: payable ? "Paid back" : "Received", d: ICON.check, tone: "good" as const, onClick: () => setSettling({ entry, sheetOnly: false }) }] : []),
         { key: "edit", label: "Edit", d: ICON.edit, tone: "quiet" as const, onClick: () => setForm({ entry }) },
         ...(isAdmin ? [{ key: "delete", label: "Delete", d: ICON.trash, tone: "bad" as const, onClick: () => setDeleting(entry) }] : []),
       ],
@@ -379,10 +388,47 @@ export function ReceivablesSheetView() {
         />
       )}
 
-      {settling && (
-        <SettleForm
-          entry={settling}
+      {settling && !settling.sheetOnly && (
+        <PayFromAccounts
+          open
+          onClose={() => setSettling(null)}
+          onPaid={(text) => setBanner({ ok: true, text })}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
           getIdToken={getIdToken}
+          copy={
+            settling.entry.side === "PAYABLE"
+              ? { title: `Paying back ${settling.entry.name} — from which account?`, full: "Pay back in full", part: "Pay back part", linesTitle: "Paid from", done: "paid back", noun: "payable", settledWord: "given back" }
+              : { title: `Money from ${settling.entry.name} — into which account?`, full: "Received in full", part: "Record part received", linesTitle: "Received into", done: "received", noun: "receivable", settledWord: "received" }
+          }
+          source={{
+            module: "RECEIVABLE",
+            collection: "receivableEntries",
+            id: settling.entry.id,
+            label: settling.entry.name,
+            amount: settling.entry.amount,
+            alreadyPaid: settling.entry.settled,
+            direction: settling.entry.side === "PAYABLE" ? "OUT" : "IN",
+            type: "LOAN",
+          }}
+          submit={async ({ allocations, dayKey, note }) => {
+            const result = await settleSheetEntryThroughAccounts(await getIdToken(), settling.entry.id, { allocations, dayKey, note });
+            return result.ok ? { ok: true, fullyPaid: result.data.fullyPaid, posted: result.data.posted } : { ok: false, error: result.error };
+          }}
+          extra={
+            <button type="button" onClick={() => setSettling({ entry: settling.entry, sheetOnly: true })}
+              style={{ alignSelf: "flex-start", border: "none", background: "transparent", padding: 0, fontSize: 12.5, fontWeight: 700, color: X.deep, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+              Settled outside the company accounts? Record it on the sheet only →
+            </button>
+          }
+        />
+      )}
+
+      {settling && settling.sheetOnly && (
+        <SettleForm
+          entry={settling.entry}
+          getIdToken={getIdToken}
+          onBack={() => setSettling({ entry: settling.entry, sheetOnly: false })}
           onClose={() => setSettling(null)}
           onSaved={(text) => { setSettling(null); setBanner({ ok: true, text }); }}
         />
@@ -401,6 +447,7 @@ export function ReceivablesSheetView() {
       {deleting && (
         <ConfirmPanel title={`Delete ${deleting.name}?`} confirmLabel="Delete" busy={busy} onCancel={() => setDeleting(null)} onConfirm={() => void confirmDelete()}>
           {money(deleting.amount)} · {deleting.dayKey} · {money(pendingOf(deleting))} still pending. This cannot be undone.
+          {deleting.accountSettled > 0 && ` The ${money(deleting.accountSettled)} that moved through accounts stays on those accounts — delete it there if it should not have happened.`}
         </ConfirmPanel>
       )}
     </div>
@@ -495,7 +542,7 @@ function EntryForm({ side, entry, groups, defaultGroup, getIdToken, onClose, onS
           <Field label="Pending amount" hint="What was owed at the start.">
             <input inputMode="decimal" value={values.amount} onChange={(e) => set("amount", e.target.value)} placeholder="8,500" style={field} />
           </Field>
-          <Field label={payable ? "Amount given" : "Amount received"} hint="What has been settled so far.">
+          <Field label={payable ? "Amount given" : "Amount received"} hint={entry?.accountSettled ? `${formatMoney(entry.accountSettled)} of it went through accounts — that part cannot be typed away here.` : "Settled so far outside the accounts. Use Received / Pay back to move money."}>
             <input inputMode="decimal" value={values.settled} onChange={(e) => set("settled", e.target.value)} placeholder="0" style={field} />
           </Field>
           {payable ? (
@@ -530,9 +577,10 @@ function EntryForm({ side, entry, groups, defaultGroup, getIdToken, onClose, onS
   );
 }
 
-function SettleForm({ entry, getIdToken, onClose, onSaved }: {
+function SettleForm({ entry, getIdToken, onBack, onClose, onSaved }: {
   entry: Entry;
   getIdToken: () => Promise<string>;
+  onBack: () => void;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
@@ -565,7 +613,7 @@ function SettleForm({ entry, getIdToken, onClose, onSaved }: {
 
   return (
     <OverlayPanel
-      title={payable ? `Money given back to ${entry.name}` : `Money received from ${entry.name}`}
+      title={payable ? `Given back to ${entry.name} — sheet only` : `Received from ${entry.name} — sheet only`}
       subtitle={`${formatMoney(pending)} pending`}
       icon={<Glyph d={ICON.check} size={18} />}
       maxWidth={480}
@@ -577,7 +625,12 @@ function SettleForm({ entry, getIdToken, onClose, onSaved }: {
         <Field label="Date"><input type="date" value={dayKey} onChange={(e) => setDayKey(e.target.value)} style={field} /></Field>
         <Field label="Note" wide><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" style={field} /></Field>
       </FormGrid>
-      <p style={{ fontSize: 11.5, color: X.faint, lineHeight: 1.5 }}>This records it on the sheet only — no account balance changes.</p>
+      <p style={{ fontSize: 11.5, color: X.faint, lineHeight: 1.5 }}>
+        For money that never touched a company account. No account balance changes.{" "}
+        <button type="button" onClick={onBack} style={{ border: "none", background: "transparent", padding: 0, font: "inherit", fontWeight: 700, color: X.deep, cursor: "pointer" }}>
+          Move it through an account instead
+        </button>
+      </p>
       <FormError text={error} />
     </OverlayPanel>
   );

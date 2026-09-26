@@ -1323,6 +1323,7 @@ import {
 import {
   saveSheetEntry as _saveSheetEntry,
   settleSheetEntry as _settleSheetEntry,
+  settleSheetEntryThroughAccounts as _settleSheetEntryThroughAccounts,
   deleteSheetEntry as _deleteSheetEntry,
   saveSheetGroups as _saveSheetGroups,
   importLegacyReceivables as _importLegacyReceivables,
@@ -1396,6 +1397,13 @@ export async function settleSheetEntry(
   input: { amount: number; dayKey?: string | null; note?: string | null }
 ) {
   return _settleSheetEntry(token, entryId, input);
+}
+export async function settleSheetEntryThroughAccounts(
+  token: string,
+  entryId: string,
+  input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string | null; note?: string | null }
+) {
+  return _settleSheetEntryThroughAccounts(token, entryId, input);
 }
 export async function deleteSheetEntry(token: string, entryId: string) {
   return _deleteSheetEntry(token, entryId);

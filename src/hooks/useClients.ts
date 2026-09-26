@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   collection,
   query,
@@ -6,10 +6,9 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-// Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
-import { describeFirestoreError, useLeads, type FirestoreTimestamp } from './useLeads';
+import { describeLiveError, useLeads, type FirestoreTimestamp } from './useLeads';
+import { useLive } from './useLive';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
 import { countOwnClientLeads, isOwnClientFolder } from '@/lib/clientFolderScope';
 
@@ -84,33 +83,21 @@ export function useClientFolders(
   enabled = true,
   scope?: { role?: string | null; uid?: string }
 ) {
-  const [state, setState] = useState<{ folders: ClientFolder[]; error: string | null } | null>(null);
   const demoState = useDemoState();
 
   const ownerOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
   const ready = enabled && (scope?.role !== 'subadmin' || Boolean(ownerOf));
 
-  useEffect(() => {
-    if (IS_DEMO || !ready) return;
-
-    const unsubscribe = onSnapshot(
+  // Shared and held between screens (`lib/liveCollection`) — it was a listener
+  // of its own on every mount; see `useDataBankFolders` for the measurement.
+  const build = useCallback(
+    () =>
       ownerOf
         ? query(collection(db, 'clientFolders'), where('subAdminUid', '==', ownerOf), orderBy('name'))
         : query(collection(db, 'clientFolders'), orderBy('name')),
-      (snap) => {
-        setState({
-          folders: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolder[],
-          error: null,
-        });
-      },
-      (err) => {
-        console.error('[useClientFolders]', err);
-        setState({ folders: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [ready, ownerOf]);
+    [ownerOf]
+  );
+  const live = useLive(`clientFolders:${ownerOf ?? 'all'}`, build, !IS_DEMO && ready, describeLiveError);
 
   const viewer = { role: scope?.role ?? null, uid: scope?.uid ?? null };
 
@@ -120,9 +107,11 @@ export function useClientFolders(
   }
 
   return {
-    folders: ready ? (state?.folders ?? []).filter((folder) => isOwnClientFolder(folder, viewer)) : [],
-    loading: ready && state === null,
-    error: ready ? (state?.error ?? null) : null,
+    folders: ready
+      ? (live.rows as unknown as ClientFolder[]).filter((folder) => isOwnClientFolder(folder, viewer))
+      : [],
+    loading: ready && live.loading,
+    error: ready ? live.error : null,
   };
 }
 
@@ -148,42 +137,32 @@ export function useClientFolderMembers(
   enabled = true,
   scope?: { role?: string | null; uid?: string }
 ) {
-  const [state, setState] = useState<{
-    key: string;
-    members: ClientFolderMember[];
-    error: string | null;
-  } | null>(null);
   const demoState = useDemoState();
 
   const ownerOf = scope?.role === 'subadmin' ? (scope.uid ?? null) : null;
   // A manager with no uid yet would issue the unscoped query and be refused.
   const waiting = scope?.role === 'subadmin' && !ownerOf;
-  const key = enabled && folderId && !waiting ? `${ownerOf ?? 'admin'}:${folderId}` : 'idle';
+  const active = enabled && Boolean(folderId) && !waiting;
 
-  useEffect(() => {
-    if (IS_DEMO || key === 'idle') return;
-
+  const build = useCallback(() => {
     const clauses = [where('folderId', '==', folderId)];
     if (ownerOf) clauses.push(where('subAdminUid', '==', ownerOf));
+    return query(collection(db, 'clientFolderLeads'), ...clauses, limit(PAGE));
+  }, [folderId, ownerOf]);
+  const live = useLive(
+    `clientFolderMembers:${ownerOf ?? 'admin'}:${folderId ?? ''}`,
+    build,
+    !IS_DEMO && active,
+    describeLiveError
+  );
 
-    const unsubscribe = onSnapshot(
-      query(collection(db, 'clientFolderLeads'), ...clauses, limit(PAGE)),
-      (snap) => {
-        setState({
-          key,
-          members: (snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolderMember[])
-            .sort((a, b) => millisOf(b.addedAt) - millisOf(a.addedAt)),
-          error: null,
-        });
-      },
-      (err) => {
-        console.error('[useClientFolderMembers]', err);
-        setState({ key, members: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [key, folderId, ownerOf]);
+  const members = useMemo(
+    () =>
+      (live.rows as unknown as ClientFolderMember[])
+        .slice()
+        .sort((a, b) => millisOf(b.addedAt) - millisOf(a.addedAt)),
+    [live.rows]
+  );
 
   if (IS_DEMO) {
     return {
@@ -197,11 +176,10 @@ export function useClientFolderMembers(
     };
   }
 
-  const current = state?.key === key ? state : null;
   return {
-    members: current?.members ?? [],
-    loading: key !== 'idle' && current === null,
-    error: current?.error ?? null,
+    members: active ? members : [],
+    loading: active && live.loading,
+    error: active ? live.error : null,
   };
 }
 
@@ -218,52 +196,29 @@ export function useOwnClientMembers(
   enabled = true,
   scope?: { role?: string | null; uid?: string }
 ) {
-  const [state, setState] = useState<{
-    key: string;
-    members: ClientFolderMember[];
-    error: string | null;
-  } | null>(null);
   const demoState = useDemoState();
 
   const role = scope?.role ?? null;
   const uid = scope?.uid ?? null;
-  const key =
-    enabled && uid && (role === 'admin' || role === 'subadmin') ? `${role}:${uid}` : 'idle';
+  const active = enabled && Boolean(uid) && (role === 'admin' || role === 'subadmin');
+  // The admin's rows are the ones written with `subAdminUid: null`, whoever the
+  // admin is, so every admin shares one key.
+  const owner = role === 'subadmin' ? uid : null;
 
-  useEffect(() => {
-    if (IS_DEMO || key === 'idle') return;
-
-    const unsubscribe = onSnapshot(
-      query(
-        collection(db, 'clientFolderLeads'),
-        where('subAdminUid', '==', role === 'subadmin' ? uid : null),
-        limit(2000)
-      ),
-      (snap) => {
-        setState({
-          key,
-          members: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as ClientFolderMember[],
-          error: null,
-        });
-      },
-      (err) => {
-        console.error('[useOwnClientMembers]', err);
-        setState({ key, members: [], error: describeFirestoreError(err) });
-      }
-    );
-
-    return () => unsubscribe();
-  }, [key, role, uid]);
+  const build = useCallback(
+    () => query(collection(db, 'clientFolderLeads'), where('subAdminUid', '==', owner), limit(2000)),
+    [owner]
+  );
+  const live = useLive(`clientFolderLeads:${owner ?? 'admin'}`, build, !IS_DEMO && active, describeLiveError);
 
   if (IS_DEMO) {
-    return { members: key === 'idle' ? [] : (demoState.clientFolderLeads ?? []), loading: false, error: null };
+    return { members: active ? (demoState.clientFolderLeads ?? []) : [], loading: false, error: null };
   }
 
-  const current = state?.key === key ? state : null;
   return {
-    members: current?.members ?? [],
-    loading: key !== 'idle' && current === null,
-    error: current?.error ?? null,
+    members: active ? (live.rows as unknown as ClientFolderMember[]) : [],
+    loading: active && live.loading,
+    error: active ? live.error : null,
   };
 }
 

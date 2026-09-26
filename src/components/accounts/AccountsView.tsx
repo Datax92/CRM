@@ -73,7 +73,7 @@ const SOURCE_LABELS: Record<string, string> = {
   INVESTMENT_WITH_X: "Investment with X",
   STATELIFE: "StateLife",
   CAPITAL_INVESTMENT: "Capital Investment",
-  RECEIVABLE: "Receivable",
+  RECEIVABLE: "Receivable / Payable",
   DEAL_PAYOUT: "Deal Payout",
   PAYROLL: "Payroll",
   TRANSFER: "Transfer",

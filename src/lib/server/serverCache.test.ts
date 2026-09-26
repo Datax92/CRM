@@ -45,3 +45,30 @@ test("a write drops its document, and a profile write drops the rosters", async 
   forgetCached("doc:config/");
   assert.equal(await cached(docKey("config/attendance"), 60_000, load), 6);
 });
+
+test("an attendance write drops every cached month, and only those", async () => {
+  // Payroll and the team calendar share `attendanceMonth:` copies
+  // (`lib/server/attendanceMonth`); a punch or a correction must never leave
+  // either showing the day as it was.
+  forgetCached(""); // the cache is module memory, shared with the tests above
+  let loads = 0;
+  const load = async () => ++loads;
+  await cached("attendanceMonth:2026-09", 60_000, load);
+  await cached("attendanceMonth:2026-08", 60_000, load);
+  await cached("roster:everyone", 60_000, load);
+  noteWrite("attendance/u1_2026-09-26");
+  assert.equal(await cached("attendanceMonth:2026-09", 60_000, load), 4);
+  // The record's month is in its data, not its path, so every month goes.
+  assert.equal(await cached("attendanceMonth:2026-08", 60_000, load), 5);
+  assert.equal(await cached("roster:everyone", 60_000, load), 3); // untouched
+});
+
+test("a write elsewhere leaves the cached months alone", async () => {
+  let loads = 0;
+  const load = async () => ++loads;
+  forgetCached("attendanceMonth:");
+  await cached("attendanceMonth:2026-09", 60_000, load);
+  noteWrite("leads/abc");
+  noteWrite("attendancePeriods/2026-09");
+  assert.equal(await cached("attendanceMonth:2026-09", 60_000, load), 1);
+});

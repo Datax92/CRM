@@ -75,7 +75,7 @@ const GROUP_ICON = "M3 21h18M5 21V7l7-4 7 4v14M9 11h2M13 11h2M9 15h2M13 15h2";
 /** One row of the combined spending sheet. */
 interface SpendRow {
   id: string;
-  kind: "OFFICE" | "PERSONAL" | "LINE";
+  kind: "OFFICE" | "PERSONAL" | "ACCOUNT" | "LINE";
   dayKey: string;
   title: string;
   category: string;
@@ -111,30 +111,34 @@ export function GroupExpenseView() {
 
   const fieldsByKey = useMemo(() => new Map(group.fields.map((field) => [field.key, field])), [group.fields]);
 
+  /**
+   * The spending sheet, read from the month's own lines (`figures.lines`) — the
+   * records Group Income opens onto — so the two screens list the same
+   * spending, corrections included. Spending straight out of an account is on
+   * it now: it was on no screen before.
+   */
   const spendRows = useMemo<SpendRow[]>(() => {
     if (!view) return [];
-    const rows: SpendRow[] = [];
-    for (const expense of group.office) {
-      if (!expense.dayKey.startsWith(monthKey) || expense.status !== "APPROVED") continue;
-      rows.push({ id: `o_${expense.id}`, kind: "OFFICE", dayKey: expense.dayKey, title: expense.title, category: expense.category, amount: expense.amount });
-    }
-    for (const raw of group.personal) {
-      const dayKey = typeof raw.dayKey === "string" ? raw.dayKey : "";
-      if (!dayKey.startsWith(monthKey)) continue;
-      rows.push({
-        id: `p_${raw.id}`, kind: "PERSONAL", dayKey,
-        title: (raw.title as string) || "Personal expense",
-        category: (raw.category as string) || "Other",
-        amount: Number(raw.amount) || 0,
-      });
-    }
-    for (const entry of view.doc?.entries ?? []) {
-      const field = fieldsByKey.get(entry.fieldKey);
-      if (!field || field.type !== "EXPENSE") continue;
-      rows.push({ id: `l_${entry.id}`, kind: "LINE", dayKey: entry.dayKey, title: entry.note || field.label, category: field.label, amount: entry.amount, entry });
-    }
-    return rows.sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
-  }, [view, group.office, group.personal, monthKey, fieldsByKey]);
+    const entriesById = new Map((view.doc?.entries ?? []).map((entry) => [entry.id, entry]));
+    const expenseKeys = new Set(view.figures.columns.filter((column) => column.type === "EXPENSE").map((column) => column.key));
+    const columnLabel = new Map(view.figures.columns.map((column) => [column.key, column.label]));
+    return view.figures.lines
+      .filter((line) => expenseKeys.has(line.columnKey) && (line.kind === "OFFICE" || line.kind === "PERSONAL" || line.kind === "ACCOUNT" || line.kind === "ADDED"))
+      .map<SpendRow>((line) => ({
+        id: line.id,
+        kind: line.kind === "ADDED" ? "LINE" : line.kind === "ACCOUNT" ? "ACCOUNT" : line.kind === "OFFICE" ? "OFFICE" : "PERSONAL",
+        dayKey: line.dayKey,
+        title: line.label,
+        category:
+          line.kind === "ACCOUNT"
+            ? `${line.sub ?? "Account"} → ${columnLabel.get(line.columnKey) ?? ""}`
+            : line.kind === "ADDED"
+              ? (columnLabel.get(line.columnKey) ?? "")
+              : (line.sub ?? "Other"),
+        amount: line.amount,
+        entry: line.kind === "ADDED" ? entriesById.get(line.id) : undefined,
+      }));
+  }, [view]);
 
   const incomeEntries = useMemo(
     () => (view?.doc?.entries ?? []).filter((entry) => fieldsByKey.get(entry.fieldKey)?.type === "INCOME"),
@@ -178,7 +182,9 @@ export function GroupExpenseView() {
     hint: column.overridden ? `edited · auto ${money(column.auto)}` : column.key === "office" ? `${figures.officeCount} expenses` : column.key === "personal" ? `${figures.personalCount} expenses` : null,
   }));
 
-  const kindLabel = (row: SpendRow) => (row.kind === "OFFICE" ? "Office" : row.kind === "PERSONAL" ? "Personal" : "Added");
+  const kindLabel = (row: SpendRow) => (row.kind === "OFFICE" ? "Office" : row.kind === "PERSONAL" ? "Personal" : row.kind === "ACCOUNT" ? "Account" : "Added");
+  const recordHref = (row: SpendRow) =>
+    row.kind === "OFFICE" ? "/admin/accounts/office-expenses" : row.kind === "PERSONAL" ? "/admin/accounts/personal-expense" : "/admin/accounts";
 
   const spendColumns: SheetColumn<SpendRow>[] = [
     { key: "date", header: "Date", render: (row) => row.dayKey },
@@ -186,7 +192,7 @@ export function GroupExpenseView() {
     {
       key: "type", header: "Sheet",
       render: (row) => {
-        const tone = row.kind === "OFFICE" ? TONE.warn : row.kind === "PERSONAL" ? TONE.bad : TONE.good;
+        const tone = row.kind === "OFFICE" ? TONE.warn : row.kind === "PERSONAL" ? TONE.bad : row.kind === "ACCOUNT" ? TONE.quiet : TONE.good;
         return <span style={{ borderRadius: 999, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: tone.color, background: tone.tint }}>{kindLabel(row)}</span>;
       },
     },
@@ -201,7 +207,7 @@ export function GroupExpenseView() {
             <SheetAction label="Delete line" d={ICON.trash} tone="bad" disabled={closed} onClick={() => setDeletingLine(row.entry!)} />
           </>
         ) : (
-          <Link href={row.kind === "OFFICE" ? "/admin/accounts/office-expenses" : "/admin/accounts/personal-expense"}
+          <Link href={recordHref(row)}
             onClick={(event) => event.stopPropagation()}
             style={{ fontSize: 12, fontWeight: 700, color: X.deep }}>
             Open ›
@@ -238,7 +244,7 @@ export function GroupExpenseView() {
     meta: [row.dayKey, row.category].join(" · "),
     amount: row.amount,
     category: row.kind === "OFFICE" ? "Office" : row.kind === "PERSONAL" ? "Personal" : row.category,
-    status: { label: kindLabel(row), tone: row.kind === "OFFICE" ? TONE.warn : row.kind === "PERSONAL" ? TONE.bad : TONE.good },
+    status: { label: kindLabel(row), tone: row.kind === "OFFICE" ? TONE.warn : row.kind === "PERSONAL" ? TONE.bad : row.kind === "ACCOUNT" ? TONE.quiet : TONE.good },
     payment: null,
     actions:
       row.kind === "LINE" && !closed
@@ -251,7 +257,7 @@ export function GroupExpenseView() {
       if (row.kind === "LINE") {
         if (!closed) setLineForm({ entry: row.entry!, type: "EXPENSE" });
       } else {
-        router.push(row.kind === "OFFICE" ? "/admin/accounts/office-expenses" : "/admin/accounts/personal-expense");
+        router.push(recordHref(row));
       }
     },
   }));
@@ -421,8 +427,8 @@ export function GroupExpenseView() {
             />
           ) : (
             <SheetTable
-              title={`${monthLabel(monthKey)} · office, personal and added`}
-              aside={<span style={{ fontSize: 11.5, fontWeight: 600, color: X.faint }}>Office expenses count once approved</span>}
+              title={`${monthLabel(monthKey)} · office, personal, accounts and added`}
+              aside={<span style={{ fontSize: 11.5, fontWeight: 600, color: X.faint }}>Office expenses count once approved · amounts are what each counts as on the sheet</span>}
               columns={spendColumns}
               rows={spendRows}
               rowKey={(row) => row.id}
@@ -526,6 +532,7 @@ export function GroupExpenseView() {
         <GroupFieldsEditor
           fields={group.fields}
           labels={group.labels}
+          accounts={group.accounts.map((account) => ({ id: account.id, name: account.name, kind: String(account.kind ?? "") }))}
           getIdToken={getIdToken}
           onClose={() => setEditingFields(false)}
           onSaved={(text) => { setEditingFields(false); setBanner({ ok: true, text }); }}

@@ -74,7 +74,7 @@ export default function ClosedDealsPage() {
   const [rangeKey, setRangeKey] = useState<RangeKey>("ALL");
   const range = useMemo(() => resolveRange(rangeKey), [rangeKey]);
 
-  const { deals, loading, error } = useFinancials(range, isAdmin);
+  const { deals, loading, error } = useFinancials(range, isAdmin, undefined, false);
   const { employees } = useEmployees(isAdmin);
   const { subAdmins } = useSubAdmins(isAdmin);
 

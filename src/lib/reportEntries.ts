@@ -34,6 +34,13 @@ import type { CountableEntry } from "@/lib/leadBuckets";
 /** Firestore's `in` takes at most 30 values. */
 const IN_LIMIT = 30;
 
+/**
+ * The last day holding entries written before `creditUid` existed. Measured on
+ * the live project 2026-09-26: 12 of 12 entries on 2026-09-02 lack it, 0 of
+ * the 228 from 2026-09-03 to 2026-09-08 do. See `loadEntries`.
+ */
+export const LAST_UNCREDITED_DAY = "2026-09-02";
+
 export async function loadEntries(
   from: string,
   to: string,
@@ -68,17 +75,38 @@ export async function loadEntries(
       if (uids.length === 0) return { entries: [], warning: null };
       const slices: string[][] = [];
       for (let index = 0; index < uids.length; index += IN_LIMIT) slices.push(uids.slice(index, index + IN_LIMIT));
+      /*
+        **The `authorUid` half covers only the days that need it** (2026-09-26).
+        It exists for entries without `creditUid`, and measured against the live
+        project the last such day is `LAST_UNCREDITED_DAY`: every entry from
+        2026-09-03 on carries it. Run over the whole range, as it was, the two
+        queries returned the same entries twice — the read meter's dossier opens
+        paid double for every entry written since September began. An entry is
+        dated by when the work happened and can only be back-dated, so nothing
+        written after `creditUid` shipped can land on an uncredited day without
+        carrying it.
+      */
+      const authorTo = to < LAST_UNCREDITED_DAY ? to : LAST_UNCREDITED_DAY;
+      const needAuthor = from <= authorTo;
       const snaps = await Promise.all(
-        slices.flatMap((slice) =>
-          (["creditUid", "authorUid"] as const).map((field) =>
-            adminDb
-              .collectionGroup("followUps")
-              .where(field, "in", slice)
-              .where("dayKey", ">=", from)
-              .where("dayKey", "<=", to)
-              .get()
-          )
-        )
+        slices.flatMap((slice) => [
+          adminDb
+            .collectionGroup("followUps")
+            .where("creditUid", "in", slice)
+            .where("dayKey", ">=", from)
+            .where("dayKey", "<=", to)
+            .get(),
+          ...(needAuthor
+            ? [
+                adminDb
+                  .collectionGroup("followUps")
+                  .where("authorUid", "in", slice)
+                  .where("dayKey", ">=", from)
+                  .where("dayKey", "<=", authorTo)
+                  .get(),
+              ]
+            : []),
+        ])
       );
       const byPath = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
       for (const snap of snaps) for (const doc of snap.docs) byPath.set(doc.ref.path, doc);

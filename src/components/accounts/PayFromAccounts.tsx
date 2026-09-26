@@ -57,6 +57,8 @@ export function PayFromAccounts({
   getIdToken,
   submit: submitOverride,
   source,
+  copy,
+  extra,
 }: {
   open: boolean;
   onClose: () => void;
@@ -79,6 +81,13 @@ export function PayFromAccounts({
     dayKey: string;
     note: string | null;
   }) => Promise<{ ok: true; fullyPaid: boolean; posted: number } | { ok: false; error: string }>;
+  /**
+   * The words, when the money is not a payment: a receivable coming back is
+   * *received into* an account, not *paid from* one. Same control, same checks.
+   */
+  copy?: { title: string; full: string; part: string; linesTitle?: string; done: string; noun?: string; settledWord?: string };
+  /** Anything the calling module needs under the meter — another way to record it, say. */
+  extra?: React.ReactNode;
   source: {
     module: SourceModule;
     collection: string;
@@ -138,8 +147,8 @@ export function PayFromAccounts({
         const done = "data" in result ? result.data : result;
         onPaid(
           done.fullyPaid
-            ? `${source.label} paid in full from ${done.posted} account${done.posted === 1 ? "" : "s"}.`
-            : `${formatMoney(check.allocated)} paid — ${formatMoney(check.unallocated)} still outstanding.`
+            ? `${source.label} ${copy?.done ?? "paid"} in full — ${done.posted} account${done.posted === 1 ? "" : "s"}.`
+            : `${formatMoney(check.allocated)} ${copy?.done ?? "paid"} — ${formatMoney(check.unallocated)} still outstanding.`
         );
         onClose();
       } else {
@@ -156,7 +165,7 @@ export function PayFromAccounts({
 
   return (
     <OverlayPanel
-      title="Where are we paying this from?"
+      title={copy?.title ?? "Where are we paying this from?"}
       subtitle={`${source.label} · ${formatMoney(source.amount)}`}
       icon={<Wallet size={19} />}
       maxWidth={620}
@@ -174,12 +183,12 @@ export function PayFromAccounts({
             disabled={busy || !check.valid || check.allocated <= 0}
             onClick={() => void submit()}
           >
-            {busy ? "Paying…" : check.fullyFunded ? "Pay in full" : "Record part payment"}
+            {busy ? "Saving…" : check.fullyFunded ? (copy?.full ?? "Pay in full") : (copy?.part ?? "Record part payment")}
           </Button>
         </div>
       }
     >
-      <OverlayCard title="Payment lines">
+      <OverlayCard title={copy?.linesTitle ?? "Payment lines"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
           {lines.map((line, index) => {
             const balance = balances.get(line.accountId)?.balance ?? 0;
@@ -332,8 +341,8 @@ export function PayFromAccounts({
         </div>
 
         <p style={{ fontSize: 11, color: A.faint, marginTop: 8, lineHeight: 1.5 }}>
-          This {source.direction === "IN" ? "receipt" : "expense"} stays <strong style={{ color: A.muted }}>{formatMoney(source.amount)}</strong>
-          {source.alreadyPaid > 0 && <> · {formatMoney(source.alreadyPaid)} already paid</>}
+          This {copy?.noun ?? (source.direction === "IN" ? "receipt" : "expense")} stays <strong style={{ color: A.muted }}>{formatMoney(source.amount)}</strong>
+          {source.alreadyPaid > 0 && <> · {formatMoney(source.alreadyPaid)} already {copy?.settledWord ?? "paid"}</>}
           . The lines above only record where the money comes from.
         </p>
       </div>
@@ -351,6 +360,7 @@ export function PayFromAccounts({
           {error ?? check.errors[0]}
         </p>
       )}
+      {extra}
     </OverlayPanel>
   );
 }

@@ -67,7 +67,7 @@ export default function ProfitDistributionPage() {
   // Money, so it has to look like it belongs to the phone app.
   const isMobile = useIsMobile();
 
-  const { deals, loading } = useFinancials(ALL_TIME, isAdmin);
+  const { deals, loading } = useFinancials(ALL_TIME, isAdmin, undefined, false);
   const { employees } = useEmployees(isAdmin);
   const { subAdmins } = useSubAdmins(isAdmin);
   const { distributions } = useAllDistributions(isAdmin);

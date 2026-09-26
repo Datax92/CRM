@@ -116,10 +116,13 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
   // assigned from the Data Bank, which is where that decision belongs.
   const { folders } = useDataBankFolders(ready && isAdmin);
   const { leads, loading: leadsLoading } = useLeads(ready ? scope : null, user?.uid);
+  // Deals only — see `withExpenses`. This screen never drew an expense and
+  // was paying for every one of them on each open.
   const { allDeals } = useFinancials(
     { key: "ALL", from: null, to: null, label: "ALL" },
     ready,
-    teamScope
+    teamScope,
+    false
   );
 
   const [query, setQuery] = useState("");

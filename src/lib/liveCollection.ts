@@ -17,9 +17,11 @@
  *    one listener and one copy of the data. Nothing re-fetches because a second
  *    screen mounted.
  * 2. **A keep-alive after the last unmount.** Navigating away does not tear the
- *    listener down for `KEEP_ALIVE_MS`; coming back inside that window is free
- *    and instant. Beyond it the listener closes, so a session left on another
- *    part of the app is not holding streams open for ever.
+ *    listener down for `KEEP_ALIVE_MS` (thirty minutes); coming back inside
+ *    that window is free and instant, and the data is current because the
+ *    listener kept receiving changes meanwhile. Beyond it the listener closes,
+ *    so a session left on another part of the app is not holding streams open
+ *    for ever.
  *
  * The SDK's own IndexedDB cache (`persistentLocalCache`, wired up in
  * `firebase/client`) sits underneath this and makes a *cold* re-subscribe cheap
@@ -37,8 +39,24 @@ import {
 // Metered: counts the reads Google bills, into the server log only.
 import { onSnapshot, onSnapshotLive } from '@/lib/firebase/meteredFirestore';
 
-/** How long a listener outlives its last subscriber. */
-const KEEP_ALIVE_MS = 60_000;
+/**
+ * How long a listener outlives its last subscriber.
+ *
+ * **Thirty minutes, not one** (owner, 2026-09-26). At sixty seconds, leaving a
+ * page to look at another for longer than a minute closed its listener, and
+ * coming back paid for the whole list again — the read meter's walkthrough
+ * showed the same expense and personal-expense lists billed once per Accounts
+ * page. An open listener costs nothing while nothing changes and one read per
+ * document that does, and every list shared here is tens to a few hundred
+ * small documents, so holding them is cheap in reads and in memory.
+ *
+ * Thirty because that is Firestore's own resume window: a listen reopened
+ * inside it is billed only for what changed, beyond it in full. Holding to the
+ * same boundary means nothing is kept open for a benefit Firestore would have
+ * given anyway, and a tab left on one screen all afternoon still lets go of the
+ * others.
+ */
+const KEEP_ALIVE_MS = 30 * 60_000;
 
 export interface LiveRow {
   id: string;

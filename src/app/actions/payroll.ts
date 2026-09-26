@@ -1,6 +1,7 @@
 "use server";
 
 import { adminDb } from "@/lib/firebase/server";
+import { readAttendanceMonth, readRoster } from "@/lib/server/attendanceMonth";
 import { verifyAuth, requireManager, type DecodedAuth } from "@/lib/firebase/serverAuth";
 import { isHrManager, roleTitle } from "@/lib/constants/hierarchy";
 import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResult";
@@ -220,15 +221,13 @@ async function attendanceByUid(
   monthKey: string,
   policy: AttendancePolicy,
   salaries: Map<string, number>,
-  joined: Map<string, string | null>
+  joined: Map<string, string | null>,
+  /** True when the figures decide a payment — see `readAttendanceMonth`. */
+  fresh: boolean
 ): Promise<Map<string, AttendanceFigures>> {
   const [periodSnap, records] = await Promise.all([
     adminDb.collection("attendancePeriods").doc(monthKey).get(),
-    adminDb
-      .collection("attendance")
-      .where("dayKey", ">=", `${monthKey}-01`)
-      .where("dayKey", "<=", `${monthKey}-31`)
-      .get(),
+    readAttendanceMonth(monthKey, fresh),
   ]);
 
   const figures = new Map<string, AttendanceFigures>();
@@ -241,8 +240,8 @@ async function attendanceByUid(
     return current;
   };
 
-  for (const doc of records.docs) {
-    const data = doc.data();
+  for (const doc of records) {
+    const data = doc.data;
     const uid = String(data.uid ?? "");
     if (!uid) continue;
     const from = joined.get(uid);
@@ -272,24 +271,32 @@ async function attendanceByUid(
 }
 
 /** Everybody's live line for a month. */
-async function liveLines(month: string): Promise<PayrollLine[]> {
-  const [policy, usersSnap, commission] = await Promise.all([
+async function liveLines(
+  month: string,
+  /**
+   * True when the lines decide a payment (`payPayrollLine`): salaries and
+   * attendance then come from the database, never from the minute-long shared
+   * copy the payroll screen reads — see `lib/server/attendanceMonth`.
+   */
+  fresh = false
+): Promise<PayrollLine[]> {
+  const [policy, users, commission] = await Promise.all([
     readPolicy(),
-    adminDb.collection("users").get(),
+    readRoster(fresh),
     commissionByUid(month),
   ]);
 
-  const people = usersSnap.docs.filter((doc) => {
-    const data = doc.data();
+  const people = users.filter((doc) => {
+    const data = doc.data;
     return data.role !== "admin" && data.status !== "DISABLED";
   });
-  const salaries = new Map(people.map((doc) => [doc.id, readSalary(doc.data()).salary]));
-  const joined = new Map(people.map((doc) => [doc.id, joinedDayKeyOf(doc.data())]));
-  const attendance = await attendanceByUid(month, policy, salaries, joined);
+  const salaries = new Map(people.map((doc) => [doc.id, readSalary(doc.data).salary]));
+  const joined = new Map(people.map((doc) => [doc.id, joinedDayKeyOf(doc.data)]));
+  const attendance = await attendanceByUid(month, policy, salaries, joined, fresh);
 
   const lines: PayrollLine[] = [];
   for (const doc of people) {
-    const data = doc.data();
+    const data = doc.data;
     const figures = attendance.get(doc.id);
     const line = buildMonthLine({
       uid: doc.id,
@@ -391,7 +398,8 @@ export async function payPayrollLine(
 
     let line = slipSnap.data()?.line as PayrollLine | undefined;
     if (alreadyPaid <= 0 || !line) {
-      line = (await liveLines(month)).find((entry) => entry.uid === uid);
+      // Fresh: this line becomes the payslip, so it must not come from a copy.
+      line = (await liveLines(month, true)).find((entry) => entry.uid === uid);
       if (!line) throw new UserFacingError("That person is not on this month's payroll.");
       if (line.net <= 0) throw new UserFacingError(`${line.name} has nothing to pay for ${month}.`);
       await slipRef.set(

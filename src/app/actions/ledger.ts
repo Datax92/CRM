@@ -815,6 +815,27 @@ async function unpaySource(
   sourceId: string | null,
   amount: number
 ): Promise<void> {
+  // A receivable or payable counts what came back as `settled`, not
+  // `paidAmount`: removing the movement takes it back off both that and the
+  // part that went through an account, so the entry is pending again.
+  if (sourceModule === "RECEIVABLE" && sourceId) {
+    const entryRef = adminDb.collection("receivableEntries").doc(sourceId);
+    const entry = await entryRef.get();
+    if (!entry.exists) return;
+    const data = entry.data()!;
+    await entryRef.update({
+      settled: Math.max(0, money(data.settled) - amount),
+      accountSettled: Math.max(0, money(data.accountSettled) - amount),
+      history: FieldValue.arrayUnion({
+        at: new Date().toISOString(),
+        action: "PAYMENT_REMOVED",
+        amount,
+        note: "A movement was deleted from its account.",
+      }),
+    });
+    return;
+  }
+
   const collection = SOURCE_COLLECTIONS[sourceModule];
   if (!collection || !sourceId) return;
 

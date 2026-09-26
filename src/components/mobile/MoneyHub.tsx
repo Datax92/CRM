@@ -62,7 +62,7 @@ export function MoneyHub() {
   // The admin's cards carry real figures because the deals query is already
   // open for them elsewhere; nobody else's cards claim numbers they cannot
   // cheaply and correctly produce.
-  const { deals } = useFinancials(ALL_TIME, isAdmin);
+  const { deals } = useFinancials(ALL_TIME, isAdmin, undefined, false);
   const { payouts } = useMyPayouts(user?.uid, role === "subadmin" ? "team" : "self", !isAdmin);
 
   const totals = useMemo(() => {

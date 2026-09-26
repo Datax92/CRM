@@ -54,7 +54,7 @@ export default function CampaignsPage() {
 
   const [periodFilter, setPeriodFilter] = useState<RangeKey>("ALL");
   const range = useMemo(() => resolveRange(periodFilter), [periodFilter]);
-  const { allDeals } = useFinancials(range, isAdmin);
+  const { allDeals } = useFinancials(range, isAdmin, undefined, false);
 
   const { campaigns, loading: campaignsLoading } = useCampaigns(leads, allDeals, periodFilter, isAdmin);
 

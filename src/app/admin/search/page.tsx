@@ -51,7 +51,9 @@ function GlobalSearchInner() {
   const { employees, error: employeesError } = useEmployees(isAdmin);
   const { allDeals, loading: dealsLoading, error: dealsError } = useFinancials(
     useMemo(() => resolveRange("ALL"), []),
-    isAdmin
+    isAdmin,
+    undefined,
+    false
   );
 
   const [query, setQuery] = useState(searchParams.get("q") ?? "");

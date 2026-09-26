@@ -48,3 +48,11 @@ test('a stored row with missing fields still reads', () => {
   assert.equal(entry.group, 'Official / Unofficial');
   assert.equal(entry.name, 'Unnamed');
 });
+
+test('settling moves money the right way, and the account part never exceeds what is settled', async () => {
+  const { settlementDirection, readSheetEntry } = await import('./receivableSheet.ts');
+  assert.equal(settlementDirection('RECEIVABLE'), 'IN');
+  assert.equal(settlementDirection('PAYABLE'), 'OUT');
+  assert.equal(readSheetEntry({ id: 'a', amount: 100, settled: 40, accountSettled: 90 }).accountSettled, 40);
+  assert.equal(readSheetEntry({ id: 'b', amount: 100, settled: 40 }).accountSettled, 0);
+});

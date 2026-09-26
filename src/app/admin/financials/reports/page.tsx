@@ -24,7 +24,7 @@ export default function ReportsPage() {
 
   const [rangeKey, setRangeKey] = useState<RangeKey>("MONTH");
   const range = useMemo(() => resolveRange(rangeKey), [rangeKey]);
-  const { allDeals } = useFinancials(range, isAdmin);
+  const { allDeals } = useFinancials(range, isAdmin, undefined, false);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [employeeFilter, setEmployeeFilter] = useState("ALL");

@@ -7,7 +7,9 @@ import {
   columnDefinitions,
   computeGroupMonth,
   displayedTotals,
+  accountSpendOf,
   isIncomeMovement,
+  readDealRow,
   monthLabel,
   monthsOfYear,
   normalizeGroupFields,
@@ -158,7 +160,7 @@ test('columns read in sheet order, archived fields hidden, builtin labels editab
     ],
     { office: 'OFFICE EXPENCE' }
   );
-  assert.deepEqual(columns.map((c) => c.key), ['income', 'rent_in', 'personal', 'office', 'investor']);
+  assert.deepEqual(columns.map((c) => c.key), ['income', 'deals', 'rent_in', 'personal', 'office', 'investor', 'accounts']);
   assert.equal(columns.find((c) => c.key === 'office')!.label, 'OFFICE EXPENCE');
 });
 
@@ -174,4 +176,109 @@ test('month helpers', () => {
   assert.equal(shiftMonth('2026-12', 1), '2027-01');
   assert.equal(monthsOfYear(2026).length, 12);
   assert.equal(readGroupMonth({ status: 'CLOSED', entries: [{ id: 'x', fieldKey: 'misc', amount: '500' }] }).entries[0].amount, 500);
+});
+
+/* Every account on the sheet, deal profit, and the lines behind each figure. */
+
+const kinds = new Map([
+  ['committee', 'COMMITTEE'],
+  ['m_investor', 'INVESTMENT'],
+  ['bank', 'BANK'],
+  ['car_sale', 'INCOME'],
+]);
+const accountNames = new Map([...names, ['committee', 'September Committee'], ['m_investor', 'M Investor']]);
+const spending: LedgerRowInput[] = [
+  txn({ id: 'kist', accountId: 'committee', direction: 'OUT', type: 'EXPENSE', sourceModule: 'MANUAL', amount: 60_000, sourceLabel: 'Kist paid' }),
+  txn({ id: 'khasara', accountId: 'm_investor', direction: 'OUT', type: 'EXPENSE', sourceModule: 'MANUAL', amount: 364_500, sourceLabel: 'April Khasara' }),
+  txn({ id: 'salary', accountId: 'bank', direction: 'OUT', type: 'EXPENSE', sourceModule: 'PAYROLL', amount: 45_000, sourceLabel: 'Aroosa — salary' }),
+  // A reversal of the salary leg comes back IN, typed EXPENSE, and cancels it.
+  txn({ id: 'salary_rev', accountId: 'bank', direction: 'IN', type: 'EXPENSE', sourceModule: 'PAYROLL', amount: 45_000, reversalOf: 'salary' }),
+  txn({ id: 'wages', accountId: 'bank', direction: 'OUT', type: 'EXPENSE', sourceModule: 'MANUAL', amount: 12_000, sourceLabel: 'Tea' }),
+  // Not spending: a payable paid back, capital going out on a round.
+  txn({ id: 'loan', accountId: 'bank', direction: 'OUT', type: 'LOAN', sourceModule: 'RECEIVABLE', amount: 100_000 }),
+  txn({ id: 'capital', accountId: 'm_investor', direction: 'OUT', type: 'INVESTMENT', sourceModule: 'INVESTMENT_WITH_X', amount: 400_000 }),
+];
+
+test('spending straight out of an account fills the linked field, the rest lands in Other account spending', () => {
+  const month = computeGroupMonth({
+    ...base,
+    transactions: [...transactions, ...spending],
+    accountNames,
+    accountKinds: kinds,
+    month: null,
+  });
+  const col = (key: string) => month.columns.find((c) => c.key === key)!.value;
+  assert.equal(col('committee_kist'), 60_000);
+  assert.equal(col('investor'), 364_500);
+  assert.equal(col('accounts'), 12_000); // salary and its reversal cancel
+  assert.equal(month.spent, 82_150 + 60_000 + 364_500 + 12_000);
+  assert.equal(month.income, 145_000);
+  const khasara = month.lines.find((line) => line.id === 'khasara')!;
+  assert.equal(khasara.kind, 'ACCOUNT');
+  assert.equal(khasara.sub, 'M Investor');
+});
+
+test('a debt settling, capital, transfers and module-paid expenses are never account spending', () => {
+  assert.equal(accountSpendOf(spending.find((t) => t.id === 'loan')!), null);
+  assert.equal(accountSpendOf(spending.find((t) => t.id === 'capital')!), null);
+  assert.equal(accountSpendOf(transactions.find((t) => t.id === 'paid')!), null);
+  assert.equal(accountSpendOf(transactions.find((t) => t.id === 'xfer')!), null);
+  // A car sold at a loss is negative income, not spending.
+  assert.equal(accountSpendOf(transactions.find((t) => t.id === 'loss')!), null);
+});
+
+test('a field saved with no links takes no account; one never saved keeps its default', () => {
+  const [saved] = normalizeGroupFields([{ key: 'investor', label: 'Investor', accountKinds: [] }]);
+  assert.deepEqual(saved.accountKinds, []);
+  const [fresh] = normalizeGroupFields([{ key: 'investor', label: 'Investor' }]);
+  assert.deepEqual(fresh.accountKinds, ['INVESTMENT']);
+  const month = computeGroupMonth({
+    ...base,
+    transactions: spending,
+    accountNames,
+    accountKinds: kinds,
+    fields: [saved],
+    month: null,
+  });
+  assert.equal(month.columns.find((c) => c.key === 'accounts')!.value, 60_000 + 364_500 + 12_000);
+});
+
+test("an income field linked to an account takes that account's income out of Total Income", () => {
+  const fields = [...DEFAULT_GROUP_FIELDS, { key: 'cars', label: 'Cars', type: 'INCOME' as const, accountIds: ['car_sale'] }];
+  const month = computeGroupMonth({ ...base, fields, accountKinds: kinds, month: null });
+  assert.equal(month.columns.find((c) => c.key === 'cars')!.value, 87_500 - 2_500);
+  assert.equal(month.columns.find((c) => c.key === 'income')!.value, 40_000 + 20_000);
+  assert.equal(month.income, 145_000);
+});
+
+test('deal profit is its own income column, the pot before the cut, and can be corrected like any line', () => {
+  const deals = [
+    readDealRow({ id: 'd1', customer: { name: 'Imran' } }, '2026-09-12', 4_000_000)!,
+    readDealRow({ id: 'd2' }, '2026-10-01', 400_000)!,
+  ];
+  assert.equal(readDealRow({ id: 'x' }, null, 1), null);
+  const month = computeGroupMonth({ ...base, deals, month: { ...EMPTY_MONTH, incomeEdits: { deal_d1: { amount: 3_500_000 } } } });
+  const column = month.columns.find((c) => c.key === 'deals')!;
+  assert.equal(column.value, 3_500_000);
+  assert.equal(month.income, 145_000 + 3_500_000);
+  const line = month.lines.find((l) => l.id === 'deal_d1')!;
+  assert.equal(line.label, 'Imran');
+  assert.equal(line.auto, 4_000_000);
+  assert.equal(line.edited, true);
+});
+
+test("every column's figure is the sum of its lines, office and personal included", () => {
+  const month = computeGroupMonth({
+    ...base,
+    transactions: [...transactions, ...spending],
+    accountNames,
+    accountKinds: kinds,
+    month: { ...EMPTY_MONTH, incomeEdits: { office_o1: { amount: 25_000 } }, entries: [{ id: 'e1', fieldKey: 'misc', amount: 3_000, dayKey: '2026-09-05', note: 'Tour' }] },
+  });
+  for (const column of month.columns) {
+    const sum = month.lines.filter((line) => line.columnKey === column.key).reduce((total, line) => total + line.amount, 0);
+    assert.equal(column.auto, sum, column.key);
+  }
+  assert.equal(month.columns.find((c) => c.key === 'office')!.value, 30_000);
+  assert.equal(month.lines.find((l) => l.id === 'e1')!.kind, 'ADDED');
 });

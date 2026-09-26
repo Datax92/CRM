@@ -177,6 +177,28 @@ export interface FinancialTotals {
  * whatever the other had left behind — a race that produced a different figure
  * depending on which query resolved first.
  */
+/**
+ * The whole company's expenses, as **one** shared listener.
+ *
+ * Read by the income figures here and by the Office Expenses ledger
+ * (`useOfficeExpenses`). They used to ask two different questions of the same
+ * collection — ordered by `date` here, by `dayKey` there — so a screen that
+ * needed both, and every Accounts page, paid for every expense twice (read
+ * meter, 2026-09-26). One key and one query now; the ledger sorts its copy by
+ * `dayKey` itself. **Both callers must use these two exports**, never their own
+ * copy: `useLive` builds a key's query from whichever caller arrives first, so
+ * two builders under one key would silently serve one of them the wrong list.
+ *
+ * Ordered by `date` because every expense has it. All 50 live expenses carried
+ * both `date` and `dayKey` when this was checked, but a record written before
+ * the Office Expenses module would have `date` only, and ordering by a field
+ * drops every document that lacks it.
+ */
+export const ALL_EXPENSES_KEY = 'expenses:byDate';
+export function allExpensesQuery() {
+  return query(collection(db, 'expenses'), orderBy('date', 'desc'), limit(1000));
+}
+
 export function useFinancials(
   range: DateRange,
   enabled = true,
@@ -194,7 +216,19 @@ export function useFinancials(
    * rule checks, which is also the only thing that makes the query legal.
    * Expenses stay admin-only and are simply not read.
    */
-  scope?: { role?: string | null; uid?: string }
+  scope?: { role?: string | null; uid?: string },
+  /**
+   * Whether this screen needs the expenses at all. **Default true, so every
+   * existing caller keeps what it had**; a screen that reads only deals passes
+   * `false` and opens no expenses listener.
+   *
+   * Added 2026-09-26 from the read meter: the Directory called this hook for
+   * `allDeals` alone and paid for every expense in the company on every open
+   * (100 reads in one walkthrough), for a list it never drew. With
+   * `withExpenses: false`, `expenses` and the expense half of `totals` are
+   * empty — never read them from such a call.
+   */
+  withExpenses = true
 ) {
   const demoState = useDemoState();
 
@@ -219,15 +253,12 @@ export function useFinancials(
 
   // Expenses are the company's, not a team's — there is no scoped form of this
   // query, so a sub admin simply does not read them.
-  const buildExpenses = useCallback(
-    () => query(collection(db, 'expenses'), orderBy('date', 'desc'), limit(1000)),
-    []
-  );
-  const expensesLive = useLive('expenses:byDate', buildExpenses, !IS_DEMO && ready && !teamOf, describeLiveError);
+  const readsExpenses = ready && !teamOf && withExpenses;
+  const expensesLive = useLive(ALL_EXPENSES_KEY, allExpensesQuery, !IS_DEMO && readsExpenses, describeLiveError);
 
   const deals = dealsLive.rows as unknown as DealRecord[];
   const expenses = expensesLive.rows as unknown as ExpenseRecord[];
-  const error = dealsLive.error ?? expensesLive.error;
+  const error = dealsLive.error ?? (readsExpenses ? expensesLive.error : null);
 
   const allDeals = useMemo(() => {
     if (!enabled) return [];
@@ -238,8 +269,8 @@ export function useFinancials(
   }, [enabled, deals, demoState.deals, teamOf]);
 
   const allExpenses = useMemo(
-    () => (!enabled || teamOf ? [] : IS_DEMO ? demoState.expenses : expenses),
-    [enabled, teamOf, expenses, demoState.expenses]
+    () => (!enabled || teamOf || !withExpenses ? [] : IS_DEMO ? demoState.expenses : expenses),
+    [enabled, teamOf, withExpenses, expenses, demoState.expenses]
   );
 
   // Filtering happens here rather than in the query so that changing the range
@@ -276,9 +307,9 @@ export function useFinancials(
     expenses: expensesInRange,
     allDeals,
     totals,
-    // A sub admin never reads expenses, so waiting on that listener would
-    // leave their screen loading for ever.
-    loading: IS_DEMO ? false : ready && (dealsLive.loading || (!teamOf && expensesLive.loading)),
+    // A sub admin never reads expenses, nor does a deals-only caller, so
+    // waiting on that listener would leave their screen loading for ever.
+    loading: IS_DEMO ? false : ready && (dealsLive.loading || (readsExpenses && expensesLive.loading)),
     error: IS_DEMO ? null : enabled ? error : null,
   };
 }

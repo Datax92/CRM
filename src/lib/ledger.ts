@@ -145,6 +145,13 @@ export const TRANSACTION_TYPES = [
   'TRANSFER',
   'REIMBURSEMENT',
   'ADJUSTMENT',
+  /**
+   * Money coming back on a receivable, or going back on a payable
+   * (`lib/receivableSheet`). Settling a debt is neither income nor expense —
+   * the money was always somebody's — so it is its own type, which every
+   * income and spending reading leaves out.
+   */
+  'LOAN',
 ] as const;
 
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
@@ -156,6 +163,7 @@ export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   TRANSFER: 'Transfer',
   REIMBURSEMENT: 'Reimbursement',
   ADJUSTMENT: 'Adjustment',
+  LOAN: 'Receivable / payable',
 };
 
 /**
@@ -712,6 +720,9 @@ export function summarize(transactions: LedgerTransaction[]): LedgerSummary {
       case 'TRANSFER':
         if (txn.direction === 'IN') totals.transfersIn += txn.amount;
         else totals.transfersOut += txn.amount;
+        break;
+      case 'LOAN':
+        // A debt settling: in net movement, and in nothing else.
         break;
       default:
         totals.adjustments += txn.amount;

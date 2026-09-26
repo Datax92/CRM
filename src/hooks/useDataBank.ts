@@ -17,7 +17,7 @@
  * number, an exact match on the dedupe key.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -33,7 +33,8 @@ import {
 // Metered: counts the reads Google bills, into the server log only.
 import { onSnapshot, getDocs } from "@/lib/firebase/meteredFirestore";
 import { db } from "@/lib/firebase/client";
-import { describeFirestoreError, type FirestoreTimestamp } from "./useLeads";
+import { describeFirestoreError, describeLiveError, type FirestoreTimestamp } from "./useLeads";
+import { useLive } from "./useLive";
 import { IS_DEMO, useDemoState } from "@/lib/demo/store";
 import { isMetaFolder, phoneKey, type DataBankField, type DataBankStatus, type FieldRoles, type ColumnMap } from "@/lib/dataBank";
 
@@ -115,48 +116,43 @@ export function useDataBankFolders(
   enabled = true,
   scope?: { role?: string | null; uid?: string }
 ) {
-  const [state, setState] = useState<{ folders: DataBankFolder[]; error: string | null } | null>(null);
   const demoState = useDemoState();
 
   const teamOf = scope?.role === "subadmin" ? (scope.uid ?? null) : null;
   const ready = enabled && (scope?.role !== "subadmin" || Boolean(teamOf));
 
-  useEffect(() => {
-    if (IS_DEMO || !ready) return;
-
-    const unsubscribe = onSnapshot(
+  /*
+    **Shared, and kept for the session** (2026-09-26). This was a listener of
+    its own on every screen that mounted it — the Data Bank, Meta Ads, the
+    Directory — so each of them re-read every folder, and the read meter
+    counted ~360 folder reads across the two measured days, nearly all of them
+    the same list loaded again. One listener per scope now, held between
+    screens by `lib/liveCollection`.
+  */
+  const build = useCallback(
+    () =>
       teamOf
-        ? query(
-            collection(db, "dataBankFolders"),
-            where("subAdminUid", "==", teamOf),
-            orderBy("name")
-          )
+        ? query(collection(db, "dataBankFolders"), where("subAdminUid", "==", teamOf), orderBy("name"))
         : query(collection(db, "dataBankFolders"), orderBy("name")),
-      (snapshot) => {
-        setState({
-          folders: snapshot.docs
-            .filter((snap) => {
-              /*
-                **A folder part-way through deletion is gone from the reader's
-                point of view.** A big one is removed over more than one run so
-                a single press cannot spend the day's delete quota and stop the
-                whole app; filtering here is what makes that invisible rather
-                than confusing. Its own document survives because the next run
-                needs it to find the rest.
-              */
-              return snap.data().deletionPending !== true;
-            })
-            .map((snap) => folderFrom(snap.id, snap.data())),
-          error: null,
-        });
-      },
-      (err) => {
-        console.error("[useDataBankFolders]", err);
-        setState({ folders: [], error: describeFirestoreError(err) });
-      }
-    );
-    return () => unsubscribe();
-  }, [ready, teamOf]);
+    [teamOf]
+  );
+  const live = useLive(`dataBankFolders:${teamOf ?? "all"}`, build, !IS_DEMO && ready, describeLiveError);
+
+  const liveFolders = useMemo(
+    () =>
+      (live.rows as Array<{ id: string } & Record<string, unknown>>)
+        /*
+          **A folder part-way through deletion is gone from the reader's point
+          of view.** A big one is removed over more than one run so a single
+          press cannot spend the day's delete quota and stop the whole app;
+          filtering here is what makes that invisible rather than confusing.
+          Its own document survives because the next run needs it to find the
+          rest.
+        */
+        .filter((row) => row.deletionPending !== true)
+        .map((row) => folderFrom(row.id, row as DocumentData)),
+    [live.rows]
+  );
 
   if (IS_DEMO) {
     const visible = teamOf
@@ -171,7 +167,7 @@ export function useDataBankFolders(
     };
   }
 
-  const all = ready ? (state?.folders ?? []) : [];
+  const all = ready ? liveFolders : [];
 
   /*
     **The admin's grid drops the managers' mirrors; the mirrors are handed back
@@ -207,8 +203,8 @@ export function useDataBankFolders(
     folders,
     metaFolders,
     mirrors,
-    loading: ready && state === null,
-    error: ready ? (state?.error ?? null) : null,
+    loading: ready && live.loading,
+    error: ready ? live.error : null,
   };
 }
 
