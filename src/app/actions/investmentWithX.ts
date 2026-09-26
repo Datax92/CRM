@@ -299,6 +299,13 @@ export interface InvestmentRoundInput {
   received?: boolean;
   /** The day it arrived. Defaults to today when `received` is set. */
   receivedDayKey?: string | null;
+  /**
+   * A new round that puts a received round's money back to work — in the same
+   * book or another (owner, 2026-09-26). The source must be received; it is
+   * marked `reinvestedInto` in the same transaction, so the sheet can say where
+   * the money went next.
+   */
+  reinvestedFrom?: string | null;
 }
 
 export async function saveInvestmentRound(
@@ -355,9 +362,18 @@ export async function saveInvestmentRound(
       updatedByUid: auth.uid,
     };
 
+    const reinvestedFrom = !roundId && input.reinvestedFrom ? String(input.reinvestedFrom) : null;
+    const sourceRef = reinvestedFrom ? adminDb.collection(ROUNDS).doc(reinvestedFrom) : null;
+
     const received = await adminDb.runTransaction(async (t) => {
       const snap = await t.get(ref);
       if (roundId && !snap.exists) throw new UserFacingError("That round no longer exists.");
+      // Read before any write, as a transaction must.
+      const sourceSnap = sourceRef ? await t.get(sourceRef) : null;
+      if (sourceSnap && !sourceSnap.exists) throw new UserFacingError("The round being reinvested no longer exists.");
+      if (sourceSnap && !isRoundReceived(sourceSnap.data()!)) {
+        throw new UserFacingError("Only a received round can be reinvested — mark it received first.");
+      }
       if (roundId && snap.data()?.bookId !== input.bookId) {
         throw new UserFacingError("That round belongs to a different book.");
       }
@@ -422,9 +438,28 @@ export async function saveInvestmentRound(
         ref,
         roundId
           ? { ...stored, history: FieldValue.arrayUnion(entry) }
-          : { ...stored, createdByUid: auth.uid, createdAt: FieldValue.serverTimestamp(), history: [entry] },
+          : {
+              ...stored,
+              ...(reinvestedFrom ? { reinvestedFrom } : {}),
+              createdByUid: auth.uid,
+              createdAt: FieldValue.serverTimestamp(),
+              history: [entry],
+            },
         { merge: Boolean(roundId) }
       );
+      if (sourceRef) {
+        t.update(sourceRef, {
+          reinvestedInto: FieldValue.arrayUnion(ref.id),
+          history: FieldValue.arrayUnion({
+            at: new Date().toISOString(),
+            action: "REINVESTED",
+            byUid: auth.uid,
+            byName: auth.name ?? auth.email ?? null,
+            amount: figures.amount,
+            detail: `into ${bookName}`,
+          }),
+        });
+      }
 
       writeRoundLedger(t, state, {
         roundId: ref.id,

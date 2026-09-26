@@ -76,6 +76,7 @@ import { SheetTable, SheetAction, Amount, type SheetColumn } from "./SheetTable"
 import { ConfirmPanel, Field, FooterButtons, FormError, FormGrid, Glyph, Notice, fieldStyle } from "./sheetForms";
 
 const INVEST_ICON = "M3 17l6-6 4 4 8-8M15 7h6v6";
+const REINVEST_ICON = "M4 12a8 8 0 0 1 14-5.3M20 4v5h-5M20 12a8 8 0 0 1-14 5.3M4 20v-5h5";
 
 interface Round extends RoundFigures {
   id: string;
@@ -88,6 +89,18 @@ interface Round extends RoundFigures {
   /** The partner has paid it back: the net is banked and the amount is home. */
   received: boolean;
   receivedDayKey: string | null;
+  /** Rounds that put this one's money back to work, once it came home. */
+  reinvestedInto: string[];
+  /** The received round this one's money came from, if it is a reinvestment. */
+  reinvestedFrom: string | null;
+}
+
+/** What a reinvestment starts the round form with. */
+interface RoundPrefill {
+  amount: number;
+  funding: Array<{ accountId: string; amount: string }>;
+  description: string;
+  reinvestedFrom: string;
 }
 
 const money = (n: number) => formatMoney(n);
@@ -130,7 +143,9 @@ export function InvestmentWithXView() {
   const [search, setSearch] = useState("");
   const [showPeriod, setShowPeriod] = useState(false);
   const [bookForm, setBookForm] = useState<{ book: InvestmentBook | null } | null>(null);
-  const [roundForm, setRoundForm] = useState<{ round: Round | null } | null>(null);
+  const [roundForm, setRoundForm] = useState<{ round: Round | null; bookId?: string; prefill?: RoundPrefill } | null>(null);
+  /** A received round whose money is about to go back to work. */
+  const [reinvesting, setReinvesting] = useState<Round | null>(null);
   const [deleting, setDeleting] = useState<Round | null>(null);
   /** The round being marked received (or, to undo a mistake, not received). */
   const [receiving, setReceiving] = useState<Round | null>(null);
@@ -164,6 +179,11 @@ export function InvestmentWithXView() {
         funding: readRoundFunding(raw.funding),
         received: isRoundReceived({ received: raw.received }),
         receivedDayKey: isRoundReceived({ received: raw.received }) ? receivedDayFor({ receivedDayKey: raw.receivedDayKey, returnDayKey: raw.returnDayKey, dayKey: raw.dayKey }) : null,
+        // Only rounds that still exist — a deleted reinvestment is no longer where the money went.
+        reinvestedInto: Array.isArray(raw.reinvestedInto)
+          ? (raw.reinvestedInto as unknown[]).filter((id): id is string => typeof id === "string" && rawRounds.some((other) => other.id === id))
+          : [],
+        reinvestedFrom: typeof raw.reinvestedFrom === "string" ? raw.reinvestedFrom : null,
       }))
       // The sheet reads oldest first, top to bottom.
       .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.id.localeCompare(b.id));
@@ -212,9 +232,12 @@ export function InvestmentWithXView() {
     const pct = (n: number, of: number) => (of ? Math.max(0, Math.min(100, Math.round((n / of) * 100))) : 0);
     return [
       {
-        label: "Invested", value: money(totals.amount),
-        note: `${totals.rounds} round${totals.rounds === 1 ? "" : "s"}${stillOut > 0 ? ` · ${money(stillOut)} still out` : ""}`,
-        pill: `${totals.rounds}`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.wallet,
+        // What is with the partner right now. A received round's money is home,
+        // so it is not "invested" any more — it was 2,802,000 here with 612,000
+        // of it already back (owner, 2026-09-26). The lifetime figure is the note.
+        label: "Invested Now", value: money(stillOut),
+        note: `${pending.rounds} of ${totals.rounds} round${totals.rounds === 1 ? "" : "s"} out · ${money(totals.amount)} put in, ${money(totals.amount - stillOut)} back`,
+        pill: `${pending.rounds} out`, pct: pct(stillOut, totals.amount), color: "#141f1e", accent: "#3f8f8a", icon: ICON.wallet,
       },
       {
         label: "Net Received", value: money(receivedNet),
@@ -322,7 +345,13 @@ export function InvestmentWithXView() {
     { key: "return", header: "Return date", render: (r) => r.returnDayKey ?? <span style={{ color: "#c3d5d3" }}>–</span> },
     {
       key: "received", header: "Received",
-      render: (r) => <ReceivedCell round={r} onToggle={() => askReceive(r)} />,
+      render: (r) => (
+        <span style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
+          <ReceivedCell round={r} onToggle={() => askReceive(r)} />
+          {r.reinvestedInto.length > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: X.deep }}>↻ Reinvested</span>}
+          {r.reinvestedFrom && <span style={{ fontSize: 11, fontWeight: 600, color: X.faint }}>↻ from a received round</span>}
+        </span>
+      ),
     },
     { key: "profit", header: "Profit", align: "right", tone: book?.netBasis === "PROFIT" ? "income" : undefined, render: (r) => money(r.profit), total: money(listedTotals.profit) },
     { key: "gross", header: "Gross profit", align: "right", tone: book?.netBasis === "GROSS" ? "income" : undefined, render: (r) => money(r.grossProfit), total: money(listedTotals.grossProfit) },
@@ -340,6 +369,7 @@ export function InvestmentWithXView() {
       key: "actions", header: "", align: "right",
       render: (r) => (
         <>
+          {r.received && <SheetAction label="Reinvest this money" d={REINVEST_ICON} tone="good" onClick={() => setReinvesting(r)} />}
           <SheetAction label="Edit round" d={ICON.edit} onClick={() => setRoundForm({ round: r })} />
           <SheetAction label="Delete round" d={ICON.trash} tone="bad" onClick={() => askDelete(r)} />
         </>
@@ -363,6 +393,7 @@ export function InvestmentWithXView() {
       round.received
         ? { key: "unreceive", label: "Move back to awaiting", shortLabel: "Awaiting", d: ICON.clock, tone: "quiet", onClick: () => askReceive(round) }
         : { key: "receive", label: "Received", d: ICON.check, tone: "good", onClick: () => askReceive(round) },
+      ...(round.received ? [{ key: "reinvest", label: "Reinvest", d: REINVEST_ICON, tone: "good" as const, onClick: () => setReinvesting(round) }] : []),
       { key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setRoundForm({ round }) },
       { key: "delete", label: "Delete", d: ICON.trash, tone: "bad", onClick: () => askDelete(round) },
     ],
@@ -382,7 +413,7 @@ export function InvestmentWithXView() {
         isMobile={isMobile}
         tileIcon={INVEST_ICON}
         stats={[
-          { label: "INVESTED", value: totals.amount },
+          { label: "OUT NOW", value: stillOut },
           { label: "PROFIT", value: totals.profit },
           { label: "NET", value: totals.netProfit },
         ]}
@@ -497,16 +528,51 @@ export function InvestmentWithXView() {
         />
       )}
 
+      {reinvesting && book && (
+        <ReinvestChooser
+          round={reinvesting}
+          fromBook={book}
+          books={books}
+          onClose={() => setReinvesting(null)}
+          onContinue={(targetId, withProfit) => {
+            const source = reinvesting;
+            setReinvesting(null);
+            const amount = source.amount + (withProfit ? Math.max(0, source.netProfit) : 0);
+            // The capital went back into the account(s) it came from; the net
+            // was banked into this book's own account. Reinvesting takes it out
+            // of the same places. Unfunded capital leaves the choice to the form.
+            const capital = source.funding.map((line) => ({ accountId: line.accountId, amount: String(line.amount) }));
+            const funding = withProfit && source.netProfit > 0
+              ? capital.length ? [...capital, { accountId: book.accountId, amount: String(source.netProfit) }] : []
+              : capital.length === 1 ? [{ accountId: capital[0].accountId, amount: "" }] : capital;
+            setRoundForm({
+              round: null,
+              bookId: targetId,
+              prefill: {
+                amount,
+                funding,
+                description: `Reinvested — the ${money(source.amount)} round of ${source.dayKey}${withProfit ? ` plus its ${money(source.netProfit)} net` : ""}`,
+                reinvestedFrom: source.id,
+              },
+            });
+          }}
+        />
+      )}
+
       {roundForm && book && (
         <RoundForm
-          book={book}
+          book={books.find((entry) => entry.id === roundForm.bookId) ?? book}
+          prefill={roundForm.prefill}
           round={roundForm.round}
           accounts={ledger.accounts}
           balances={ledger.balances}
           getIdToken={getIdToken}
           onClose={() => setRoundForm(null)}
           onSaved={(text) => {
+            const target = roundForm.bookId;
             setRoundForm(null);
+            // A reinvestment into another book: show that book, where it went.
+            if (target && target !== book.id) setPickedBook(target);
             setBanner({ ok: true, text });
           }}
           onDelete={roundForm.round ? () => { const r = roundForm.round!; setRoundForm(null); askDelete(r); } : undefined}
@@ -650,12 +716,82 @@ function downloadSheet(book: InvestmentBook, rounds: Round[], accounts: readonly
 }
 
 /* -------------------------------------------------------------------------- */
+/* Reinvesting                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A received round's money, put back to work (owner, 2026-09-26): into the
+ * same book or another, the capital alone or with its net profit. Continuing
+ * opens the ordinary round form, filled in — so dates, return date and profit
+ * are set and checked exactly as for any round, and nothing moves until it is
+ * saved.
+ */
+function ReinvestChooser({ round, fromBook, books, onClose, onContinue }: {
+  round: Round;
+  fromBook: InvestmentBook;
+  books: InvestmentBook[];
+  onClose: () => void;
+  onContinue: (bookId: string, withProfit: boolean) => void;
+}) {
+  const [target, setTarget] = useState(fromBook.id);
+  const [withProfit, setWithProfit] = useState(false);
+  const total = round.amount + (withProfit ? Math.max(0, round.netProfit) : 0);
+  const chip = (active: boolean): React.CSSProperties => ({
+    borderRadius: 12, border: `1px solid ${active ? X.deep : X.line}`, background: active ? "#e3f1ef" : "#fff",
+    color: active ? X.deep : X.body, padding: "10px 14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+  });
+
+  return (
+    <OverlayPanel
+      title="Reinvest this money"
+      subtitle={`The ${money(round.amount)} round of ${round.dayKey} · received ${round.receivedDayKey ?? ""}`}
+      icon={<Glyph d={REINVEST_ICON} size={18} />}
+      maxWidth={520}
+      onClose={onClose}
+      footer={<FooterButtons onCancel={onClose} onSubmit={() => onContinue(target, withProfit)} busy={false} submitLabel={`Continue with ${money(total)}`} />}
+    >
+      <OverlayCard title="Into which book?">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {books.map((entry) => (
+            <button key={entry.id} type="button" aria-pressed={target === entry.id} onClick={() => setTarget(entry.id)} style={chip(target === entry.id)}>
+              {entry.name}
+              {entry.partner && <span style={{ fontWeight: 500, color: X.faint }}> · {entry.partner}</span>}
+              {entry.id === fromBook.id && <span style={{ fontWeight: 500, color: X.faint }}> · same book</span>}
+            </button>
+          ))}
+        </div>
+      </OverlayCard>
+
+      <OverlayCard title="How much?">
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13.5, fontWeight: 600, color: X.ink, cursor: "pointer" }}>
+          <input type="checkbox" checked={withProfit} disabled={round.netProfit <= 0}
+            onChange={(e) => setWithProfit(e.target.checked)} style={{ width: 18, height: 18, marginTop: 1, accentColor: X.deep }} />
+          <span>
+            Add the net profit too ({money(round.netProfit)})
+            <span style={{ display: "block", fontSize: 12, fontWeight: 500, color: X.faint, marginTop: 3 }}>
+              {money(round.amount)} capital{withProfit ? ` + ${money(round.netProfit)} net = ${money(total)}` : " only"}. You can change the amount on the next screen.
+            </span>
+          </span>
+        </label>
+        <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.55, marginTop: 10 }}>
+          {round.funding.length
+            ? `It is taken from ${round.funding.map((line) => line.accountName ?? "its account").join(", ")}${withProfit ? ` and ${fromBook.name}'s account` : ""} — where the money came back to.`
+            : "This round was not taken from an account, so choose where the money comes from on the next screen."}
+        </p>
+      </OverlayCard>
+    </OverlayPanel>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* A round                                                                     */
 /* -------------------------------------------------------------------------- */
 
-function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSaved, onDelete }: {
+function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClose, onSaved, onDelete }: {
   book: InvestmentBook;
   round: Round | null;
+  /** A reinvestment: the new round starts with the money it comes from. */
+  prefill?: RoundPrefill;
   accounts: AccountDoc[];
   balances: Map<string, { balance: number }>;
   getIdToken: () => Promise<string>;
@@ -666,12 +802,12 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
   const isMobile = useIsMobile();
   const field = fieldStyle(isMobile);
   const [form, setForm] = useState({
-    amount: round ? String(round.amount) : "",
+    amount: round ? String(round.amount) : prefill ? String(prefill.amount) : "",
     dayKey: round?.dayKey ?? karachiDayKey(),
     returnDayKey: round?.returnDayKey ?? "",
     profit: round ? String(round.profit) : "",
     grossProfit: round ? String(round.grossProfit) : "",
-    description: round?.description ?? "",
+    description: round?.description ?? prefill?.description ?? "",
     received: round?.received ?? false,
     receivedDayKey: round?.receivedDayKey ?? karachiDayKey(),
   });
@@ -684,7 +820,9 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
   const [lines, setLines] = useState<Array<{ accountId: string; amount: string }>>(
     round && round.funding.length
       ? round.funding.map((line) => ({ accountId: line.accountId, amount: round.funding.length > 1 ? String(line.amount) : "" }))
-      : [{ accountId: "", amount: "" }]
+      : prefill && prefill.funding.length
+        ? prefill.funding
+        : [{ accountId: "", amount: "" }]
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -738,6 +876,7 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
           funding: lines,
           received: form.received,
           receivedDayKey: form.received ? form.receivedDayKey : null,
+          reinvestedFrom: round ? null : prefill?.reinvestedFrom ?? null,
         },
         round?.id
       );
@@ -765,8 +904,8 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
 
   return (
     <OverlayPanel
-      title={round ? "Edit round" : "Add round"}
-      subtitle={book.name}
+      title={round ? "Edit round" : prefill ? "Reinvest" : "Add round"}
+      subtitle={prefill ? `A new round in ${book.name}` : book.name}
       icon={<Glyph d={INVEST_ICON} size={18} />}
       maxWidth={640}
       onClose={onClose}
@@ -776,7 +915,7 @@ function RoundForm({ book, round, accounts, balances, getIdToken, onClose, onSav
           onSubmit={() => void submit()}
           busy={busy}
           disabled={Boolean(fundingError)}
-          submitLabel={round ? "Save round" : "Add round"}
+          submitLabel={round ? "Save round" : prefill ? "Reinvest" : "Add round"}
           left={
             <span style={{ fontSize: 12.5, fontWeight: 700, color: preview.netProfit < 0 ? "#a8483c" : X.deep }}>
               Net {formatMoney(preview.netProfit)}
