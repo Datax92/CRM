@@ -185,6 +185,28 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "targetRole",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "readAt",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "targetUid",
           "order": "ASCENDING"
         },

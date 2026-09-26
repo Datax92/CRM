@@ -104,7 +104,10 @@ export function ClosedDealRecord({
 
   // The deal id *is* the lead id, so no lookup table is needed.
   const { lead } = useLeadById(deal.leadId ?? deal.id);
-  const { followUps, events } = useLeadHistory(deal.leadId ?? deal.id);
+  // The contact history only. This screen printed the audit trail's length in
+  // one hint and nothing else, which cost a full read of it on every open —
+  // see `useLeadHistory`.
+  const { followUps } = useLeadHistory(deal.leadId ?? deal.id);
   const { distribution } = useDealDistribution(deal.id, isAdmin);
 
   const kyc = lead?.kyc ?? null;
@@ -331,7 +334,7 @@ export function ClosedDealRecord({
       <Group
         title="History"
         icon={<History size={13} />}
-        hint={`${followUps.length} entr${followUps.length === 1 ? "y" : "ies"} · ${events.length} events`}
+        hint={`${followUps.length} entr${followUps.length === 1 ? "y" : "ies"}`}
         mobile={isMobile}
       >
         {followUps.length === 0 ? (

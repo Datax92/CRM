@@ -458,72 +458,103 @@ export function useLeadById(leadId: string | null, enabled = true) {
 interface HistoryState {
   key: string;
   followUps: FollowUpRecord[];
-  events: AuditEventRecord[];
   error: string | null;
 }
 
-export function useLeadHistory(leadId: string | null) {
+interface EventsState {
+  key: string;
+  events: AuditEventRecord[];
+  more: boolean;
+}
+
+/** How many audit events one "page" of the Audit Trail holds. */
+export const AUDIT_PAGE = 50;
+
+/**
+ * A lead's contact history, and — only when asked — its audit trail.
+ *
+ * **The audit trail is loaded on demand, a page at a time** (owner,
+ * 2026-09-26). It used to be subscribed on every lead open, in full, and it is
+ * shown on exactly one tab. The read meter put it at ~2,400 reads on
+ * 2026-09-24, a tenth of the day, and it is the history that grows without
+ * bound: since the lane became a loop, every lap writes an `EXPIRED` event, so
+ * a lead nobody claimed overnight carries a hundred or more. `auditLimit` 0
+ * opens no listener and returns `events: null` — "not loaded", never a
+ * confident empty list — and a positive limit reads that many newest events
+ * plus one, the extra telling `moreEvents` whether an older page exists.
+ *
+ * **The contact history is deliberately not paged.** Roughly a dozen places
+ * read `followUps.length` as the lead's entry count — whether the next entry
+ * is the Remark, how each is labelled, the day rule's inputs — and a window
+ * over them would relabel the oldest loaded entry "Remark". It is also the
+ * smaller cost (~1,100 reads that day) on leads that rarely pass twenty
+ * entries. Paging it means carrying the lead's own `followUpCount` into every
+ * one of those sites first.
+ */
+export function useLeadHistory(leadId: string | null, auditLimit = 0) {
   const [state, setState] = useState<HistoryState | null>(null);
+  const [eventsState, setEventsState] = useState<EventsState | null>(null);
   const demoState = useDemoState();
   const outbox = useOutbox();
   const key = leadId ?? 'idle';
+  const eventsKey = leadId && auditLimit > 0 ? `${leadId}:${auditLimit}` : 'idle';
 
   useEffect(() => {
     if (IS_DEMO || !leadId) return;
 
-    let followUps: FollowUpRecord[] = [];
-    let events: AuditEventRecord[] = [];
-    let error: string | null = null;
-
-    const publish = () => setState({ key: leadId, followUps, events, error });
-
-    const unsubFollowUps = onSnapshot(
+    return onSnapshot(
       query(collection(db, 'leads', leadId, 'followUps'), orderBy('occurredAt', 'desc')),
       (snap) => {
-        followUps = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as FollowUpRecord[];
-        publish();
+        setState({
+          key: leadId,
+          followUps: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as FollowUpRecord[],
+          error: null,
+        });
       },
       (err) => {
         console.error('[useLeadHistory:followUps]', err);
-        followUps = [];
-        error = describeFirestoreError(err);
-        publish();
+        setState({ key: leadId, followUps: [], error: describeFirestoreError(err) });
       }
     );
-
-    const unsubEvents = onSnapshot(
-      query(collection(db, 'leads', leadId, 'events'), orderBy('at', 'desc')),
-      (snap) => {
-        events = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as AuditEventRecord[];
-        publish();
-      },
-      (err) => {
-        console.error('[useLeadHistory:events]', err);
-        events = [];
-        publish();
-      }
-    );
-
-    return () => {
-      unsubFollowUps();
-      unsubEvents();
-    };
   }, [leadId]);
 
+  useEffect(() => {
+    if (IS_DEMO || !leadId || eventsKey === 'idle') return;
+
+    return onSnapshot(
+      query(collection(db, 'leads', leadId, 'events'), orderBy('at', 'desc'), limit(auditLimit + 1)),
+      (snap) => {
+        const events = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as AuditEventRecord[];
+        setEventsState({ key: eventsKey, events: events.slice(0, auditLimit), more: events.length > auditLimit });
+      },
+      (err) => {
+        // Non-fatal: the audit trail is a record to consult, and failing to
+        // load it must not take the lead's contact history down with it.
+        console.error('[useLeadHistory:events]', err);
+        setEventsState({ key: eventsKey, events: [], more: false });
+      }
+    );
+  }, [leadId, auditLimit, eventsKey]);
+
   if (IS_DEMO) {
+    const all = leadId ? (demoState.events[leadId] ?? []) : [];
     return {
       followUps: leadId ? (demoState.followUps[leadId] ?? []) : [],
-      events: leadId ? (demoState.events[leadId] ?? []) : [],
+      events: auditLimit > 0 ? all.slice(0, auditLimit) : null,
+      moreEvents: auditLimit > 0 && all.length > auditLimit,
       loading: false,
       error: null,
     };
   }
 
   const current = state?.key === key ? state : null;
+  const currentEvents = eventsState?.key === eventsKey ? eventsState : null;
 
   return {
     followUps: overlayFollowUps(leadId, current?.followUps ?? [], outbox),
-    events: current?.events ?? [],
+    /** `null` until asked for and arrived — render nothing rather than "0". */
+    events: currentEvents?.events ?? null,
+    moreEvents: currentEvents?.more ?? false,
     loading: Boolean(leadId) && current === null,
     error: current?.error ?? null,
   };

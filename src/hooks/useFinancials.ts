@@ -31,7 +31,7 @@ const NOTIFICATION_PAGE = 20;
 const ADMIN_NOTIFICATION_PAGE = 60;
 import { withinRange, type DateRange } from '@/lib/dates';
 import { IS_DEMO, useDemoState } from '@/lib/demo/store';
-import { isAdminAlert } from '@/lib/adminAlerts';
+import { ADMIN_ALERT_TYPES, isAdminAlert } from '@/lib/adminAlerts';
 
 export interface ExpenseRecord {
   id: string;
@@ -438,7 +438,46 @@ export function useNotifications(uid: string | undefined, role: string | undefin
     [scopeKey]
   );
 
-  const live = useLive(`notifications:${scopeKey}`, build, !IS_DEMO && scopeKey !== 'idle', describeLiveError);
+  /*
+    **The admin's five, asked for by type** (owner, 2026-09-26). The admin's
+    panel shows five alert types, and the page above reads sixty unread rows to
+    keep twenty of them — every screen draws the bell, so the read meter put
+    the bell at ~560 reads on 2026-09-24. This asks the database for only those
+    five (`type in ADMIN_ALERT_TYPES`), twenty rows.
+
+    It was filtered in the browser because the composite index a `type in`
+    clause needs could not be deployed from here. It can now
+    (`npm run deploy:indexes`), and the index is `readAt, targetRole, type,
+    createdAt desc` — equalities in alphabetical order, an `in` counting as one.
+
+    **It can never make the bell emptier than it was.** If this query fails for
+    any reason — the index not built yet above all, which Firestore answers by
+    refusing the query outright — the sixty-row query above takes over, filtered
+    here as before. So the index can land before or after this code.
+  */
+  const buildTyped = useCallback(
+    () =>
+      query(
+        collection(db, 'notifications'),
+        where('targetRole', '==', 'admin'),
+        where('readAt', '==', null),
+        where('type', 'in', ADMIN_ALERT_TYPES),
+        orderBy('createdAt', 'desc'),
+        limit(NOTIFICATION_PAGE)
+      ),
+    []
+  );
+
+  const typed = useLive('notifications:admin:typed', buildTyped, !IS_DEMO && scopeKey === 'admin', describeLiveError);
+  const typedFailed = scopeKey === 'admin' && Boolean(typed.error);
+  const useTyped = scopeKey === 'admin' && !typedFailed;
+
+  const live = useLive(
+    `notifications:${scopeKey}`,
+    build,
+    !IS_DEMO && scopeKey !== 'idle' && !useTyped,
+    describeLiveError
+  );
 
   if (IS_DEMO) {
     // Scoped exactly as the live query is — admin by role, employee by uid.
@@ -459,24 +498,16 @@ export function useNotifications(uid: string | undefined, role: string | undefin
   }
 
   /*
-    **The admin's five, filtered here rather than in the query.**
-
-    Here, because a `type in [...]` clause would need a composite index this
-    project cannot deploy from a developer machine, and a query whose index is
-    missing is **refused outright** — the bell would render empty, which is this
-    codebase's most-repeated symptom. Filtering the page we already read costs
-    nothing and cannot fail.
-
     One place for both the list and the badge: filtering only the panel would
     leave a bell reading 12 over an empty list, which reads as a broken screen.
-    The window is larger for an admin than it was, because the rows that do not
-    qualify are read and discarded — see `NOTIFICATION_PAGE`.
+    The typed query needs no filtering; the fallback page still does.
   */
-  const rows = enabled ? (live.rows as unknown as AppNotification[]) : [];
+  const source = useTyped ? typed : live;
+  const rows = enabled ? (source.rows as unknown as AppNotification[]) : [];
 
   return {
     notifications: isAdmin ? rows.filter((row) => isAdminAlert(row.type)) : rows,
-    loading: enabled && live.loading,
+    loading: enabled && source.loading,
   };
 }
 

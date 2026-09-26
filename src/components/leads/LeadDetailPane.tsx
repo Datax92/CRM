@@ -16,7 +16,7 @@
 import { useMemo, useState } from "react";
 import type { Lead } from "@/hooks/useLeads";
 import { useAuth } from "@/context/AuthContext";
-import { useLeadHistory } from "@/hooks/useLeads";
+import { AUDIT_PAGE, useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
 import { addFollowUp, updateFollowUp, setLeadStatus, reviewColdLead, closeDeal, acceptLead, PAYMENT_METHODS } from "@/lib/clientActions";
 import {
@@ -142,10 +142,19 @@ export function LeadDetailPane({
   assigneeName?: string;
   onReassignRequest?: () => void;
 }) {
-  const { followUps, events, error: historyError } = useLeadHistory(lead.id);
+
   const { user } = useAuth();
   const { deal } = useDealForLead(lead.id);
   const [activeTab, setActiveTab] = useState<Tab>("FOLLOW_UPS");
+  // The audit trail loads only while its tab is open, a page at a time — see
+  // `useLeadHistory`. The page count is kept per lead, so opening another lead
+  // starts again at one page rather than inheriting this one's depth.
+  const [auditPages, setAuditPages] = useState<{ leadId: string; pages: number }>({ leadId: lead.id, pages: 1 });
+  const pages = auditPages.leadId === lead.id ? auditPages.pages : 1;
+  const { followUps, events, moreEvents, error: historyError } = useLeadHistory(
+    lead.id,
+    activeTab === "AUDIT_TRAIL" ? pages * AUDIT_PAGE : 0
+  );
   const [banner, setBanner] = useState<Banner>(null);
 
   // No per-lead reset logic lives here: the workspace mounts this component
@@ -182,7 +191,9 @@ export function LeadDetailPane({
     // does after a call are write down what happened and write down who the
     // client turned out to be.
     { key: "KYC", label: "KYC", count: kycFilled || null },
-    { key: "AUDIT_TRAIL", label: "Audit Trail", count: events.length },
+    // A number only when the whole trail is loaded: "50" over a trail with
+    // more behind it, or "0" before it has been asked for, would both be wrong.
+    { key: "AUDIT_TRAIL", label: "Audit Trail", count: events && !moreEvents ? events.length : null },
     { key: "DEAL_ENTRY", label: deal ? "Deal Record" : "Deal Entry", count: null },
   ];
 
@@ -425,7 +436,13 @@ export function LeadDetailPane({
             <KycPanel lead={lead} getIdToken={getIdToken} onResult={setBanner} readOnly={closed} />
           )}
 
-          {activeTab === "AUDIT_TRAIL" && <AuditPanel events={events} />}
+          {activeTab === "AUDIT_TRAIL" && (
+            <AuditPanel
+              events={events}
+              hasMore={moreEvents}
+              onLoadMore={() => setAuditPages({ leadId: lead.id, pages: pages + 1 })}
+            />
+          )}
 
           {activeTab === "DEAL_ENTRY" &&
             (deal ? (
@@ -1233,7 +1250,15 @@ function FollowUpsPanel({
 /* Audit trail                                                                */
 /* -------------------------------------------------------------------------- */
 
-function AuditPanel({ events }: { events: ReturnType<typeof useLeadHistory>["events"] }) {
+function AuditPanel({
+  events,
+  hasMore,
+  onLoadMore,
+}: {
+  events: ReturnType<typeof useLeadHistory>["events"];
+  hasMore: boolean;
+  onLoadMore: () => void;
+}) {
   return (
     <div>
       <h3 className="text-[19px] font-medium text-[#2b3a39]">Audit Trail</h3>
@@ -1241,7 +1266,11 @@ function AuditPanel({ events }: { events: ReturnType<typeof useLeadHistory>["eve
         Every system and user action on this lead, in order.
       </p>
 
-      {events.length === 0 ? (
+      {events === null ? (
+        <div className="rounded-lg border border-dashed border-[#cfe2e0] bg-white/70 p-10 text-center text-[13px] text-[#9aacaa]">
+          Loading the audit trail…
+        </div>
+      ) : events.length === 0 ? (
         <div className="rounded-lg border border-dashed border-[#cfe2e0] bg-white/70 p-10 text-center text-[13px] text-[#9aacaa]">
           No audit events recorded yet.
         </div>
@@ -1277,6 +1306,16 @@ function AuditPanel({ events }: { events: ReturnType<typeof useLeadHistory>["eve
             </li>
           ))}
         </ol>
+      )}
+
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          className="mt-1 inline-flex items-center rounded-full border border-[#cfe2e0] bg-white px-4 py-2 text-[12.5px] text-[#2f7d78] transition-colors hover:border-[#8cc3bf]"
+        >
+          Load older events
+        </button>
       )}
     </div>
   );

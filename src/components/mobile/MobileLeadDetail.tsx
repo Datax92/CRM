@@ -23,7 +23,7 @@
 
 import { useMemo, useState } from "react";
 import type { Lead, FollowUpRecord } from "@/hooks/useLeads";
-import { useLeadHistory } from "@/hooks/useLeads";
+import { AUDIT_PAGE, useLeadHistory } from "@/hooks/useLeads";
 import { useAuth } from "@/context/AuthContext";
 import { useDealForLead } from "@/hooks/useFinancials";
 import {
@@ -150,10 +150,17 @@ export function MobileLeadDetail({
   assigneeName?: string;
   onReassign?: () => void;
 }) {
-  const { followUps, events, error: historyError } = useLeadHistory(lead.id);
+
   const { user } = useAuth();
   const { deal } = useDealForLead(lead.id);
   const [tab, setTab] = useState<Tab>("notes");
+  // Audit trail on demand, a page at a time, per lead — as on the desktop pane.
+  const [auditPages, setAuditPages] = useState<{ leadId: string; pages: number }>({ leadId: lead.id, pages: 1 });
+  const pages = auditPages.leadId === lead.id ? auditPages.pages : 1;
+  const { followUps, events, moreEvents, error: historyError } = useLeadHistory(
+    lead.id,
+    tab === "audit" ? pages * AUDIT_PAGE : 0
+  );
   const [banner, setBanner] = useState<Banner>(null);
   const [formOpen, setFormOpen] = useState(false);
   /** The entry the sheet is editing, or null when it is adding a new one. */
@@ -754,7 +761,13 @@ export function MobileLeadDetail({
           />
         )}
 
-        {tab === "audit" && <AuditTrail events={events} />}
+        {tab === "audit" && (
+          <AuditTrail
+            events={events}
+            hasMore={moreEvents}
+            onLoadMore={() => setAuditPages({ leadId: lead.id, pages: pages + 1 })}
+          />
+        )}
 
         {tab === "deal" &&
           (deal ? (
@@ -1096,8 +1109,16 @@ function Chip({ children, solid }: { children: React.ReactNode; solid?: boolean 
   );
 }
 
-function AuditTrail({ events }: { events: ReturnType<typeof useLeadHistory>["events"] }) {
-  if (events.length === 0) {
+function AuditTrail({
+  events,
+  hasMore,
+  onLoadMore,
+}: {
+  events: ReturnType<typeof useLeadHistory>["events"];
+  hasMore: boolean;
+  onLoadMore: () => void;
+}) {
+  if (events === null || events.length === 0) {
     return (
       <div
         style={{
@@ -1111,12 +1132,13 @@ function AuditTrail({ events }: { events: ReturnType<typeof useLeadHistory>["eve
           color: M.fainter,
         }}
       >
-        No audit events recorded yet.
+        {events === null ? "Loading the audit trail…" : "No audit events recorded yet."}
       </div>
     );
   }
 
   return (
+    <>
     <ol>
       {events.map((event, index) => (
         <li key={event.id} style={{ display: "grid", gridTemplateColumns: "16px 1fr", gap: 12, paddingBottom: 16 }}>
@@ -1148,6 +1170,26 @@ function AuditTrail({ events }: { events: ReturnType<typeof useLeadHistory>["eve
         </li>
       ))}
     </ol>
+    {hasMore && (
+      <button
+        type="button"
+        onClick={onLoadMore}
+        style={{
+          width: "100%",
+          minHeight: 44,
+          borderRadius: 999,
+          border: `1px solid ${M.cardBorder}`,
+          background: "#fff",
+          color: M.tealDeep,
+          fontSize: 13.5,
+          fontWeight: 600,
+          WebkitTapHighlightColor: "transparent",
+        }}
+      >
+        Load older events
+      </button>
+    )}
+    </>
   );
 }
 

@@ -11,6 +11,7 @@ import { IS_DEMO, demo, getDemoSession } from '@/lib/demo/store';
 import type { LeadStatus } from '@/lib/leadStatus';
 import type { ActionResult } from '@/lib/actionResult';
 import { forgetSaved, savedOrLoad } from '@/lib/quietSaved';
+import { karachiMonthKey } from '@/lib/dates';
 import { enqueue, patchQueuedFollowUp, registerReplayers, shouldQueue } from '@/lib/outbox';
 
 import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
@@ -934,7 +935,22 @@ export async function getTeamAttendance(
       session?.managerKind
     ) as ActionResult<TeamAttendanceResult>;
   }
-  return savedOrLoad('getTeamAttendance', [input], () => _getTeamAttendance(token, input));
+  /*
+    A month that is already over is reused for six hours (owner, 2026-09-26 —
+    the read meter put this screen at ~430 reads a day). The current month is
+    always asked fresh: it is where the day's punches land and where yesterday's
+    missed check-out gets corrected. A correction to a past month made on this
+    browser drops the copy at once (`forgetSaved` in `adjustAttendance`); one
+    made on another device reaches this one within the six hours.
+  */
+  const thisMonthStarts = `${karachiMonthKey()}-01`;
+  const pastMonth = input.to < thisMonthStarts;
+  return savedOrLoad(
+    'getTeamAttendance',
+    [input],
+    () => _getTeamAttendance(token, input),
+    pastMonth ? 6 * 3600_000 : 0
+  );
 }
 
 export type { TeamAttendanceResult, TeamAttendanceRow, TeamAttendanceDay } from '@/app/actions/attendance';

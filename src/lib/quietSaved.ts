@@ -17,7 +17,19 @@ import type { ActionResult } from '@/lib/actionResult';
 
 const PREFIX = 'crm:saved:v1:';
 
-export async function savedOrLoad<T>(name: string, args: unknown[], load: () => Promise<ActionResult<T>>): Promise<ActionResult<T>> {
+/**
+ * `reuseFor` — reuse a saved answer outside quiet hours too, while it is
+ * younger than this. Only for answers that cannot change under the person
+ * looking, such as a month that is already over; a live figure must not pass
+ * one. The save time sits beside the answer (`…@at`), which `forgetSaved`
+ * clears with it because it shares the key's prefix.
+ */
+export async function savedOrLoad<T>(
+  name: string,
+  args: unknown[],
+  load: () => Promise<ActionResult<T>>,
+  reuseFor = 0
+): Promise<ActionResult<T>> {
   let key = '';
   try {
     key = `${PREFIX}${auth?.currentUser?.uid ?? 'anon'}:${name}:${JSON.stringify(args)}`;
@@ -28,6 +40,16 @@ export async function savedOrLoad<T>(name: string, args: unknown[], load: () => 
   if (key && inQuietHours()) {
     try {
       const raw = window.localStorage.getItem(key);
+      if (raw) return { ok: true, data: JSON.parse(raw) as T } as ActionResult<T>;
+    } catch {
+      // unreadable — load it
+    }
+  }
+
+  if (key && reuseFor > 0) {
+    try {
+      const savedAt = Number(window.localStorage.getItem(`${key}@at`)) || 0;
+      const raw = savedAt && Date.now() - savedAt < reuseFor ? window.localStorage.getItem(key) : null;
       if (raw) return { ok: true, data: JSON.parse(raw) as T } as ActionResult<T>;
     } catch {
       // unreadable — load it
@@ -47,6 +69,7 @@ export async function savedOrLoad<T>(name: string, args: unknown[], load: () => 
   if (key && result.ok) {
     try {
       window.localStorage.setItem(key, JSON.stringify((result as { data: T }).data));
+      window.localStorage.setItem(`${key}@at`, String(Date.now()));
     } catch {
       // storage full or blocked — the screen still has its answer
     }

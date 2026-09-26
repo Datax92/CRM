@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import {
   collection,
   doc,
+  getDocsFromCache,
   query,
   where,
 } from 'firebase/firestore';
 // Metered: counts the reads Google bills, into the server log only.
-import { onSnapshot } from '@/lib/firebase/meteredFirestore';
+import { getDocs, onSnapshot } from '@/lib/firebase/meteredFirestore';
 import { db } from '@/lib/firebase/client';
 import { describeFirestoreError, type FirestoreTimestamp } from './useLeads';
 import { IS_DEMO, useDemoState, demo } from '@/lib/demo/store';
@@ -264,10 +265,14 @@ function monthDays(monthKey: string): { day: number; dayKey: string; weekday: nu
  * What the app still decides for itself is **where** the punch came from: the
  * server classifies the request's own IP, which a browser cannot forge.
  */
+/** How long the device's copy of someone's attendance history is trusted. */
+const HISTORY_REFRESH_MS = 6 * 3600_000;
+const HISTORY_STAMP_PREFIX = 'crm:attendanceHistory:v1:';
+
 export function useAttendance(uid: string | undefined, getIdToken: () => Promise<string>, monthKey?: string) {
   const [records, setRecords] = useState<AttendanceRecord[] | null>(null);
-  // Today's own record, watched on its own so a punch shows at once even while
-  // the history is served from the device's copy (quiet hours, 2026-09-26).
+  // Today's own record, watched on its own so a punch shows at once while the
+  // history is served from the device's copy — see the history effect below.
   const [today, setToday] = useState<AttendanceRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [punching, setPunching] = useState(false);
@@ -350,31 +355,71 @@ export function useAttendance(uid: string | undefined, getIdToken: () => Promise
     [uid, getIdToken]
   );
 
+  /*
+    **The history is read once, from the device's copy when it is recent**
+    (owner, 2026-09-26). It was a live listener over every day this person has,
+    re-opened on every visit to /home, which the read meter put at ~800 reads
+    on 2026-09-24. Past days do not change by themselves, and the one that does
+    — today — is watched live below as a single document, whose updates land in
+    the same device copy this reads from. So: the device's copy if the last
+    server read is under `HISTORY_REFRESH_MS` old and the copy is not empty,
+    otherwise one server read, stamped.
+
+    **The cost, stated:** a correction an admin makes to one of this person's
+    *past* days reaches this device at the next refresh, up to six hours later,
+    not at once. Their own punch is never late — it is today's document.
+
+    Scoped by uid only, not by month. The phone layout shows a year-to-date
+    attendance figure beside the month-to-date one, and one employee's days are
+    a few hundred small documents; `uid ==` is the clause the Security Rule
+    checks, so the query stays provable — see `scripts/rules.test.mjs`.
+  */
   useEffect(() => {
     if (IS_DEMO || !uid) return;
+    let cancelled = false;
+    const history = query(collection(db, 'attendance'), where('uid', '==', uid));
+    const stampKey = `${HISTORY_STAMP_PREFIX}${uid}`;
+    const toRecords = (snap: { docs: Array<{ id: string; data: () => unknown }> }) =>
+      snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as AttendanceRecord);
 
-    // In quiet hours this history is answered once from the device's copy;
-    // today's record below stays live (a single document, one read).
-    const unsubscribe = onSnapshot(
-      // Scoped by uid only, not by month. The phone layout shows a
-      // year-to-date attendance figure beside the month-to-date one, and a
-      // second month-scoped listener per year would be twelve listeners; one
-      // employee's days are a few hundred small documents, so this is cheaper
-      // and needs no composite index. `uid ==` is the clause the Security Rule
-      // checks, so the query stays provable — see `scripts/rules.test.mjs`.
-      query(collection(db, 'attendance'), where('uid', '==', uid)),
-      (snap) => {
-        setRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }) as AttendanceRecord));
-      },
-      (err) => {
-        console.error('[useAttendance]', err);
-        setRecords([]);
-        setError(describeFirestoreError(err));
+    void (async () => {
+      let stampedAt = 0;
+      try {
+        stampedAt = Number(window.localStorage.getItem(stampKey)) || 0;
+      } catch {
+        // storage blocked — read from the server
       }
-    );
+      if (Date.now() - stampedAt < HISTORY_REFRESH_MS) {
+        try {
+          const cached = await getDocsFromCache(history);
+          if (!cached.empty) {
+            if (!cancelled) setRecords(toRecords(cached));
+            return;
+          }
+        } catch {
+          // no usable copy — read from the server
+        }
+      }
+      try {
+        const fresh = await getDocs(history);
+        try {
+          window.localStorage.setItem(stampKey, String(Date.now()));
+        } catch {
+          // storage blocked — next visit simply reads again
+        }
+        if (!cancelled) setRecords(toRecords(fresh));
+      } catch (err) {
+        console.error('[useAttendance]', err);
+        if (cancelled) return;
+        setRecords([]);
+        setError(describeFirestoreError(err as { code?: string; message?: string }));
+      }
+    })();
 
-    return () => unsubscribe();
-  }, [uid, month]);
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
 
   // Which day "today" is, re-read every minute so a tab left open overnight
   // watches the new day's record. Set from a timer: the lint rule refuses a

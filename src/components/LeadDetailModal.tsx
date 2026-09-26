@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { createPortal } from "react-dom";
 import type { Lead } from "@/hooks/useLeads";
-import { useLeadHistory } from "@/hooks/useLeads";
+import { AUDIT_PAGE, useLeadHistory } from "@/hooks/useLeads";
 import { useDealForLead } from "@/hooks/useFinancials";
 import { addFollowUp, setLeadStatus, closeDeal, PAYMENT_METHODS, acceptLead } from "@/lib/clientActions";
 import { USER_SETTABLE_STATUSES, LEAD_STATUS_LABELS, isTerminal, type LeadStatus } from "@/lib/leadStatus";
@@ -87,9 +87,19 @@ export function LeadDetailModal({
   assigneeName,
   onReassignRequest,
 }: LeadDetailModalProps) {
-  const { followUps, events, error: historyError } = useLeadHistory(lead?.id ?? null);
+
   const { deal } = useDealForLead(lead?.id ?? null);
   const [activeTab, setActiveTab] = useState<Tab>("FOLLOW_UPS");
+  // Audit trail on demand, a page at a time — see `useLeadHistory`.
+  const [auditPages, setAuditPages] = useState<{ leadId: string | null; pages: number }>({
+    leadId: lead?.id ?? null,
+    pages: 1,
+  });
+  const pages = auditPages.leadId === (lead?.id ?? null) ? auditPages.pages : 1;
+  const { followUps, events, moreEvents, error: historyError } = useLeadHistory(
+    lead?.id ?? null,
+    activeTab === "AUDIT_TRAIL" ? pages * AUDIT_PAGE : 0
+  );
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
 
   // Prevent background scroll and escape listener
@@ -327,9 +337,11 @@ export function LeadDetailModal({
           >
             <Activity size={15} />
             <span>Audit Trail</span>
-            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
-              {events.length}
-            </span>
+            {events && !moreEvents && (
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                {events.length}
+              </span>
+            )}
           </button>
 
           <button
@@ -367,7 +379,13 @@ export function LeadDetailModal({
             />
           )}
 
-          {activeTab === "AUDIT_TRAIL" && <AuditTrailTab events={events} />}
+          {activeTab === "AUDIT_TRAIL" && (
+            <AuditTrailTab
+              events={events}
+              hasMore={moreEvents}
+              onLoadMore={() => setAuditPages({ leadId: lead?.id ?? null, pages: pages + 1 })}
+            />
+          )}
 
           {activeTab === "DEAL_ENTRY" && (
             deal ? (
@@ -807,7 +825,15 @@ const EVENT_LABELS: Record<string, string> = {
   DEAL_CLOSED: "Deal recorded & closed",
 };
 
-function AuditTrailTab({ events }: { events: ReturnType<typeof useLeadHistory>["events"] }) {
+function AuditTrailTab({
+  events,
+  hasMore,
+  onLoadMore,
+}: {
+  events: ReturnType<typeof useLeadHistory>["events"];
+  hasMore: boolean;
+  onLoadMore: () => void;
+}) {
   return (
     <div className="space-y-4">
       <div>
@@ -815,9 +841,9 @@ function AuditTrailTab({ events }: { events: ReturnType<typeof useLeadHistory>["
         <p className="text-xs text-slate-500">Full system timeline of automated triggers and admin actions.</p>
       </div>
 
-      {events.length === 0 ? (
+      {events === null || events.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-10 text-center text-xs text-slate-400">
-          No audit events recorded yet.
+          {events === null ? "Loading the audit trail…" : "No audit events recorded yet."}
         </div>
       ) : (
         <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
@@ -846,6 +872,15 @@ function AuditTrailTab({ events }: { events: ReturnType<typeof useLeadHistory>["
             </div>
           ))}
         </div>
+      )}
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-emerald-700 hover:border-emerald-300"
+        >
+          Load older events
+        </button>
       )}
     </div>
   );
