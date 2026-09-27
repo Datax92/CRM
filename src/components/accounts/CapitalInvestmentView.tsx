@@ -26,9 +26,9 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Wallet2 } from "lucide-react";
+import { Wallet2, Trash2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { useLedger, useFinanceCollection } from "@/hooks/useLedger";
+import { useLedger, useFinanceCollection, type TransactionDoc } from "@/hooks/useLedger";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
@@ -39,6 +39,7 @@ import {
   createAccount,
   updateAccount,
   addManualTransaction,
+  updateTransaction,
   deleteTransaction,
   saveCapitalSpending,
   deleteCapitalSpending,
@@ -147,6 +148,14 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
       const { paid } = readPaid(spending);
       entry.cost += spending.amount;
       entry.funded += paid;
+      entry.count += 1;
+    }
+    for (const txn of ledger.transactions) {
+      if (txn.direction !== "OUT" || txn.sourceModule === "CAPITAL_INVESTMENT") continue;
+      const entry = map.get(txn.accountId);
+      if (!entry) continue;
+      entry.cost += txn.amount;
+      entry.funded += txn.amount;
       entry.count += 1;
     }
     return map;
@@ -347,6 +356,9 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   const [tab, setTab] = useState<"SPENDINGS" | "RECEIVED">("SPENDINGS");
   const [addingSpending, setAddingSpending] = useState(false);
   const [editingSpending, setEditingSpending] = useState<Spending | null>(null);
+  const [editingDirectTxn, setEditingDirectTxn] = useState<TransactionDoc | null>(null);
+  const [deletingDirectTxn, setDeletingDirectTxn] = useState<TransactionDoc | null>(null);
+  const [openedDirectTxn, setOpenedDirectTxn] = useState<TransactionDoc | null>(null);
   const [addingContribution, setAddingContribution] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [paying, setPaying] = useState<Spending | null>(null);
@@ -365,14 +377,20 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     () => movements.filter((txn) => txn.direction === "IN"),
     [movements]
   );
+  const directSpendings = useMemo(
+    () => movements.filter((txn) => txn.direction === "OUT" && txn.sourceModule !== "CAPITAL_INVESTMENT"),
+    [movements]
+  );
 
   const figures = useMemo(() => {
     const received = (pot.openingBalance ?? 0) + contributions.reduce((sum, txn) => sum + txn.amount, 0);
     const paidFromPot = movements.filter((txn) => txn.direction === "OUT").reduce((sum, txn) => sum + txn.amount, 0);
-    const cost = spendings.reduce((sum, spending) => sum + spending.amount, 0);
-    const funded = spendings.reduce((sum, spending) => sum + readPaid(spending).paid, 0);
+    const directCost = directSpendings.reduce((sum, txn) => sum + txn.amount, 0);
+    const ticketCost = spendings.reduce((sum, spending) => sum + spending.amount, 0);
+    const cost = ticketCost + directCost;
+    const funded = spendings.reduce((sum, spending) => sum + readPaid(spending).paid, 0) + directCost;
     return { received, paidFromPot, inHand: received - paidFromPot, cost, funded, unfunded: Math.max(0, cost - funded) };
-  }, [pot.openingBalance, contributions, movements, spendings]);
+  }, [pot.openingBalance, contributions, movements, spendings, directSpendings]);
 
   /** The payments made against each spending, by the spending they funded. */
   const legsBySpending = useMemo(() => {
@@ -419,6 +437,20 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       : { ok: false, text: result.error });
   };
 
+  const confirmDeleteDirect = async () => {
+    if (!deletingDirectTxn) return;
+    setBusyId(deletingDirectTxn.id);
+    const result = await deleteTransaction(await getIdToken(), deletingDirectTxn.id);
+    setBusyId(null);
+    setDeletingDirectTxn(null);
+    setOpenedDirectTxn(null);
+    setBanner(
+      result.ok
+        ? { ok: true, text: `"${deletingDirectTxn.sourceLabel ?? "Spending"}" deleted, and ${formatMoney(deletingDirectTxn.amount)} put back into ${pot.name}.` }
+        : { ok: false, text: result.error }
+    );
+  };
+
   const removeContribution = async () => {
     if (!removingContribution) return;
     setBusyId(removingContribution.id);
@@ -446,10 +478,47 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     return actions;
   }, [busyId, askDelete]);
 
-  const spendingRows: ExpenseRowModel[] = spendings
-    .slice()
-    .sort((a, b) => b.dayKey.localeCompare(a.dayKey))
-    .map((spending) => {
+  const buildDirectActions = useCallback((txn: TransactionDoc): RowAction[] => {
+    const actions: RowAction[] = [];
+    if (txn.sourceModule === "MANUAL") {
+      actions.push({
+        key: "edit",
+        label: "Edit",
+        d: ICON.edit,
+        tone: "quiet",
+        onClick: () => setEditingDirectTxn(txn),
+      });
+      actions.push({
+        key: "delete",
+        label: "Delete",
+        d: ICON.trash,
+        tone: "bad",
+        onClick: () => setDeletingDirectTxn(txn),
+        disabled: busyId === txn.id,
+      });
+    }
+    return actions;
+  }, [busyId]);
+
+  type SpendingUnified =
+    | { kind: "TICKET"; spending: Spending }
+    | { kind: "DIRECT"; txn: TransactionDoc };
+
+  const unifiedSpendings = useMemo(() => {
+    const list: SpendingUnified[] = [
+      ...spendings.map((spending) => ({ kind: "TICKET" as const, spending })),
+      ...directSpendings.map((txn) => ({ kind: "DIRECT" as const, txn })),
+    ];
+    return list.sort((a, b) => {
+      const dayA = a.kind === "TICKET" ? a.spending.dayKey : a.txn.dayKey;
+      const dayB = b.kind === "TICKET" ? b.spending.dayKey : b.txn.dayKey;
+      return dayB.localeCompare(dayA);
+    });
+  }, [spendings, directSpendings]);
+
+  const spendingRows: ExpenseRowModel[] = unifiedSpendings.map((item) => {
+    if (item.kind === "TICKET") {
+      const spending = item.spending;
       const { paid, outstanding, settled } = readPaid(spending);
       const legs = legsBySpending.get(spending.id) ?? [];
       return {
@@ -471,7 +540,23 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         actions: buildActions(spending, isMobile),
         onOpen: () => setOpened(spending.id),
       };
-    });
+    }
+    const txn = item.txn;
+    return {
+      id: txn.id,
+      title: txn.sourceLabel ?? "Spending",
+      meta: [txn.dayKey, `Paid from ${pot.name}`, txn.createdByName ?? null].filter(Boolean).join(" · "),
+      amount: txn.amount,
+      category: "Utilities",
+      status: { label: "Paid", tone: TONE.good },
+      payment: null,
+      notes: txn.note
+        ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{txn.note}</span></div>
+        : null,
+      actions: buildDirectActions(txn),
+      onOpen: () => setOpenedDirectTxn(txn),
+    };
+  });
 
   const contributionRows: ExpenseRowModel[] = contributions
     .slice()
@@ -504,7 +589,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   const statCards: StatCard[] = [
     { label: "Put In", value: formatMoney(figures.received), note: `${contributions.length} contribution${contributions.length === 1 ? "" : "s"}`, pill: `${contributions.length}`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.receipt },
     { label: "Still In Hand", value: formatMoney(figures.inHand), note: "in this pot, not yet spent", pill: null, pct: figures.received ? Math.max(0, Math.round((figures.inHand / figures.received) * 100)) : 0, color: figures.inHand < 0 ? "#a8483c" : "#2f7d78", accent: "#4fa39c", icon: ICON.wallet },
-    { label: "Spent On It", value: formatMoney(figures.cost), note: `${spendings.length} spending${spendings.length === 1 ? "" : "s"}, whoever paid`, pill: null, pct: figures.received ? Math.min(100, Math.round((figures.cost / figures.received) * 100)) : 0, color: "#141f1e", accent: "#c99a2e", icon: ICON.bars },
+    { label: "Spent On It", value: formatMoney(figures.cost), note: `${spendingRows.length} spending${spendingRows.length === 1 ? "" : "s"}, whoever paid`, pill: null, pct: figures.received ? Math.min(100, Math.round((figures.cost / figures.received) * 100)) : 0, color: "#141f1e", accent: "#c99a2e", icon: ICON.bars },
     { label: "Not Paid Yet", value: formatMoney(figures.unfunded), note: figures.unfunded > 0 ? "no account behind them yet" : "every spending is funded", pill: figures.unfunded > 0 ? "Owed" : "Clear", tone: figures.unfunded > 0 ? "warn" : "good", pct: figures.cost ? Math.round((figures.unfunded / figures.cost) * 100) : 0, color: figures.unfunded > 0 ? "#a5762a" : "#2f7d78", accent: "#c0574a", icon: ICON.clock },
   ];
 
@@ -562,7 +647,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       */}
       <ChipRow
         chips={[
-          { label: `Spendings (${spendings.length})`, active: tab === "SPENDINGS", pick: () => setTab("SPENDINGS") },
+          { label: `Spendings (${spendingRows.length})`, active: tab === "SPENDINGS", pick: () => setTab("SPENDINGS") },
           { label: `Money in (${contributions.length})`, active: tab === "RECEIVED", pick: () => setTab("RECEIVED") },
         ]}
       />
@@ -631,14 +716,67 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         );
       })()}
 
+      {openedDirectTxn && (
+        <OverlayPanel
+          title={openedDirectTxn.sourceLabel ?? "Direct spending"}
+          subtitle={`${pot.name} · ${openedDirectTxn.dayKey}`}
+          maxWidth={620}
+          onClose={() => setOpenedDirectTxn(null)}
+        >
+          <ExpenseDetail
+            title={openedDirectTxn.sourceLabel ?? "Direct spending"}
+            amountLabel={formatMoney(openedDirectTxn.amount)}
+            formatMoney={formatMoney}
+            status={{ label: "Paid", tone: TONE.good }}
+            payment={{ paid: openedDirectTxn.amount, outstanding: 0, label: "Paid", tone: TONE.good }}
+            fields={[
+              { label: "Investment", value: pot.name },
+              { label: "Date", value: openedDirectTxn.dayKey },
+              { label: "Amount", value: formatMoney(openedDirectTxn.amount) },
+              { label: "Note", value: openedDirectTxn.note ?? "—", wide: true },
+              ...(openedDirectTxn.createdByName ? [{ label: "Recorded by", value: openedDirectTxn.createdByName }] : []),
+            ]}
+            legs={[
+              {
+                id: openedDirectTxn.id,
+                accountName: pot.name,
+                amount: openedDirectTxn.amount,
+                dayKey: openedDirectTxn.dayKey,
+                note: openedDirectTxn.note ?? null,
+                by: openedDirectTxn.createdByName ?? null,
+              },
+            ]}
+            notFunded=""
+            history={[]}
+            actions={buildDirectActions(openedDirectTxn).map((action) => (
+              <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
+                disabled={action.disabled}
+                onClick={() => {
+                  setOpenedDirectTxn(null);
+                  action.onClick();
+                }} />
+            ))}
+          />
+        </OverlayPanel>
+      )}
+
       {(addingSpending || editingSpending) && (
         <SpendingForm
           spending={editingSpending}
-          investmentId={pot.id}
-          investmentName={pot.name}
+          pot={pot}
           getIdToken={getIdToken}
           onClose={() => { setAddingSpending(false); setEditingSpending(null); }}
           onSaved={(text) => { setBanner({ ok: true, text }); setAddingSpending(false); setEditingSpending(null); }}
+        />
+      )}
+
+      {editingDirectTxn && (
+        <DirectSpendingForm
+          existing={editingDirectTxn}
+          pot={pot}
+          getIdToken={getIdToken}
+          onClose={() => setEditingDirectTxn(null)}
+          onSaved={(text) => { setBanner({ ok: true, text }); setEditingDirectTxn(null); }}
         />
       )}
 
@@ -686,6 +824,27 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
               Nothing has been paid for this, so no account changes. This cannot be undone.
             </p>
           )}
+        </OverlayPanel>
+      )}
+
+      {deletingDirectTxn && (
+        <OverlayPanel title="Delete this spending?" maxWidth={440} onClose={() => setDeletingDirectTxn(null)}
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button type="button" onClick={() => setDeletingDirectTxn(null)}
+                style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Keep it</button>
+              <button type="button" disabled={busyId === deletingDirectTxn.id} onClick={() => void confirmDeleteDirect()}
+                style={{ borderRadius: 10, border: "none", background: "#a8483c", color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busyId === deletingDirectTxn.id ? 0.5 : 1 }}>
+                {busyId === deletingDirectTxn.id ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          }>
+          <p style={{ fontSize: 13.5, color: X.body, lineHeight: 1.6 }}>
+            <strong style={{ color: X.ink }}>{deletingDirectTxn.sourceLabel ?? "Spending"}</strong> · {formatMoney(deletingDirectTxn.amount)} · {deletingDirectTxn.dayKey}
+          </p>
+          <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
+            Deleting this removes the entry and restores {formatMoney(deletingDirectTxn.amount)} back into {pot.name}. This cannot be undone.
+          </p>
         </OverlayPanel>
       )}
 
@@ -869,10 +1028,9 @@ function ContributionForm({ pot, getIdToken, onClose, onSaved }: {
   );
 }
 
-function SpendingForm({ spending, investmentId, investmentName, getIdToken, onClose, onSaved }: {
+function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
   spending: Spending | null;
-  investmentId: string;
-  investmentName: string;
+  pot: Ledger["accounts"][number];
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
@@ -884,6 +1042,7 @@ function SpendingForm({ spending, investmentId, investmentName, getIdToken, onCl
     dayKey: spending?.dayKey ?? karachiDayKey(),
     description: spending?.description ?? "",
   });
+  const [payDirectly, setPayDirectly] = useState(!spending);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (key: keyof typeof form, value: string) => setForm((f) => ({ ...f, [key]: value }));
@@ -892,18 +1051,46 @@ function SpendingForm({ spending, investmentId, investmentName, getIdToken, onCl
   const save = async () => {
     setBusy(true);
     setError(null);
-    const result = await saveCapitalSpending(
-      await getIdToken(),
-      { investmentId, title: form.title, amount: Number(form.amount) || 0, dayKey: form.dayKey, description: form.description },
-      spending?.id
-    );
-    setBusy(false);
-    if (result.ok) onSaved(spending ? "Spending updated." : "Spending added. Choose which account pays it.");
-    else setError(result.error);
+    const token = await getIdToken();
+    if (!spending && payDirectly) {
+      const result = await addManualTransaction(token, {
+        accountId: pot.id,
+        direction: "OUT",
+        amount: Number(form.amount) || 0,
+        type: "EXPENSE",
+        dayKey: form.dayKey,
+        label: form.title.trim(),
+        note: form.description.trim() || null,
+      });
+      setBusy(false);
+      if (result.ok) {
+        onSaved(`${formatMoney(Number(form.amount) || 0)} spending recorded and debited from ${pot.name}.`);
+      } else {
+        setError(result.error);
+      }
+    } else {
+      const result = await saveCapitalSpending(
+        token,
+        {
+          investmentId: pot.id,
+          title: form.title.trim(),
+          amount: Number(form.amount) || 0,
+          dayKey: form.dayKey,
+          description: form.description.trim() || "",
+        },
+        spending?.id
+      );
+      setBusy(false);
+      if (result.ok) {
+        onSaved(spending ? "Spending updated." : "Spending added. Choose which account pays it.");
+      } else {
+        setError(result.error);
+      }
+    }
   };
 
   return (
-    <OverlayPanel title={spending ? "Edit spending" : "Add spending"} subtitle={investmentName} icon={<Wallet2 size={18} />} maxWidth={520} onClose={onClose}
+    <OverlayPanel title={spending ? "Edit spending" : "Add spending"} subtitle={pot.name} icon={<Wallet2 size={18} />} maxWidth={520} onClose={onClose}
       footer={
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
           <button type="button" onClick={onClose}
@@ -934,9 +1121,113 @@ function SpendingForm({ spending, investmentId, investmentName, getIdToken, onCl
           </label>
         </div>
       </OverlayCard>
+
+      {!spending && (
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", marginTop: 4, padding: "0 4px" }}>
+          <input
+            type="checkbox"
+            checked={payDirectly}
+            onChange={(e) => setPayDirectly(e.target.checked)}
+            style={{ marginTop: 2, accentColor: X.teal, width: 16, height: 16, cursor: "pointer" }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: X.ink }}>
+              Pay directly from {pot.name}
+            </span>
+            <span style={{ fontSize: 11.5, color: X.faint }}>
+              Debits {pot.name} directly and syncs with Central Ledger and Group Income sheet.
+            </span>
+          </div>
+        </label>
+      )}
+
+      {!spending && !payDirectly && (
+        <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+          Recording as an unfunded spending ticket does not move money yet. Once added, you can choose which account(s) fund it.
+        </p>
+      )}
+      {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
+    </OverlayPanel>
+  );
+}
+
+function DirectSpendingForm({
+  existing,
+  pot,
+  getIdToken,
+  onClose,
+  onSaved,
+}: {
+  existing: TransactionDoc;
+  pot: Ledger["accounts"][number];
+  getIdToken: () => Promise<string>;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const isMobile = useIsMobile();
+  const [label, setLabel] = useState(existing.sourceLabel ?? "");
+  const [amount, setAmount] = useState(String(existing.amount));
+  const [dayKey, setDayKey] = useState(existing.dayKey);
+  const [note, setNote] = useState(existing.note ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const field = { ...designField, fontSize: isMobile ? 16 : 13.5 };
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const token = await getIdToken();
+    const result = await updateTransaction(token, existing.id, {
+      amount: Number(amount) || 0,
+      label: label.trim(),
+      dayKey,
+      note: note.trim() || null,
+    });
+    setBusy(false);
+    if (result.ok) onSaved("Spending updated.");
+    else setError(result.error);
+  };
+
+  return (
+    <OverlayPanel
+      title="Edit spending"
+      subtitle={pot.name}
+      icon={<Wallet2 size={18} />}
+      maxWidth={520}
+      onClose={onClose}
+      footer={
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+          <button type="button" onClick={onClose}
+            style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+          <button type="button" disabled={busy || !label.trim() || !(Number(amount) > 0)} onClick={() => void save()}
+            style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy || !label.trim() || !(Number(amount) > 0) ? 0.5 : 1 }}>
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      }
+    >
+      <OverlayCard title="What the money went on">
+        <div style={{ display: "grid", gap: 11, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", padding: "14px 16px" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1", ...designLabel }}>
+            <span>Description</span>
+            <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Feburary 2026 Khasara, tyre, repair…" style={field} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, ...designLabel }}>
+            <span>Amount</span>
+            <input type="number" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} style={field} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, ...designLabel }}>
+            <span>Date</span>
+            <input type="date" value={dayKey} max={karachiDayKey()} onChange={(event) => setDayKey(event.target.value)} style={field} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1", ...designLabel }}>
+            <span>Note</span>
+            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Details or notes…" style={field} />
+          </label>
+        </div>
+      </OverlayCard>
       <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
-        Recording it does not move any money. Once it is here, <strong style={{ color: X.body }}>Pay from…</strong> chooses which
-        account funds it — the committee, a StateLife commission, this investment&rsquo;s own pot, or several at once.
+        This spending was paid directly out of {pot.name}. Editing updates the amount in the ledger and investment spendings.
       </p>
       {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
     </OverlayPanel>
