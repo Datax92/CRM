@@ -409,6 +409,8 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
     return (
       <InvestedNowSummaryView
         bookId={book?.id}
+        from={from}
+        to={to}
         onBack={() => {
           setViewingCapitalSummary(false);
           if (initialView === "INVESTED_SUMMARY") {

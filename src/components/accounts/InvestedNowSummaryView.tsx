@@ -21,20 +21,20 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { formatMoney } from "@/lib/money";
 import { karachiDayKey } from "@/lib/dates";
 import { ACCOUNT_KIND_LABELS, type AccountKind } from "@/lib/ledger";
-import { isRoundOverdue, readFunding, type FundingLine } from "@/lib/investmentWithX";
-import { CARD, EmptyState, Skeleton } from "./accountsChrome";
+import { isRoundOverdue, isRoundReceived, readFunding, type FundingLine } from "@/lib/investmentWithX";
+import { EmptyState, Skeleton } from "./accountsChrome";
 
-/* ---- tokens matching CommitteeStatement.tsx ---- */
+/* ---- tokens matching CommitteeStatement.tsx with high-contrast text ---- */
 const C = {
   page: "#eef4f3",
   ink: "#141f1e",
-  body: "#3c4d4b",
-  muted: "#5b6d6b",
-  label: "#8fa2a0",
-  faint: "#9aacaa",
+  body: "#2d3d3b",
+  muted: "#495b59",
+  label: "#556e6b",
+  faint: "#5e7572",
   hair: "#c3d5d3",
-  line: "#e2ecea",
-  rowLine: "#f2f7f6",
+  line: "#d8e5e3",
+  rowLine: "#edf4f3",
   field: "#f4f8f7",
   tint: "#f2f8f7",
   teal: "#3f8f8a",
@@ -82,9 +82,13 @@ interface AccountSummary {
 
 export function InvestedNowSummaryView({
   bookId,
+  from,
+  to,
   onBack,
 }: {
   bookId?: string | null;
+  from?: string;
+  to?: string;
   onBack?: () => void;
 }) {
   const router = useRouter();
@@ -108,12 +112,13 @@ export function InvestedNowSummaryView({
     return map;
   }, [ledger.accounts]);
 
-  // Open (unreceived) rounds in this book (or all books if none selected)
+  // Open (unreceived) rounds in this book (or all books if none selected), matching date range
   const openRounds = useMemo(() => {
     return rawRounds
-      .filter((r) => (!book || r.bookId === book.id) && !r.received)
+      .filter((r) => (!book || r.bookId === book.id) && !isRoundReceived({ received: r.received }))
+      .filter((r) => (!from || String(r.dayKey || "") >= from) && (!to || String(r.dayKey || "") <= to))
       .sort((a, b) => String(b.dayKey || "").localeCompare(String(a.dayKey || "")));
-  }, [rawRounds, book]);
+  }, [rawRounds, book, from, to]);
 
   const legs = useMemo<ActiveFundingLeg[]>(() => {
     const list: ActiveFundingLeg[] = [];
@@ -248,7 +253,19 @@ export function InvestedNowSummaryView({
   const topAccount = accountsSummary[0] ?? null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: "var(--font-directory), system-ui, sans-serif", letterSpacing: "-0.01em", color: "#22302f" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+        fontFamily: "var(--font-directory), system-ui, sans-serif",
+        letterSpacing: "-0.01em",
+        color: "#22302f",
+        WebkitFontSmoothing: "antialiased",
+        MozOsxFontSmoothing: "grayscale",
+        textRendering: "optimizeLegibility",
+      }}
+    >
       {/* Back button */}
       <button
         type="button"
@@ -281,6 +298,7 @@ export function InvestedNowSummaryView({
           background: "linear-gradient(115deg,#1f5c58 0%,#3f8f8a 66%,#4fa39c 100%)",
           color: "#fff",
           padding: isMobile ? "20px 18px" : "24px 28px",
+          boxShadow: "0 4px 20px rgba(31, 92, 88, 0.16)",
         }}
       >
         <svg viewBox="0 0 400 170" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.16 }} aria-hidden>
@@ -308,13 +326,13 @@ export function InvestedNowSummaryView({
               <Icon d="M21 12V7H5a2 2 0 0 1 0-4h14v4M3 5v14a2 2 0 0 0 2 2h16v-5M18 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4" size={24} w={1.9} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.6px", textTransform: "uppercase", opacity: 0.78 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.6px", textTransform: "uppercase", opacity: 0.85 }}>
                 Invested Capital Summary
               </div>
               <div style={{ fontSize: isMobile ? 28 : 34, fontWeight: 800, letterSpacing: "-1.2px", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
                 {formatMoney(totalFunded)}
               </div>
-              <div style={{ fontSize: 13, fontWeight: 500, opacity: 0.88, marginTop: 3 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, opacity: 0.92, marginTop: 3 }}>
                 {book?.name ?? "Investment with X"} · currently out across {openRounds.length} active round{openRounds.length === 1 ? "" : "s"} from {accountsSummary.length} account{accountsSummary.length === 1 ? "" : "s"}
               </div>
             </div>
@@ -350,7 +368,7 @@ export function InvestedNowSummaryView({
       {/* ---- Three Stat Cards (matching CommitteeStatement.tsx) ---- */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 14 }}>
         {/* Card 1 */}
-        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px" }}>
+        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: C.teal }} />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -371,13 +389,13 @@ export function InvestedNowSummaryView({
           <div style={{ height: 6, borderRadius: 999, background: C.page, marginTop: 14, overflow: "hidden" }}>
             <div style={{ height: "100%", borderRadius: 999, width: "100%", background: C.teal }} />
           </div>
-          <div style={{ fontSize: 11.5, fontWeight: 500, color: C.faint, marginTop: 8 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: C.faint, marginTop: 8 }}>
             Total money currently deployed with partner
           </div>
         </div>
 
         {/* Card 2 */}
-        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px" }}>
+        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: C.tealInk }} />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -398,13 +416,13 @@ export function InvestedNowSummaryView({
           <div style={{ height: 6, borderRadius: 999, background: C.page, marginTop: 14, overflow: "hidden" }}>
             <div style={{ height: "100%", borderRadius: 999, width: "100%", background: C.tealInk }} />
           </div>
-          <div style={{ fontSize: 11.5, fontWeight: 500, color: C.faint, marginTop: 8 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: C.faint, marginTop: 8 }}>
             Investors, committees, credit cards and personal pots
           </div>
         </div>
 
         {/* Card 3 */}
-        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px" }}>
+        <div className="acc-in" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 20px", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: "#c99a2e" }} />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -427,7 +445,7 @@ export function InvestedNowSummaryView({
           <div style={{ height: 6, borderRadius: 999, background: C.page, marginTop: 14, overflow: "hidden" }}>
             <div style={{ height: "100%", borderRadius: 999, width: `${topAccount?.pct ?? 0}%`, background: "#c99a2e" }} />
           </div>
-          <div style={{ fontSize: 11.5, fontWeight: 500, color: C.faint, marginTop: 8 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: C.faint, marginTop: 8 }}>
             {topAccount ? `${formatMoney(topAccount.total)} in ${topAccount.roundCount} active round${topAccount.roundCount === 1 ? "" : "s"}` : "No active funding accounts"}
           </div>
         </div>
@@ -474,14 +492,15 @@ export function InvestedNowSummaryView({
                 className="acc-in acc-lift"
                 onClick={() => setSelectedAccount((prev) => (prev === acc.accountId ? "ALL" : acc.accountId))}
                 style={{
-                  ...CARD,
                   display: "block",
                   padding: "16px 18px",
                   cursor: "pointer",
+                  borderRadius: 18,
                   border: isSelected ? `2px solid ${C.teal}` : `1px solid ${C.line}`,
                   background: isSelected ? "#f7fcfb" : "#fff",
+                  boxShadow: isSelected ? "0 4px 14px rgba(63, 143, 138, 0.12)" : "0 1px 3px rgba(0, 0, 0, 0.03)",
                   animationDelay: `${Math.min(index, 7) * 35}ms`,
-                  transition: "all 0.15s ease",
+                  transition: "border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
