@@ -36,7 +36,7 @@
 export const LEDGER_SIDES = ['RECEIVABLE', 'PAYABLE'] as const;
 export type LedgerSide = (typeof LEDGER_SIDES)[number];
 
-export const DEFAULT_RECEIVABLE_GROUPS = ['Official / Unofficial', 'Official / Regular'];
+export const DEFAULT_RECEIVABLE_GROUPS = ['Official / Unofficial', 'Official / Regular', 'Committee'];
 export const DEFAULT_PAYABLE_GROUPS = ['Official / Unofficial'];
 
 export interface SheetEntry {
@@ -58,6 +58,8 @@ export interface SheetEntry {
   /** Payables: `BORROW PURPOSE`. Receivables: what it was for. */
   purpose: string | null;
   description: string | null;
+  /** Committee account this receivable belongs to, when created from or linked to a committee. */
+  committeeAccountId?: string | null;
 }
 
 export type EntryState = 'OPEN' | 'PART' | 'SETTLED' | 'OVERDUE';
@@ -134,6 +136,7 @@ export function readSheetEntry(raw: Record<string, unknown>): SheetEntry {
     returnDayKey: text(raw.returnDayKey),
     purpose: text(raw.purpose),
     description: text(raw.description),
+    committeeAccountId: text(raw.committeeAccountId),
   };
 }
 

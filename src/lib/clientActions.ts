@@ -1401,7 +1401,12 @@ export async function settleSheetEntry(
 export async function settleSheetEntryThroughAccounts(
   token: string,
   entryId: string,
-  input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string | null; note?: string | null }
+  input: {
+    allocations: Array<{ accountId: string; amount: number }>;
+    dayKey?: string | null;
+    note?: string | null;
+    sourceLabel?: string | null;
+  }
 ) {
   return _settleSheetEntryThroughAccounts(token, entryId, input);
 }

@@ -54,6 +54,7 @@ export interface SheetEntryInput {
   returnDayKey?: string | null;
   purpose?: string | null;
   description?: string | null;
+  committeeAccountId?: string | null;
 }
 
 export async function saveSheetEntry(
@@ -77,6 +78,7 @@ export async function saveSheetEntry(
     const payload = {
       side,
       group,
+      committeeAccountId: typeof input.committeeAccountId === "string" && input.committeeAccountId ? input.committeeAccountId : null,
       dayKey: dayOrNull(input.dayKey) ?? karachiDayKey(),
       name,
       amount,
@@ -184,7 +186,12 @@ export async function settleSheetEntry(
 export async function settleSheetEntryThroughAccounts(
   token: string,
   entryId: string,
-  input: { allocations: Array<{ accountId: string; amount: number }>; dayKey?: string | null; note?: string | null }
+  input: {
+    allocations: Array<{ accountId: string; amount: number }>;
+    dayKey?: string | null;
+    note?: string | null;
+    sourceLabel?: string | null;
+  }
 ): Promise<ActionResult<{ settled: number; pending: number; posted: number; fullyPaid: boolean }>> {
   return runAction("settleSheetEntryThroughAccounts", async () => {
     const auth = await requireFinance(token);
@@ -218,6 +225,7 @@ export async function settleSheetEntryThroughAccounts(
       }
 
       const name = String(data.name ?? "").trim() || "Unnamed";
+      const customLabel = typeof input.sourceLabel === "string" && input.sourceLabel.trim() ? input.sourceLabel.trim() : null;
       const legs = allocationsToTransactions({
         allocations,
         direction: settlementDirection(side),
@@ -225,7 +233,7 @@ export async function settleSheetEntryThroughAccounts(
         dayKey,
         sourceModule: "RECEIVABLE",
         sourceId: entryId,
-        sourceLabel: side === "PAYABLE" ? `Paid back — ${name}` : `Received — ${name}`,
+        sourceLabel: customLabel ?? (side === "PAYABLE" ? `Paid back — ${name}` : `Received — ${name}`),
         groupId,
         createdByUid: auth.uid,
         note,

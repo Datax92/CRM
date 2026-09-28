@@ -169,6 +169,9 @@ export function AccountsView({ accountId }: { accountId?: string }) {
         <CommitteeStatement
           account={account}
           transactions={transactions}
+          accounts={accounts}
+          balances={balances}
+          getIdToken={getIdToken}
           isMobile={isMobile}
           onAdd={() => setEnteringOn(account.id)}
           onEdit={setEditingRow}
@@ -179,6 +182,7 @@ export function AccountsView({ accountId }: { accountId?: string }) {
             setBanner(res.ok ? "Deleted." : res.error);
           }}
           onManage={() => setManagingAccount(true)}
+          onBanner={setBanner}
         />
       ) : account ? (
         <AccountStatement
