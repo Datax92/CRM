@@ -114,10 +114,13 @@ export function CommitteeStatement({
   );
 
   const pool = account.openingBalance ?? 0;
-  const spent = mine.filter((t) => t.direction === "OUT").reduce((a, t) => a + t.amount, 0);
-  const remaining = pool - spent;
+  const totalOut = mine.filter((t) => t.direction === "OUT").reduce((a, t) => a + t.amount, 0);
+  const totalIn = mine.filter((t) => t.direction === "IN").reduce((a, t) => a + t.amount, 0);
+  const netSpent = totalOut - totalIn;
+  const spent = Math.max(0, netSpent);
+  const remaining = pool - netSpent;
   const usedPct = pool > 0 ? Math.round((spent / pool) * 100) : 0;
-  const leftPct = Math.max(0, 100 - usedPct);
+  const leftPct = pool > 0 ? Math.max(0, Math.round((remaining / pool) * 100)) : 0;
   const rowMax = Math.max(...mine.map((t) => t.amount), 1);
 
   const rows = useMemo(() => {
@@ -139,6 +142,7 @@ export function CommitteeStatement({
     return (
       <MobileStatement
         account={account} rows={rows} pool={pool} spent={spent} remaining={remaining}
+        totalIn={totalIn} totalOut={totalOut}
         usedPct={usedPct} rowMax={rowMax} chip={chip} setChip={setChip}
         query={query} setQuery={setQuery} sourceOf={sourceOf}
         onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} onManage={onManage}
@@ -148,8 +152,28 @@ export function CommitteeStatement({
 
   const stats = [
     { label: "Committee Amount", value: pool, note: "Full pool for this committee", pill: "Pool", tone: "neutral", pct: 100, color: C.ink, accent: C.teal, d: "M3 10 12 4l9 6M5 10v9h14v-9M9 19v-5h6v5" },
-    { label: "Spent", value: spent, note: `${usedPct}% of the committee used`, pill: `${usedPct}%`, tone: "down", pct: usedPct, color: C.spendInk, accent: C.spend, d: "M7 17 17 7M9 7h8v8" },
-    { label: "Remaining", value: remaining, note: `${leftPct}% still available`, pill: `${leftPct}%`, tone: "up", pct: leftPct, color: C.tealInk, accent: C.tealInk, d: "M3 7h18v12H3zM3 11h18M7 15h4" },
+    {
+      label: "Spent",
+      value: spent,
+      note: totalIn > 0 ? `${usedPct}% of pool · ${formatMoney(totalIn)} returned` : `${usedPct}% of the committee used`,
+      pill: `${usedPct}%`,
+      tone: "down",
+      pct: usedPct,
+      color: C.spendInk,
+      accent: C.spend,
+      d: "M7 17 17 7M9 7h8v8",
+    },
+    {
+      label: "Remaining",
+      value: remaining,
+      note: remaining < 0 ? `Overspent by ${formatMoney(Math.abs(remaining))}` : `${leftPct}% still available`,
+      pill: `${leftPct}%`,
+      tone: remaining < 0 ? "down" : "up",
+      pct: leftPct,
+      color: remaining < 0 ? C.spendInk : C.tealInk,
+      accent: remaining < 0 ? C.spend : C.tealInk,
+      d: "M3 7h18v12H3zM3 11h18M7 15h4",
+    },
   ] as const;
 
   return (
@@ -249,25 +273,72 @@ export function CommitteeStatement({
           })}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "13px 20px", background: C.spendBar, borderTop: `1px solid ${C.spendBorder}`, borderBottom: `1px solid ${C.spendBorder}` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.spend }} />
-            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: C.spendInk, whiteSpace: "nowrap" }}>Spendings</span>
-            <span style={{ padding: "2px 9px", borderRadius: 999, background: "#fff", border: `1px solid ${C.spendPill}`, fontSize: 11, fontWeight: 700, color: C.spendPillInk }}>{rows.length}</span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.5px", color: C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatMoney(spent)}</span>
-            <button type="button" onClick={onAdd} className="acc-press"
-              style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 15px", borderRadius: 999, background: "#fff", border: `1px solid ${C.spendPill}`, fontSize: 12.5, fontWeight: 700, color: C.spendInk, cursor: "pointer", fontFamily: "inherit" }}>
-              <Icon d="M12 5v14M5 12h14" size={13} w={2.6} />
-              <span>Add</span>
-            </button>
-          </div>
-        </div>
+        {(() => {
+          const rowsInflow = rows.filter((t) => t.direction === "IN").reduce((sum, t) => sum + t.amount, 0);
+          const rowsOutflow = rows.filter((t) => t.direction === "OUT").reduce((sum, t) => sum + t.amount, 0);
+          const isFilteredIn = chip === "Money in";
+          const sectionTitle =
+            chip === "Money in"
+              ? "Money in"
+              : chip === "All"
+                ? (totalIn > 0 ? "Movements" : "Spendings")
+                : chip;
+          const sectionTotal =
+            chip === "Money in"
+              ? rowsInflow
+              : chip === "Money out"
+                ? rowsOutflow
+                : chip === "All"
+                  ? (totalIn > 0 ? Math.max(0, rowsOutflow - rowsInflow) : rowsOutflow)
+                  : rows.reduce((sum, t) => sum + t.amount, 0);
+
+          return (
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14,
+              padding: "13px 20px",
+              background: isFilteredIn ? C.tint : C.spendBar,
+              borderTop: `1px solid ${isFilteredIn ? C.hair : C.spendBorder}`,
+              borderBottom: `1px solid ${isFilteredIn ? C.hair : C.spendBorder}`,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: isFilteredIn ? C.teal : C.spend }} />
+                <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: isFilteredIn ? C.tealInk : C.spendInk, whiteSpace: "nowrap" }}>
+                  {sectionTitle}
+                </span>
+                <span style={{
+                  padding: "2px 9px", borderRadius: 999, background: "#fff",
+                  border: `1px solid ${isFilteredIn ? C.hair : C.spendPill}`,
+                  fontSize: 11, fontWeight: 700, color: isFilteredIn ? C.tealInk : C.spendPillInk,
+                }}>{rows.length}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.5px", color: isFilteredIn ? C.tealInk : C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                  {chip === "All" && totalIn > 0 && <span style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginRight: 6 }}>Net</span>}
+                  {formatMoney(sectionTotal)}
+                </span>
+                <button type="button" onClick={onAdd} className="acc-press"
+                  style={{
+                    display: "flex", alignItems: "center", gap: 7, padding: "8px 15px",
+                    borderRadius: 999, background: "#fff",
+                    border: `1px solid ${isFilteredIn ? C.hair : C.spendPill}`,
+                    fontSize: 12.5, fontWeight: 700, color: isFilteredIn ? C.tealInk : C.spendInk,
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}>
+                  <Icon d="M12 5v14M5 12h14" size={13} w={2.6} />
+                  <span>Add</span>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {rows.map((t) => {
-          const m = KIND_META[t.type] ?? KIND_META.EXPENSE;
-          const sharePct = spent > 0 ? Math.round((t.amount / spent) * 100) : 0;
+          const isIncome = t.direction === "IN";
+          const m = isIncome
+            ? { color: C.tealInk, tint: "#e8f5f3", d: "M17 7 7 17M15 17H7V9" }
+            : (KIND_META[t.type] ?? KIND_META.EXPENSE);
+          const baseTotal = isIncome ? (totalIn > 0 ? totalIn : t.amount) : (totalOut > 0 ? totalOut : t.amount);
+          const sharePct = baseTotal > 0 ? Math.round((t.amount / baseTotal) * 100) : 0;
           return (
             <div key={t.id} className="cmt-row"
               style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 128px auto auto", alignItems: "center", gap: 16, padding: "15px 20px", borderBottom: `1px solid ${C.rowLine}` }}>
@@ -278,7 +349,7 @@ export function CommitteeStatement({
                 <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
                   <span style={{ fontSize: 15.5, fontWeight: 700, letterSpacing: "-0.35px", color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.sourceLabel ?? "—"}</span>
                   <span style={{ flexShrink: 0, padding: "3px 10px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.3px", whiteSpace: "nowrap", background: m.tint, color: m.color }}>
-                    {TRANSACTION_TYPE_LABELS[t.type]}
+                    {isIncome ? "Money in" : TRANSACTION_TYPE_LABELS[t.type]}
                   </span>
                 </div>
                 <div style={{ fontSize: 12.5, fontWeight: 500, color: C.faint, marginTop: 2, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -287,12 +358,12 @@ export function CommitteeStatement({
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
                 <div style={{ flex: 1, minWidth: 0, height: 6, borderRadius: 999, background: C.rowLine, overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 999, width: `${Math.max(6, Math.round((t.amount / rowMax) * 100))}%`, background: "linear-gradient(90deg,#d8735f,#c0574a)" }} />
+                  <div style={{ height: "100%", borderRadius: 999, width: `${Math.max(6, Math.round((t.amount / rowMax) * 100))}%`, background: isIncome ? "linear-gradient(90deg,#5cb8b2,#2f7d78)" : "linear-gradient(90deg,#d8735f,#c0574a)" }} />
                 </div>
-                <span style={{ fontSize: 11.5, fontWeight: 700, color: C.share, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>{sharePct}%</span>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: isIncome ? C.tealInk : C.share, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>{sharePct}%</span>
               </div>
-              <div style={{ textAlign: "right", fontSize: 16, fontWeight: 800, letterSpacing: "-0.4px", color: C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", minWidth: 104 }}>
-                {formatMoney(t.amount)}
+              <div style={{ textAlign: "right", fontSize: 16, fontWeight: 800, letterSpacing: "-0.4px", color: isIncome ? C.tealInk : C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", minWidth: 104 }}>
+                {isIncome ? `+${formatMoney(t.amount)}` : formatMoney(t.amount)}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
                 {t.sourceModule === "MANUAL" && (
@@ -323,12 +394,12 @@ export function CommitteeStatement({
 /* ------------------------------------------------------------------------ */
 
 function MobileStatement({
-  account, rows, pool, spent, remaining, usedPct, rowMax, chip, setChip, query, setQuery,
+  account, rows, pool, spent, remaining, totalIn, totalOut, usedPct, rowMax, chip, setChip, query, setQuery,
   sourceOf, onAdd, onEdit, onDelete, onManage,
 }: {
   account: AccountDoc;
   rows: TransactionDoc[];
-  pool: number; spent: number; remaining: number; usedPct: number; rowMax: number;
+  pool: number; spent: number; remaining: number; totalIn: number; totalOut: number; usedPct: number; rowMax: number;
   chip: Chip; setChip: (c: Chip) => void;
   query: string; setQuery: (q: string) => void;
   sourceOf: (t: TransactionDoc) => string;
@@ -410,19 +481,54 @@ function MobileStatement({
 
       {/* ---- rows ---- */}
       <div style={{ padding: "8px 18px 20px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "6px 4px 12px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.spend }} />
-            <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: C.spendInk, whiteSpace: "nowrap" }}>Spendings</span>
-            <span style={{ padding: "2px 8px", borderRadius: 999, background: "#fff", border: `1px solid ${C.spendPill}`, fontSize: 10.5, fontWeight: 700, color: C.spendPillInk }}>{rows.length}</span>
-          </div>
-          <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "-0.5px", color: C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatMoney(spent)}</span>
-        </div>
+        {(() => {
+          const rowsInflow = rows.filter((t) => t.direction === "IN").reduce((sum, t) => sum + t.amount, 0);
+          const rowsOutflow = rows.filter((t) => t.direction === "OUT").reduce((sum, t) => sum + t.amount, 0);
+          const isFilteredIn = chip === "Money in";
+          const sectionTitle =
+            chip === "Money in"
+              ? "Money in"
+              : chip === "All"
+                ? (totalIn > 0 ? "Movements" : "Spendings")
+                : chip;
+          const sectionTotal =
+            chip === "Money in"
+              ? rowsInflow
+              : chip === "Money out"
+                ? rowsOutflow
+                : chip === "All"
+                  ? (totalIn > 0 ? Math.max(0, rowsOutflow - rowsInflow) : rowsOutflow)
+                  : rows.reduce((sum, t) => sum + t.amount, 0);
+
+          return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "6px 4px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: isFilteredIn ? C.teal : C.spend }} />
+                <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: isFilteredIn ? C.tealInk : C.spendInk, whiteSpace: "nowrap" }}>
+                  {sectionTitle}
+                </span>
+                <span style={{
+                  padding: "2px 8px", borderRadius: 999, background: "#fff",
+                  border: `1px solid ${isFilteredIn ? C.hair : C.spendPill}`,
+                  fontSize: 10.5, fontWeight: 700, color: isFilteredIn ? C.tealInk : C.spendPillInk,
+                }}>{rows.length}</span>
+              </div>
+              <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "-0.5px", color: isFilteredIn ? C.tealInk : C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                {chip === "All" && totalIn > 0 && <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginRight: 5 }}>Net</span>}
+                {formatMoney(sectionTotal)}
+              </span>
+            </div>
+          );
+        })()}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
           {rows.map((t) => {
-            const m = KIND_META[t.type] ?? KIND_META.EXPENSE;
-            const sharePct = spent > 0 ? Math.round((t.amount / spent) * 100) : 0;
+            const isIncome = t.direction === "IN";
+            const m = isIncome
+              ? { color: C.tealInk, tint: "#e8f5f3", d: "M17 7 7 17M15 17H7V9" }
+              : (KIND_META[t.type] ?? KIND_META.EXPENSE);
+            const baseTotal = isIncome ? (totalIn > 0 ? totalIn : t.amount) : (totalOut > 0 ? totalOut : t.amount);
+            const sharePct = baseTotal > 0 ? Math.round((t.amount / baseTotal) * 100) : 0;
             return (
               <div key={t.id} className="acc-in" style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 20, padding: "15px 16px" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) auto", alignItems: "center", gap: 13 }}>
@@ -433,7 +539,7 @@ function MobileStatement({
                     <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.35px", color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.sourceLabel ?? "—"}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, minWidth: 0 }}>
                       <span style={{ flexShrink: 0, padding: "3px 10px", borderRadius: 999, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.3px", whiteSpace: "nowrap", background: m.tint, color: m.color }}>
-                        {TRANSACTION_TYPE_LABELS[t.type]}
+                        {isIncome ? "Money in" : TRANSACTION_TYPE_LABELS[t.type]}
                       </span>
                       <span style={{ fontSize: 11.5, color: C.hair, flexShrink: 0 }}>·</span>
                       <span style={{ fontSize: 11.5, fontWeight: 500, color: C.label, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -441,17 +547,17 @@ function MobileStatement({
                       </span>
                     </div>
                   </div>
-                  <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-0.4px", color: C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
-                    {formatMoney(t.amount)}
+                  <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-0.4px", color: isIncome ? C.tealInk : C.spendInk, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {isIncome ? `+${formatMoney(t.amount)}` : formatMoney(t.amount)}
                   </span>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 12, marginTop: 13, paddingTop: 12, borderTop: `1px solid ${C.rowLine}` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
                     <div style={{ flex: 1, minWidth: 0, height: 6, borderRadius: 999, background: C.rowLine, overflow: "hidden" }}>
-                      <div style={{ height: "100%", borderRadius: 999, width: `${Math.max(6, Math.round((t.amount / rowMax) * 100))}%`, background: "linear-gradient(90deg,#d8735f,#c0574a)" }} />
+                      <div style={{ height: "100%", borderRadius: 999, width: `${Math.max(6, Math.round((t.amount / rowMax) * 100))}%`, background: isIncome ? "linear-gradient(90deg,#5cb8b2,#2f7d78)" : "linear-gradient(90deg,#d8735f,#c0574a)" }} />
                     </div>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: C.share, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{sharePct}%</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: isIncome ? C.tealInk : C.share, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{sharePct}%</span>
                   </div>
                   {t.sourceModule === "MANUAL" && (
                     <button type="button" onClick={() => onEdit(t)} aria-label="Edit" className="acc-press"
