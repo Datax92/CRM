@@ -118,7 +118,10 @@ export const LINKABLE_MODULES: Record<GroupFieldType, Array<{ key: string; label
     { key: 'STATELIFE', label: 'StateLife' },
     { key: 'INVESTMENT_WITH_X', label: 'Investment with X' },
   ],
-  EXPENSE: [{ key: 'PAYROLL', label: 'Salaries (Payroll)' }],
+  EXPENSE: [
+    { key: 'PAYROLL', label: 'Salaries (Payroll)' },
+    { key: 'AMANAT', label: 'Amanat Disbursed' },
+  ],
 };
 
 /** The owner's sheet's own hand-filled columns, in its order. */

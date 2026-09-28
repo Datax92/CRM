@@ -96,6 +96,12 @@ const MODULES: Array<Omit<Entry, "figure" | "detail"> & { detail: string }> = [
     d: "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11ZM2.5 20c0-3.2 2.9-5 6.5-5s6.5 1.8 6.5 5M17 5a3.2 3.2 0 0 1 0 6.4",
   },
   {
+    label: "Amanat",
+    detail: "Trust money held, received, and expenses paid from accounts",
+    href: "/admin/accounts/amanat",
+    d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  },
+  {
     label: "Receivables & Payables",
     detail: "Who owes us, and whom we owe",
     href: "/admin/accounts/receivable",

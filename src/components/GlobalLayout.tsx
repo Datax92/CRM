@@ -10,7 +10,7 @@ import {
   Handshake, Receipt, FileBarChart, Users2, Building2, TrendingUp, Car,
   PiggyBank, ReceiptText, Wallet2, BarChart3, Megaphone, PieChart,
   CalendarCheck, CalendarDays, CalendarClock, UserCheck, AlertTriangle, LayoutDashboard,
-  BadgeDollarSign
+  BadgeDollarSign, ShieldCheck
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -214,6 +214,7 @@ export function GlobalLayout({ children }: { children: React.ReactNode }) {
           { title: "Investment with X", path: "/admin/accounts/investment-with-x", icon: TrendingUp },
           { title: "Capital Investments", path: "/admin/accounts/capital-investments", icon: PiggyBank },
           { title: "Committee", path: "/admin/accounts/committee", icon: Users2 },
+          { title: "Amanat", path: "/admin/accounts/amanat", icon: ShieldCheck },
           { title: "Receivables & Payables", path: "/admin/accounts/receivable", icon: ReceiptText },
           { title: "Group Income", path: "/admin/accounts/group-income", icon: BarChart3 },
           { title: "Group Expense", path: "/admin/accounts/group-expense", icon: Building2 }

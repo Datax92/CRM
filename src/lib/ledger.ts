@@ -184,6 +184,7 @@ export const SOURCE_MODULES = [
   /** A round of an investment book — its net profit, banked. See `lib/investmentWithX`. */
   'INVESTMENT_WITH_X',
   'RECEIVABLE',
+  'AMANAT',
   'PAYROLL',
   'TRANSFER',
   'MANUAL',

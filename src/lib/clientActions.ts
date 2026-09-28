@@ -1330,6 +1330,12 @@ import {
   countLegacyReceivables as _countLegacyReceivables,
   type SheetEntryInput,
 } from '@/app/actions/receivableSheet';
+import {
+  saveAmanatEntry as _saveAmanatEntry,
+  payAmanatExpenseThroughAccounts as _payAmanatExpenseThroughAccounts,
+  deleteAmanatEntry as _deleteAmanatEntry,
+  type AmanatEntryInput,
+} from '@/app/actions/amanatSheet';
 import type { GroupField, BuiltinColumn } from '@/lib/groupFinance';
 import type { LedgerSide } from '@/lib/receivableSheet';
 
@@ -1426,6 +1432,26 @@ export async function importLegacyReceivables(token: string) {
 }
 export async function countLegacyReceivables(token: string) {
   return _countLegacyReceivables(token);
+}
+
+export async function saveAmanatEntry(token: string, input: AmanatEntryInput, entryId?: string) {
+  return _saveAmanatEntry(token, input, entryId);
+}
+
+export async function payAmanatExpenseThroughAccounts(
+  token: string,
+  entryId: string,
+  input: {
+    allocations: Array<{ accountId: string; amount: number }>;
+    dayKey?: string | null;
+    note?: string | null;
+  }
+) {
+  return _payAmanatExpenseThroughAccounts(token, entryId, input);
+}
+
+export async function deleteAmanatEntry(token: string, entryId: string) {
+  return _deleteAmanatEntry(token, entryId);
 }
 
 /*

@@ -27,6 +27,7 @@ import {
   readSheetEntry,
   type SheetEntry,
 } from '@/lib/receivableSheet';
+import { readAmanatEntry, type AmanatEntry } from '@/lib/amanatSheet';
 
 const describe = (error: unknown) => describeFirestoreError(error as { code?: string; message?: string });
 
@@ -145,4 +146,18 @@ export function useSheetGroups(enabled: boolean) {
       loading: enabled && live.loading,
     };
   }, [live.rows, live.loading, enabled]);
+}
+
+export function useAmanatEntries(enabled: boolean) {
+  const build = useCallback(
+    () => query(collection(db, 'amanatEntries'), orderBy('dayKey', 'desc'), limit(2000)),
+    []
+  );
+  const live = useLive('amanatEntries', build, enabled, describe);
+  const entries = useMemo<AmanatEntry[]>(
+    () =>
+      (live.rows as Row[]).map((raw) => readAmanatEntry(raw)),
+    [live.rows]
+  );
+  return { entries, loading: enabled && live.loading, error: live.error };
 }
