@@ -136,11 +136,22 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
     for (const pot of pots) {
       map.set(pot.id, { received: pot.openingBalance ?? 0, paidFromPot: 0, cost: 0, funded: 0, count: 0 });
     }
+    const returnsByPot = new Map<string, number>();
+    for (const txn of ledger.transactions) {
+      if (txn.direction === "IN" && (txn.sourceModule === "INVESTMENT_WITH_X" || txn.groupId?.startsWith("invx_"))) {
+        returnsByPot.set(txn.accountId, (returnsByPot.get(txn.accountId) ?? 0) + txn.amount);
+      }
+    }
     for (const txn of ledger.transactions) {
       const entry = map.get(txn.accountId);
       if (!entry) continue;
-      if (txn.direction === "IN") entry.received += txn.amount;
-      else entry.paidFromPot += txn.amount;
+      if (txn.direction === "IN") {
+        if (txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_")) {
+          entry.received += txn.amount;
+        }
+      } else {
+        entry.paidFromPot += txn.amount;
+      }
     }
     for (const spending of spendings) {
       const entry = map.get(spending.investmentId);
@@ -157,6 +168,13 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
       entry.cost += txn.amount;
       entry.funded += txn.amount;
       entry.count += 1;
+    }
+    for (const [potId, returned] of returnsByPot.entries()) {
+      const entry = map.get(potId);
+      if (!entry) continue;
+      entry.paidFromPot = Math.max(0, entry.paidFromPot - returned);
+      entry.cost = Math.max(0, entry.cost - returned);
+      entry.funded = Math.max(0, entry.funded - returned);
     }
     return map;
   }, [pots, ledger.transactions, spendings]);
@@ -373,8 +391,31 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     () => ledger.transactions.filter((txn) => txn.accountId === pot.id),
     [ledger.transactions, pot.id]
   );
+  const returns = useMemo(
+    () => movements.filter((txn) => txn.direction === "IN" && (txn.sourceModule === "INVESTMENT_WITH_X" || txn.groupId?.startsWith("invx_"))),
+    [movements]
+  );
+  const returnedTotal = useMemo(
+    () => returns.reduce((sum, txn) => sum + txn.amount, 0),
+    [returns]
+  );
+  const returnedRoundIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of returns) {
+      if (r.sourceId) ids.add(r.sourceId);
+    }
+    return ids;
+  }, [returns]);
+  const returnedGroupIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of returns) {
+      if (r.groupId) ids.add(r.groupId);
+    }
+    return ids;
+  }, [returns]);
+
   const contributions = useMemo(
-    () => movements.filter((txn) => txn.direction === "IN"),
+    () => movements.filter((txn) => txn.direction === "IN" && txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_")),
     [movements]
   );
   const directSpendings = useMemo(
@@ -384,13 +425,13 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
 
   const figures = useMemo(() => {
     const received = (pot.openingBalance ?? 0) + contributions.reduce((sum, txn) => sum + txn.amount, 0);
-    const paidFromPot = movements.filter((txn) => txn.direction === "OUT").reduce((sum, txn) => sum + txn.amount, 0);
-    const directCost = directSpendings.reduce((sum, txn) => sum + txn.amount, 0);
+    const paidFromPot = Math.max(0, movements.filter((txn) => txn.direction === "OUT").reduce((sum, txn) => sum + txn.amount, 0) - returnedTotal);
+    const directCost = Math.max(0, directSpendings.reduce((sum, txn) => sum + txn.amount, 0) - returnedTotal);
     const ticketCost = spendings.reduce((sum, spending) => sum + spending.amount, 0);
     const cost = ticketCost + directCost;
     const funded = spendings.reduce((sum, spending) => sum + readPaid(spending).paid, 0) + directCost;
     return { received, paidFromPot, inHand: received - paidFromPot, cost, funded, unfunded: Math.max(0, cost - funded) };
-  }, [pot.openingBalance, contributions, movements, spendings, directSpendings]);
+  }, [pot.openingBalance, contributions, movements, spendings, directSpendings, returnedTotal]);
 
   /** The payments made against each spending, by the spending they funded. */
   const legsBySpending = useMemo(() => {
@@ -542,18 +583,37 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       };
     }
     const txn = item.txn;
+    const isReturned = (txn.sourceId && returnedRoundIds.has(txn.sourceId)) || (txn.groupId && returnedGroupIds.has(txn.groupId));
+    const returnTxn = isReturned
+      ? returns.find((r) => (txn.sourceId && r.sourceId === txn.sourceId) || (txn.groupId && r.groupId === txn.groupId))
+      : null;
     return {
       id: txn.id,
       title: txn.sourceLabel ?? "Spending",
-      meta: [txn.dayKey, `Paid from ${pot.name}`, txn.createdByName ?? null].filter(Boolean).join(" · "),
+      meta: [
+        txn.dayKey,
+        `Paid from ${pot.name}`,
+        isReturned ? (returnTxn?.dayKey ? `Returned ${returnTxn.dayKey}` : "Returned") : (txn.createdByName ?? null),
+      ].filter(Boolean).join(" · "),
       amount: txn.amount,
-      category: "Utilities",
-      status: { label: "Paid", tone: TONE.good },
+      category: isReturned ? "Marketing" : "Utilities",
+      status: isReturned ? { label: "Returned", tone: TONE.quiet } : { label: "Paid", tone: TONE.good },
       payment: null,
-      notes: txn.note
-        ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{txn.note}</span></div>
-        : null,
-      actions: buildDirectActions(txn),
+      notes: (
+        <>
+          {isReturned && (
+            <div style={{ marginTop: 4 }}>
+              <span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>Capital returned to pot (reinvested)</span>
+            </div>
+          )}
+          {txn.note && (
+            <div style={{ marginTop: isReturned ? 2 : 6 }}>
+              <span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{txn.note}</span>
+            </div>
+          )}
+        </>
+      ),
+      actions: isReturned ? [] : buildDirectActions(txn),
       onOpen: () => setOpenedDirectTxn(txn),
     };
   });
@@ -589,7 +649,18 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   const statCards: StatCard[] = [
     { label: "Put In", value: formatMoney(figures.received), note: `${contributions.length} contribution${contributions.length === 1 ? "" : "s"}`, pill: `${contributions.length}`, pct: 100, color: "#141f1e", accent: "#3f8f8a", icon: ICON.receipt },
     { label: "Still In Hand", value: formatMoney(figures.inHand), note: "in this pot, not yet spent", pill: null, pct: figures.received ? Math.max(0, Math.round((figures.inHand / figures.received) * 100)) : 0, color: figures.inHand < 0 ? "#a8483c" : "#2f7d78", accent: "#4fa39c", icon: ICON.wallet },
-    { label: "Spent On It", value: formatMoney(figures.cost), note: `${spendingRows.length} spending${spendingRows.length === 1 ? "" : "s"}, whoever paid`, pill: null, pct: figures.received ? Math.min(100, Math.round((figures.cost / figures.received) * 100)) : 0, color: "#141f1e", accent: "#c99a2e", icon: ICON.bars },
+    {
+      label: "Spent On It",
+      value: formatMoney(figures.cost),
+      note: returns.length > 0
+        ? `${spendingRows.length} spending${spendingRows.length === 1 ? "" : "s"} (${returns.length} returned)`
+        : `${spendingRows.length} spending${spendingRows.length === 1 ? "" : "s"}, whoever paid`,
+      pill: null,
+      pct: figures.received ? Math.min(100, Math.round((figures.cost / figures.received) * 100)) : 0,
+      color: "#141f1e",
+      accent: "#c99a2e",
+      icon: ICON.bars,
+    },
     { label: "Not Paid Yet", value: formatMoney(figures.unfunded), note: figures.unfunded > 0 ? "no account behind them yet" : "every spending is funded", pill: figures.unfunded > 0 ? "Owed" : "Clear", tone: figures.unfunded > 0 ? "warn" : "good", pct: figures.cost ? Math.round((figures.unfunded / figures.cost) * 100) : 0, color: figures.unfunded > 0 ? "#a5762a" : "#2f7d78", accent: "#c0574a", icon: ICON.clock },
   ];
 
@@ -716,49 +787,56 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         );
       })()}
 
-      {openedDirectTxn && (
-        <OverlayPanel
-          title={openedDirectTxn.sourceLabel ?? "Direct spending"}
-          subtitle={`${pot.name} · ${openedDirectTxn.dayKey}`}
-          maxWidth={620}
-          onClose={() => setOpenedDirectTxn(null)}
-        >
-          <ExpenseDetail
+      {openedDirectTxn && (() => {
+        const isReturned = (openedDirectTxn.sourceId && returnedRoundIds.has(openedDirectTxn.sourceId)) || (openedDirectTxn.groupId && returnedGroupIds.has(openedDirectTxn.groupId));
+        const returnTxn = isReturned
+          ? returns.find((r) => (openedDirectTxn.sourceId && r.sourceId === openedDirectTxn.sourceId) || (openedDirectTxn.groupId && r.groupId === openedDirectTxn.groupId))
+          : null;
+        return (
+          <OverlayPanel
             title={openedDirectTxn.sourceLabel ?? "Direct spending"}
-            amountLabel={formatMoney(openedDirectTxn.amount)}
-            formatMoney={formatMoney}
-            status={{ label: "Paid", tone: TONE.good }}
-            payment={{ paid: openedDirectTxn.amount, outstanding: 0, label: "Paid", tone: TONE.good }}
-            fields={[
-              { label: "Investment", value: pot.name },
-              { label: "Date", value: openedDirectTxn.dayKey },
-              { label: "Amount", value: formatMoney(openedDirectTxn.amount) },
-              { label: "Note", value: openedDirectTxn.note ?? "—", wide: true },
-              ...(openedDirectTxn.createdByName ? [{ label: "Recorded by", value: openedDirectTxn.createdByName }] : []),
-            ]}
-            legs={[
-              {
-                id: openedDirectTxn.id,
-                accountName: pot.name,
-                amount: openedDirectTxn.amount,
-                dayKey: openedDirectTxn.dayKey,
-                note: openedDirectTxn.note ?? null,
-                by: openedDirectTxn.createdByName ?? null,
-              },
-            ]}
-            notFunded=""
-            history={[]}
-            actions={buildDirectActions(openedDirectTxn).map((action) => (
-              <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
-                disabled={action.disabled}
-                onClick={() => {
-                  setOpenedDirectTxn(null);
-                  action.onClick();
-                }} />
-            ))}
-          />
-        </OverlayPanel>
-      )}
+            subtitle={`${pot.name} · ${openedDirectTxn.dayKey}`}
+            maxWidth={620}
+            onClose={() => setOpenedDirectTxn(null)}
+          >
+            <ExpenseDetail
+              title={openedDirectTxn.sourceLabel ?? "Direct spending"}
+              amountLabel={formatMoney(openedDirectTxn.amount)}
+              formatMoney={formatMoney}
+              status={isReturned ? { label: "Returned", tone: TONE.quiet } : { label: "Paid", tone: TONE.good }}
+              payment={{ paid: openedDirectTxn.amount, outstanding: 0, label: isReturned ? "Returned" : "Paid", tone: isReturned ? TONE.quiet : TONE.good }}
+              fields={[
+                { label: "Investment", value: pot.name },
+                { label: "Date", value: openedDirectTxn.dayKey },
+                { label: "Amount", value: formatMoney(openedDirectTxn.amount) },
+                ...(isReturned && returnTxn ? [{ label: "Returned on", value: returnTxn.dayKey }] : []),
+                { label: "Note", value: openedDirectTxn.note ?? (isReturned ? "Capital returned to pot (reinvested)" : "—"), wide: true },
+                ...(openedDirectTxn.createdByName ? [{ label: "Recorded by", value: openedDirectTxn.createdByName }] : []),
+              ]}
+              legs={[
+                {
+                  id: openedDirectTxn.id,
+                  accountName: pot.name,
+                  amount: openedDirectTxn.amount,
+                  dayKey: openedDirectTxn.dayKey,
+                  note: openedDirectTxn.note ?? null,
+                  by: openedDirectTxn.createdByName ?? null,
+                },
+              ]}
+              notFunded=""
+              history={[]}
+              actions={buildDirectActions(openedDirectTxn).map((action) => (
+                <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
+                  disabled={action.disabled}
+                  onClick={() => {
+                    setOpenedDirectTxn(null);
+                    action.onClick();
+                  }} />
+              ))}
+            />
+          </OverlayPanel>
+        );
+      })()}
 
       {(addingSpending || editingSpending) && (
         <SpendingForm
