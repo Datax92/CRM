@@ -348,16 +348,20 @@ function Dashboard({
         />
       ) : (
         <div style={{ display: "grid", gap: 11, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill, minmax(268px, 1fr))" }}>
-          {accounts.map((account, index) => (
-            <AccountCard
-              key={account.id}
-              account={account}
-              movement={accountMovement(account, rows, now)}
-              count={rows.filter((t) => t.accountId === account.id && t.status === "POSTED").length}
-              index={index}
-              isMobile={isMobile}
-            />
-          ))}
+          {accounts.map((account, index) => {
+            const mine = rows.filter((t) => t.accountId === account.id && t.status === "POSTED");
+            return (
+              <AccountCard
+                key={account.id}
+                account={account}
+                movement={accountMovement(account, rows, now)}
+                count={mine.length}
+                index={index}
+                isMobile={isMobile}
+                transactions={mine}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -388,17 +392,49 @@ function Dashboard({
 /* -------------------------------------------------------------------------- */
 
 function AccountCard({
-  account, movement, count, index, isMobile,
+  account, movement, count, index, isMobile, transactions = [],
 }: {
   account: AccountDoc;
   movement: ReturnType<typeof accountMovement>;
   count: number;
   index: number;
   isMobile: boolean;
+  transactions?: TransactionDoc[];
 }) {
   const Icon = ACCOUNT_ICONS[account.kind];
-  /** Committees and investments hold a pot; banks hold a running balance. */
-  const isVault = account.kind === "COMMITTEE" || account.kind === "INVESTMENT";
+  const isCommittee = account.kind === "COMMITTEE";
+  const isInvestment = account.kind === "INVESTMENT";
+
+  const returnedIn = useMemo(
+    () => (transactions ?? []).filter((t) => t.direction === "IN" && (t.sourceModule === "INVESTMENT_WITH_X" || t.groupId?.startsWith("invx_"))).reduce((s, t) => s + t.amount, 0),
+    [transactions]
+  );
+
+  const capitalIn = isInvestment
+    ? (account.openingBalance ?? 0) + (movement.inflow - returnedIn)
+    : isCommittee
+    ? (account.openingBalance ?? 0)
+    : movement.inflow;
+
+  const activeOut = isInvestment
+    ? Math.max(0, movement.outflow - returnedIn)
+    : isCommittee
+    ? Math.max(0, movement.outflow - movement.inflow)
+    : movement.outflow;
+
+  const headlinePrefix = isCommittee
+    ? "Remaining"
+    : isInvestment
+    ? (movement.balance !== 0 ? "Available" : "Invested")
+    : null;
+
+  const headlineValue = isInvestment && movement.balance === 0
+    ? activeOut
+    : movement.balance;
+
+  const inLabel = isInvestment ? "Capital" : isCommittee ? "Received" : "In";
+  const outLabel = isInvestment ? "Invested" : isCommittee ? "Spent" : "Out";
+
   return (
     <Link
       href={`/admin/accounts/ledger/${account.id}`}
@@ -426,12 +462,12 @@ function AccountCard({
         {account.status === "ARCHIVED" && <StatusPill status="ARCHIVED" small />}
       </div>
 
-      {/* The headline says what it is. On a vault it is what is *left*, which
-          is a different claim from a bank account's balance. */}
+      {/* The headline says what it is. On a committee it is what is remaining;
+          on an investment with zero balance it is the active deployed capital. */}
       <div style={{ display: "flex", alignItems: "baseline", gap: 7, flexWrap: "wrap" }}>
-        {isVault && <span style={{ fontSize: 11.5, fontWeight: 600, color: A.faint }}>Remaining</span>}
-        <span style={{ fontSize: isMobile ? 24 : 26, fontWeight: 800, letterSpacing: -0.6, fontVariantNumeric: "tabular-nums", color: movement.balance < 0 ? A.negative : A.ink }}>
-          {formatMoney(movement.balance)}
+        {headlinePrefix && <span style={{ fontSize: 11.5, fontWeight: 600, color: A.faint }}>{headlinePrefix}</span>}
+        <span style={{ fontSize: isMobile ? 24 : 26, fontWeight: 800, letterSpacing: -0.6, fontVariantNumeric: "tabular-nums", color: headlineValue < 0 ? A.negative : A.ink }}>
+          {formatMoney(headlineValue)}
         </span>
       </div>
 
@@ -446,22 +482,15 @@ function AccountCard({
         <span>Today <strong style={{ color: movement.today === 0 ? A.faint : movement.today > 0 ? A.positive : A.negative, fontVariantNumeric: "tabular-nums" }}>
           {movement.today === 0 ? "—" : formatMoney(Math.abs(movement.today))}
         </strong></span>
-        {/*
-          **A vault's "in" is its pot, not its inflow.** A committee's amount
-          lives on the account and is deliberately not a transaction, so
-          `movement.inflow` is 0 — the card used to read "In Rs 0" beside a real
-          spend. A bank account genuinely does take money in repeatedly, and
-          keeps the inflow figure.
-        */}
         <span>
-          {isVault ? "Received" : "In"}{" "}
+          {inLabel}{" "}
           <strong style={{ color: A.positive, fontVariantNumeric: "tabular-nums" }}>
-            {formatMoney(isVault ? movement.openingBalance : movement.inflow)}
+            {formatMoney(capitalIn)}
           </strong>
         </span>
         <span>
-          {isVault ? "Spent" : "Out"}{" "}
-          <strong style={{ color: A.negative, fontVariantNumeric: "tabular-nums" }}>{formatMoney(movement.outflow)}</strong>
+          {outLabel}{" "}
+          <strong style={{ color: A.negative, fontVariantNumeric: "tabular-nums" }}>{formatMoney(activeOut)}</strong>
         </span>
         <span>{count} txn{count === 1 ? "" : "s"}</span>
       </div>
@@ -578,8 +607,7 @@ function AccountStatement({
    */
   const [entering, setEntering] = useState<"IN" | "OUT" | null>(null);
   const [editingRow, setEditingRow] = useState<TransactionDoc | null>(null);
-  /** Committees and investments are vaults: one amount in, then spendings. */
-  const isVault = account.kind === "COMMITTEE" || account.kind === "INVESTMENT";
+  const isInvestment = account.kind === "INVESTMENT";
 
   const mine = useMemo(
     () => transactions.filter((t) => t.accountId === account.id),
@@ -589,6 +617,13 @@ function AccountStatement({
     () => accountMovement(account, mine as unknown as LedgerTransaction[], now),
     [account, mine, now]
   );
+
+  const returnedIn = useMemo(
+    () => mine.filter((t) => t.direction === "IN" && (t.sourceModule === "INVESTMENT_WITH_X" || t.groupId?.startsWith("invx_"))).reduce((s, t) => s + t.amount, 0),
+    [mine]
+  );
+  const capitalIn = (account.openingBalance ?? 0) + (movement.inflow - returnedIn);
+  const activeInvested = Math.max(0, movement.outflow - returnedIn);
 
   const shown = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -605,18 +640,13 @@ function AccountStatement({
 
   return (
     <>
-      {/*
-        **A committee is a vault**: an amount comes in once, and everything
-        after it is a spending. Three figures answer everything — what came in,
-        what has gone, what is left — so the in/out/this-month cards a bank
-        account wants are not shown for one.
-      */}
-      <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : `repeat(${isVault ? 3 : 5}, minmax(0, 1fr))`, marginBottom: 14 }}>
-        {isVault ? (
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : `repeat(${isInvestment ? 4 : 5}, minmax(0, 1fr))`, marginBottom: 14 }}>
+        {isInvestment ? (
           <>
-            <SummaryCard label={`${ACCOUNT_KIND_LABELS[account.kind]} amount`} value={movement.openingBalance} icon={<Landmark size={14} />} mobile={isMobile} />
-            <SummaryCard label="Spent" value={movement.outflow} icon={<ArrowUpRight size={14} />} tone={A.negative} mobile={isMobile} />
-            <SummaryCard label="Remaining" value={movement.balance} icon={<Wallet size={14} />} tone={movement.balance < 0 ? A.negative : A.positive} mobile={isMobile} />
+            <SummaryCard label="Total capital" value={capitalIn} icon={<Landmark size={14} />} mobile={isMobile} />
+            <SummaryCard label="Active invested" value={activeInvested} icon={<ArrowUpRight size={14} />} tone={A.negative} mobile={isMobile} />
+            <SummaryCard label="Returned capital" value={returnedIn} icon={<ArrowDownLeft size={14} />} tone={A.positive} mobile={isMobile} />
+            <SummaryCard label="Current balance" value={movement.balance} icon={<Wallet size={14} />} tone={movement.balance < 0 ? A.negative : A.tealInk} mobile={isMobile} />
           </>
         ) : (
           <>
@@ -652,7 +682,7 @@ function AccountStatement({
           <Chip label="All" active={flow === "ALL" && typeFilter === "ALL"} onClick={() => { setFlow("ALL"); setTypeFilter("ALL"); }} />
           <Chip label="Money in" active={flow === "IN"} onClick={() => setFlow(flow === "IN" ? "ALL" : "IN")} />
           <Chip label="Money out" active={flow === "OUT"} onClick={() => setFlow(flow === "OUT" ? "ALL" : "OUT")} />
-          {(["EXPENSE", "INCOME", "TRANSFER", "REIMBURSEMENT"] as const).map((t) => (
+          {(["INVESTMENT", "EXPENSE", "INCOME", "TRANSFER", "REIMBURSEMENT"] as const).map((t) => (
             <Chip key={t} label={TRANSACTION_TYPE_LABELS[t]} active={typeFilter === t} onClick={() => setTypeFilter(typeFilter === t ? "ALL" : t)} />
           ))}
         </div>
@@ -662,51 +692,37 @@ function AccountStatement({
         <EmptyState
           icon={<Clock size={22} />}
           title="Nothing has moved through this account yet"
-          body={
-            account.kind === "COMMITTEE"
-              ? "Record what this committee is being spent on. Anything you pay from it elsewhere in the CRM — an office expense, a reimbursement — lands here by itself, so only add the spendings that belong to no other module."
-              : "Two ways things land here. Pay an expense from this account anywhere in the CRM and the movement records itself, linked to what caused it — or add a receipt or a spending directly, for money that belongs to no other module."
-          }
+          body="Pay an expense from this account anywhere in the CRM and the movement records itself, linked to what caused it — or add a receipt or a spending directly, for money that belongs to no other module."
           action={
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              {account.kind !== "COMMITTEE" && (
-                <Button icon={<ArrowDownLeft size={14} />} onClick={() => setEntering("IN")}>Add received</Button>
-              )}
+              <Button icon={<ArrowDownLeft size={14} />} onClick={() => setEntering("IN")}>Add received</Button>
               <Button primary icon={<ArrowUpRight size={14} />} onClick={() => setEntering("OUT")}>Add spending</Button>
             </div>
           }
           mobile={isMobile}
         />
       ) : (
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile || isVault ? "1fr" : "repeat(auto-fit, minmax(330px, 1fr))" }}>
-          {/*
-            **A vault has one list.** The sheet's Spendings table is the whole
-            page: an Amount Received column with a single row in it was a second
-            thing to manage for no gain, so the pot lives in the card above and
-            this is only what has gone out.
-          */}
-          {!isVault && (
-            <StatementColumn
-              title="Amount Received"
-              rows={received}
-              tone={A.positive}
-              isMobile={isMobile}
-              getIdToken={getIdToken}
-              onDone={onDone}
-              onAdd={() => setEntering("IN")}
-              addLabel="Add received"
-              onEdit={setEditingRow}
-            />
-          )}
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(330px, 1fr))" }}>
           <StatementColumn
-            title="Spendings"
-            rows={isVault ? shown : spent}
+            title="Amount Received"
+            rows={received}
+            tone={A.positive}
+            isMobile={isMobile}
+            getIdToken={getIdToken}
+            onDone={onDone}
+            onAdd={() => setEntering("IN")}
+            addLabel="Add received"
+            onEdit={setEditingRow}
+          />
+          <StatementColumn
+            title={isInvestment ? "Investments & Spendings" : "Spendings"}
+            rows={spent}
             tone={A.negative}
             isMobile={isMobile}
             getIdToken={getIdToken}
             onDone={onDone}
             onAdd={() => setEntering("OUT")}
-            addLabel="Add spending"
+            addLabel={isInvestment ? "Add investment" : "Add spending"}
             onEdit={setEditingRow}
           />
         </div>
