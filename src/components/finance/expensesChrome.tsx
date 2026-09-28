@@ -301,6 +301,7 @@ export interface StatCard {
   color: string;
   accent: string;
   icon: string;
+  onClick?: () => void;
 }
 
 export function StatCards({ cards, isMobile }: { cards: StatCard[]; isMobile: boolean }) {
@@ -309,7 +310,24 @@ export function StatCards({ cards, isMobile }: { cards: StatCard[]; isMobile: bo
       {cards.map((c) => {
         const pill = TONE[c.tone ?? "quiet"];
         return (
-          <div key={c.label} style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${X.line}`, borderRadius: 16, padding: "15px 18px" }}>
+          <div
+            key={c.label}
+            onClick={c.onClick}
+            role={c.onClick ? "button" : undefined}
+            tabIndex={c.onClick ? 0 : undefined}
+            onKeyDown={c.onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); c.onClick?.(); } } : undefined}
+            className={c.onClick ? "acc-in acc-lift acc-press" : "acc-in"}
+            style={{
+              position: "relative",
+              overflow: "hidden",
+              background: "#fff",
+              border: `1px solid ${X.line}`,
+              borderRadius: 16,
+              padding: "15px 18px",
+              cursor: c.onClick ? "pointer" : "default",
+              outline: "none",
+            }}
+          >
             {/* The 3px accent stripe the design puts down every card. */}
             <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: c.accent }} />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -319,9 +337,14 @@ export function StatCards({ cards, isMobile }: { cards: StatCard[]; isMobile: bo
                 </div>
                 <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.2px", textTransform: "uppercase", color: X.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{c.label}</span>
               </div>
-              {c.pill && (
-                <span style={{ flexShrink: 0, padding: "3px 9px", borderRadius: 999, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", background: pill.tint, color: pill.color }}>{c.pill}</span>
-              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {c.pill && (
+                  <span style={{ flexShrink: 0, padding: "3px 9px", borderRadius: 999, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", background: pill.tint, color: pill.color }}>{c.pill}</span>
+                )}
+                {c.onClick && (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9 18l6-6-6-6" /></svg>
+                )}
+              </div>
             </div>
             <div style={{ fontSize: isMobile ? 21 : 25, fontWeight: 800, letterSpacing: "-0.9px", marginTop: 9, color: c.color, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.value}</div>
             <div style={{ height: 5, borderRadius: 999, background: "#eef4f3", marginTop: 11, overflow: "hidden" }}>

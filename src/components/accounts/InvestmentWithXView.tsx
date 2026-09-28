@@ -22,11 +22,13 @@
  */
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useLedger, type AccountDoc } from "@/hooks/useLedger";
 import { usePagination } from "@/hooks/usePagination";
 import { useInvestmentBooks, useInvestmentRounds, type InvestmentBook } from "@/hooks/useAccountSheets";
+import { InvestedNowSummaryView } from "./InvestedNowSummaryView";
 import { Pager } from "@/components/employees/DossierControls";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { formatMoney } from "@/lib/money";
@@ -129,7 +131,8 @@ function fundingNames(round: Pick<Round, "funding">, accounts: readonly AccountD
 /** Capital Investment accounts first — that is where a round's money usually comes from. */
 const KIND_ORDER: AccountKind[] = ["INVESTMENT", "BANK", "CASH", "WALLET", "COMMITTEE", "INCOME", "OTHER"];
 
-export function InvestmentWithXView() {
+export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | "INVESTED_SUMMARY" } = {}) {
+  const router = useRouter();
   const { role, getIdToken } = useAuth();
   const ready = role === "admin" || role === "subadmin";
   const isMobile = useIsMobile();
@@ -152,6 +155,7 @@ export function InvestmentWithXView() {
   const [receivedOn, setReceivedOn] = useState(karachiDayKey());
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [viewingCapitalSummary, setViewingCapitalSummary] = useState(initialView === "INVESTED_SUMMARY");
 
   const book = books.find((entry) => entry.id === pickedBook) ?? books[0] ?? null;
 
@@ -236,8 +240,9 @@ export function InvestmentWithXView() {
         // so it is not "invested" any more — it was 2,802,000 here with 612,000
         // of it already back (owner, 2026-09-26). The lifetime figure is the note.
         label: "Invested Now", value: money(stillOut),
-        note: `${pending.rounds} of ${totals.rounds} round${totals.rounds === 1 ? "" : "s"} out · ${money(totals.amount)} put in, ${money(totals.amount - stillOut)} back`,
+        note: `${pending.rounds} of ${totals.rounds} round${totals.rounds === 1 ? "" : "s"} out · click for account sources breakdown`,
         pill: `${pending.rounds} out`, pct: pct(stillOut, totals.amount), color: "#141f1e", accent: "#3f8f8a", icon: ICON.wallet,
+        onClick: () => setViewingCapitalSummary(true),
       },
       {
         label: "Net Received", value: money(receivedNet),
@@ -400,6 +405,20 @@ export function InvestmentWithXView() {
     onOpen: () => setRoundForm({ round }),
   }));
 
+  if (viewingCapitalSummary) {
+    return (
+      <InvestedNowSummaryView
+        bookId={book?.id}
+        onBack={() => {
+          setViewingCapitalSummary(false);
+          if (initialView === "INVESTED_SUMMARY") {
+            router.push("/admin/accounts/investment-with-x");
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: "var(--font-directory), system-ui, sans-serif" }}>
       <ExpenseHero
@@ -424,6 +443,7 @@ export function InvestmentWithXView() {
         }
         actions={
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <HeroButton onClick={() => setViewingCapitalSummary(true)} icon={<Glyph d={ICON.wallet} />}>Capital summary</HeroButton>
             <HeroButton onClick={() => setBookForm({ book: null })} icon={<Glyph d="M12 5v14M5 12h14" width={2.4} />}>New book</HeroButton>
             {book && <HeroButton onClick={() => setBookForm({ book })} icon={<Glyph d={ICON.tags} />}>Book &amp; columns</HeroButton>}
             {book && <HeroButton onClick={() => setRoundForm({ round: null })} solid icon={<Glyph d="M12 5v14M5 12h14" width={2.4} />}>Add round</HeroButton>}
