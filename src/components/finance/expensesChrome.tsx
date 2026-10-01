@@ -165,8 +165,14 @@ export function ExpenseHero({
         padding: isMobile ? "18px 20px" : "22px 26px",
       }}
     >
+      {/*
+        `pointerEvents: none`: this decoration is absolutely positioned over the
+        whole hero, and a positioned box paints — and takes clicks — above any
+        child that is not positioned itself. The payroll month arrows sat under
+        it and could not be pressed at all.
+      */}
       <svg viewBox="0 0 400 170" preserveAspectRatio="none"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.16 }} aria-hidden>
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.16, pointerEvents: "none" }} aria-hidden>
         <circle cx="356" cy="20" r="78" fill="none" stroke="#fff" strokeWidth="1.2" />
         <circle cx="356" cy="20" r="120" fill="none" stroke="#fff" strokeWidth="1.2" />
         <circle cx="296" cy="162" r="54" fill="none" stroke="#fff" strokeWidth="1.2" />
@@ -201,7 +207,8 @@ export function ExpenseHero({
         </div>
       )}
 
-      {children}
+      {/* Positioned, so whatever a screen puts here is above the rings. */}
+      {children && <div style={{ position: "relative" }}>{children}</div>}
     </section>
   );
 }

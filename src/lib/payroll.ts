@@ -96,6 +96,13 @@ export interface PayrollLine {
   joinedAt?: string | null;
   /** Last working day (`YYYY-MM-DD`). Present only on somebody who has left. */
   leftAt?: string | null;
+  /**
+   * What the month worked out to **before anybody changed a figure by hand**,
+   * and which figures were changed. Present only on a line with a month
+   * adjustment — see `applyMonthOverrides`.
+   */
+  calculated?: Record<MonthAdjustable, number>;
+  adjusted?: MonthAdjustable[];
   paidDays?: number;
   monthDays?: number;
 }
@@ -471,5 +478,120 @@ export function normalizeSalaryProfile(raw: Partial<SalaryProfile> | undefined):
     // paying commission to everybody who predates them.
     includeCommission: raw?.includeCommission !== false,
     applyAttendanceDeductions: raw?.applyAttendanceDeductions !== false,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Changing one person's month by hand (owner, 2026-10-01)                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The figures of one person's month that can be set by hand.
+ *
+ * *"in the edit option there should be option of every single thing to be
+ * edited, deduction and everything … this month should be separate from
+ * september."* So an edit made from a month's row belongs to **that month
+ * alone** — `payrollAdjustments/{uid}_{YYYY-MM}` — and what is typed is what
+ * is paid: no further cut for joining or leaving is applied to it. The standing
+ * salary (Payroll → Salaries) is untouched and goes on feeding every month that
+ * has no adjustment of its own.
+ */
+export const MONTH_ADJUSTABLE = [
+  'basic',
+  'allowances',
+  'bonus',
+  'commission',
+  'attendanceDeduction',
+  'otherDeductions',
+] as const;
+export type MonthAdjustable = (typeof MONTH_ADJUSTABLE)[number];
+export type MonthOverrides = Partial<Record<MonthAdjustable, number>>;
+
+export const MONTH_ADJUSTABLE_LABELS: Record<MonthAdjustable, string> = {
+  basic: 'Salary',
+  allowances: 'Allowance',
+  bonus: 'Bonus',
+  commission: 'Commission',
+  attendanceDeduction: 'Attendance deduction',
+  otherDeductions: 'Other deductions',
+};
+
+/**
+ * Cleans a set of typed figures: whole rupees, zero or more. A missing, empty
+ * or null figure is "leave this one as calculated". Returns an error sentence
+ * for a figure that cannot be meant.
+ */
+export function normalizeMonthOverrides(raw: unknown): { overrides: MonthOverrides } | { error: string } {
+  const overrides: MonthOverrides = {};
+  const source = (raw ?? {}) as Record<string, unknown>;
+  for (const key of MONTH_ADJUSTABLE) {
+    const value = source[key];
+    if (value === undefined || value === null || value === '') continue;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) {
+      return { error: `Enter ${MONTH_ADJUSTABLE_LABELS[key].toLowerCase()} as zero or more.` };
+    }
+    overrides[key] = Math.round(number);
+  }
+  return { overrides };
+}
+
+/** A line's own six figures — what an adjustment is compared against. */
+export function monthFigures(line: PayrollLine): Record<MonthAdjustable, number> {
+  return {
+    basic: money(line.basic),
+    allowances: money(line.allowances),
+    // Month lines keep both at zero; an older slip may carry either.
+    bonus: money(line.bonus) + money(line.extraAdditions),
+    commission: money(line.commission),
+    attendanceDeduction: money(line.attendanceDeduction),
+    otherDeductions: money(line.otherDeductions),
+  };
+}
+
+/** Only the figures that really differ from what the month worked out to. */
+export function changedOverrides(line: PayrollLine, overrides: MonthOverrides): MonthOverrides {
+  const calculated = monthFigures(line);
+  const changed: MonthOverrides = {};
+  for (const key of MONTH_ADJUSTABLE) {
+    const value = overrides[key];
+    if (value !== undefined && value !== calculated[key]) changed[key] = value;
+  }
+  return changed;
+}
+
+/**
+ * The line with a month's hand-set figures laid over it and the net worked out
+ * again. The calculated figures ride along, so the screen and the payslip can
+ * both say what was changed and from what. No overrides and no note returns the
+ * line untouched.
+ */
+export function applyMonthOverrides(
+  line: PayrollLine,
+  overrides: MonthOverrides,
+  note?: string | null
+): PayrollLine {
+  const changed = changedOverrides(line, overrides);
+  const adjusted = MONTH_ADJUSTABLE.filter((key) => changed[key] !== undefined);
+  const text = note?.trim() || null;
+  if (adjusted.length === 0) return text ? { ...line, note: text } : line;
+
+  const calculated = monthFigures(line);
+  const next = repriceLine(line, {
+    ...changed,
+    ...(changed.bonus !== undefined ? { extraAdditions: 0 } : {}),
+  });
+  return {
+    ...next,
+    note: text ?? line.note,
+    calculated,
+    adjusted,
+    // A hand-set deduction is not explained by the attendance rules any more.
+    deductionBasis:
+      changed.attendanceDeduction !== undefined
+        ? changed.attendanceDeduction > 0
+          ? [`Entered by hand for this month — the attendance rules gave Rs ${calculated.attendanceDeduction.toLocaleString('en-PK')}`]
+          : []
+        : next.deductionBasis,
   };
 }

@@ -6,6 +6,9 @@ import {
   buildMonthLine,
   joiningShare,
   employmentShare,
+  applyMonthOverrides,
+  changedOverrides,
+  normalizeMonthOverrides,
   readSalary,
   allowedTransitions,
   buildPayrollLine,
@@ -333,4 +336,46 @@ test('the line of somebody who left is cut to their days and carries the leaving
   assert.equal(line.basic, 20000);
   assert.equal(line.leftAt, '2026-09-20');
   assert.equal(buildMonthLine({ uid: 'a', name: 'A', monthKey: '2026-10', salary: 30000, allowance: 0, leftDayKey: '2026-09-20', commission: 0, attendanceDeduction: 0 }), null);
+});
+
+/* ---- changing one month by hand ---- */
+
+const septLine = () =>
+  buildMonthLine({
+    uid: 'a', name: 'A', monthKey: '2026-09', salary: 22000, allowance: 3000,
+    commission: 0, attendanceDeduction: 3500, deductionBasis: ['Absence #1'], absentCount: 1,
+  })!;
+
+test('an untouched figure is left as calculated, and an unmeant one is refused', () => {
+  assert.deepEqual(normalizeMonthOverrides({ basic: '21000', bonus: '', commission: null }), { overrides: { basic: 21000 } });
+  assert.deepEqual(normalizeMonthOverrides({ attendanceDeduction: 0 }), { overrides: { attendanceDeduction: 0 } });
+  assert.ok('error' in normalizeMonthOverrides({ basic: -5 }));
+  assert.ok('error' in normalizeMonthOverrides({ otherDeductions: 'abc' }));
+});
+
+test('typing back the calculated figure is not an adjustment', () => {
+  const line = septLine();
+  assert.deepEqual(changedOverrides(line, { basic: 22000, allowances: 3000, attendanceDeduction: 3500 }), {});
+  assert.equal(applyMonthOverrides(line, { basic: 22000 }), line);
+});
+
+test('a hand-set deduction and bonus move the net and remember what was calculated', () => {
+  const line = septLine();
+  assert.equal(line.net, 21500);
+  const next = applyMonthOverrides(line, { attendanceDeduction: 1000, bonus: 2000, otherDeductions: 500 }, ' agreed with HR ');
+  assert.equal(next.net, 22000 + 3000 + 2000 - 1000 - 500);
+  assert.deepEqual(next.adjusted, ['bonus', 'attendanceDeduction', 'otherDeductions']);
+  assert.equal(next.calculated?.attendanceDeduction, 3500);
+  assert.equal(next.note, 'agreed with HR');
+  assert.equal(next.deductionBasis?.length, 1);
+  assert.match(next.deductionBasis![0], /by hand/);
+  // The counts behind the month are facts and do not move.
+  assert.equal(next.absentCount, 1);
+});
+
+test('waiving the deduction leaves no charge to explain, and the net never goes below zero', () => {
+  const waived = applyMonthOverrides(septLine(), { attendanceDeduction: 0 });
+  assert.equal(waived.net, 25000);
+  assert.deepEqual(waived.deductionBasis, []);
+  assert.equal(applyMonthOverrides(septLine(), { otherDeductions: 90000 }).net, 0);
 });

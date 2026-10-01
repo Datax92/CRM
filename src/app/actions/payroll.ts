@@ -8,8 +8,13 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { monthAttendanceDeductions, type AttendancePolicy } from "@/lib/attendancePolicy";
 import {
+  applyMonthOverrides,
   buildMonthLine,
+  changedOverrides,
+  monthFigures,
+  normalizeMonthOverrides,
   normalizeSalaryProfile,
+  type MonthOverrides,
   payrollTotals,
   readSalary,
   type PayrollLine,
@@ -43,6 +48,8 @@ import { FieldValue } from "firebase-admin/firestore";
  */
 
 const SLIPS = "payslips";
+/** One person's month, changed by hand — see `lib/payroll`'s `applyMonthOverrides`. */
+const ADJUSTMENTS = "payrollAdjustments";
 
 /* -------------------------------------------------------------------------- */
 /* Access                                                                      */
@@ -315,8 +322,12 @@ async function attendanceByUid(
   return figures;
 }
 
-/** Everybody's live line for a month. */
-async function liveLines(
+/**
+ * Everybody's line for a month **as it is calculated** — standing salary,
+ * finalised commission, attendance. `liveLines` lays the month's hand-set
+ * figures over these.
+ */
+async function calculatedLines(
   month: string,
   /**
    * True when the lines decide a payment (`payPayrollLine`): salaries and
@@ -361,6 +372,100 @@ async function liveLines(
     if (line) lines.push(line);
   }
   return lines;
+}
+
+/**
+ * Everybody's live line for a month: calculated, then with that month's own
+ * adjustments applied. An adjustment is keyed by person **and month**, so a
+ * figure changed for September never reaches October.
+ */
+async function liveLines(month: string, fresh = false): Promise<PayrollLine[]> {
+  const [lines, adjustments] = await Promise.all([
+    calculatedLines(month, fresh),
+    adminDb.collection(ADJUSTMENTS).where("monthKey", "==", month).get(),
+  ]);
+  if (adjustments.empty) return lines;
+
+  const byUid = new Map(adjustments.docs.map((doc) => [String(doc.data().uid ?? ""), doc.data()]));
+  return lines.map((line) => {
+    const entry = byUid.get(line.uid);
+    return entry
+      ? applyMonthOverrides(line, (entry.overrides ?? {}) as MonthOverrides, (entry.note as string) ?? null)
+      : line;
+  });
+}
+
+/**
+ * Sets one person's figures for one month by hand — salary, allowance, bonus,
+ * commission, attendance deduction, other deductions and a note. Admin and HR.
+ *
+ * Only what differs from the calculated month is stored, so a figure left
+ * alone keeps following attendance and the standing salary; typing every
+ * figure back to what was calculated removes the adjustment altogether.
+ *
+ * **Refused once that month has been paid to them**, in part or in full: the
+ * payslip is the record of what was paid, and it does not move.
+ */
+export async function savePayrollMonth(
+  token: string,
+  monthKey: string,
+  uid: string,
+  input: { figures: Record<string, unknown>; note?: string | null }
+): Promise<ActionResult<{ net: number; adjusted: number }>> {
+  return runAction("savePayrollMonth", async () => {
+    const auth = await requirePayrollAccess(token);
+
+    const month = monthKey.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new UserFacingError("Choose a month.");
+    if (month > karachiMonthKey()) throw new UserFacingError("That month has not started yet.");
+
+    const cleaned = normalizeMonthOverrides(input.figures);
+    if ("error" in cleaned) throw new UserFacingError(cleaned.error);
+    const note = (input.note ?? "").trim().slice(0, 300) || null;
+
+    const [slip, lines] = await Promise.all([
+      adminDb.collection(SLIPS).doc(`${uid}_${month}`).get(),
+      calculatedLines(month, true),
+    ]);
+    const base = lines.find((line) => line.uid === uid);
+    if (!base) throw new UserFacingError("That person is not on this month's payroll.");
+    if (Number(slip.data()?.paidAmount ?? 0) > 0) {
+      throw new UserFacingError(
+        `${base.name} has already been paid for ${month}, so that month is closed. Put the correction on the next month.`
+      );
+    }
+
+    const overrides = changedOverrides(base, cleaned.overrides);
+    const ref = adminDb.collection(ADJUSTMENTS).doc(`${uid}_${month}`);
+    const next = applyMonthOverrides(base, overrides, note);
+
+    if (Object.keys(overrides).length === 0 && !note) {
+      await ref.delete();
+    } else {
+      await ref.set(
+        {
+          uid,
+          monthKey: month,
+          overrides,
+          note,
+          updatedAt: FieldValue.serverTimestamp(),
+          updatedByUid: auth.uid,
+          updatedByName: auth.name ?? auth.email ?? null,
+          history: FieldValue.arrayUnion({
+            at: new Date(),
+            byUid: auth.uid,
+            byName: auth.name ?? auth.email ?? null,
+            calculated: monthFigures(base),
+            overrides,
+            note,
+          }),
+        },
+        { merge: true }
+      );
+    }
+
+    return { net: next.net, adjusted: Object.keys(overrides).length };
+  });
 }
 
 function paymentState(amount: number, paidAmount: number) {

@@ -16,10 +16,14 @@ import type { AttendanceRecord } from '@/hooks/useAttendance';
 import { statusOfRecord, type AttendanceStatus } from '@/lib/attendance';
 import { dealAmounts, readCutBase, readDealType, readPayoutSource, validateDealAmounts } from '@/lib/dealAmounts';
 import {
+  applyMonthOverrides,
   buildMonthLine,
+  changedOverrides,
+  normalizeMonthOverrides,
   normalizeSalaryProfile,
   payrollTotals,
   readSalary,
+  type MonthOverrides,
   type PayrollLine,
   type PayrollStatus,
 } from '@/lib/payroll';
@@ -186,6 +190,9 @@ function demoJoinedDayKey(employee: { joinedAt?: { toDate?: () => Date } | null 
  * as disabled has none, and stays off the payroll as on the real path.
  */
 const demoLeftDays = new Map<string, string>();
+
+/** One person's month, changed by hand — `payrollAdjustments` on the real path. Keyed `uid_YYYY-MM`. */
+const demoMonthAdjustments = new Map<string, { overrides: MonthOverrides; note: string | null }>();
 /**
  * The report selector, mirroring `buildOptions` on the server.
  *
@@ -2755,6 +2762,35 @@ export const demo = {
     return ok({ salary, allowance });
   },
 
+  /** Mirrors `savePayrollMonth`: the figures are kept for that month alone. */
+  savePayrollMonth(
+    monthKey: string,
+    uid: string,
+    input: { figures: Record<string, unknown>; note?: string | null }
+  ): Result<{ net: number; adjusted: number }> {
+    const month = monthKey.slice(0, 7);
+    const cleaned = normalizeMonthOverrides(input.figures);
+    if ('error' in cleaned) return fail(cleaned.error);
+    const key = `${uid}_${month}`;
+    if (state.payslips[key]?.status === 'PAID') return fail('That month has already been paid, so it is closed.');
+
+    // The calculated line: this month's payroll with the adjustment set aside.
+    const previous = demoMonthAdjustments.get(key);
+    demoMonthAdjustments.delete(key);
+    const period = this.getPayroll(month);
+    const base = period.ok ? period.data.lines.find((line) => line.uid === uid) : undefined;
+    if (!base) {
+      if (previous) demoMonthAdjustments.set(key, previous);
+      return fail("That person is not on this month's payroll.");
+    }
+
+    const overrides = changedOverrides(base, cleaned.overrides);
+    const note = (input.note ?? '').trim() || null;
+    if (Object.keys(overrides).length > 0 || note) demoMonthAdjustments.set(key, { overrides, note });
+    emit();
+    return ok({ net: applyMonthOverrides(base, overrides, note).net, adjusted: Object.keys(overrides).length });
+  },
+
   /** Mirrors the live `getPayroll`: everybody's month worked out now, paid slips frozen. */
   getPayroll(monthKey: string) {
     const month = monthKey.slice(0, 7);
@@ -2807,7 +2843,9 @@ export const demo = {
         leaveCount: count('LEAVE'),
         presentCount: late + count('PRESENT'),
       });
-      if (line) lines.push(line);
+      if (!line) continue;
+      const adjustment = demoMonthAdjustments.get(`${employee.uid}_${month}`);
+      lines.push(adjustment ? applyMonthOverrides(line, adjustment.overrides, adjustment.note) : line);
     }
 
     const byUid = new Map(lines.map((line) => [line.uid, line]));

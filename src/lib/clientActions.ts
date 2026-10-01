@@ -78,6 +78,7 @@ import {
   listSalaryProfiles as _listSalaryProfiles,
   saveSalaryProfile as _saveSalaryProfile,
   getPayroll as _getPayroll,
+  savePayrollMonth as _savePayrollMonth,
   payPayrollLine as _payPayrollLine,
   getPayslips as _getPayslips,
   type PayrollPeriod,
@@ -1031,6 +1032,19 @@ export async function saveSalaryProfile(
   if (IS_DEMO) return demo.saveSalaryProfile(uid, input, actor().uid);
   const result = await _saveSalaryProfile(token, uid, input);
   if (result.ok) forgetSaved('listSalaryProfiles', 'getPayroll');
+  return result;
+}
+
+/** One person's figures for one month, set by hand. That month only. */
+export async function savePayrollMonth(
+  token: string,
+  monthKey: string,
+  uid: string,
+  input: { figures: Record<string, unknown>; note?: string | null }
+): Promise<ActionResult<{ net: number; adjusted: number }>> {
+  if (IS_DEMO) return demo.savePayrollMonth(monthKey, uid, input);
+  const result = await _savePayrollMonth(token, monthKey, uid, input);
+  if (result.ok) forgetSaved('getPayroll');
   return result;
 }
 

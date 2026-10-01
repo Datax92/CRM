@@ -24,7 +24,8 @@ import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
 import { getPayroll, payPayrollLine } from "@/lib/clientActions";
 import type { PayrollPeriod } from "@/app/actions/payroll";
-import type { PayrollLine } from "@/lib/payroll";
+import { MONTH_ADJUSTABLE_LABELS, type PayrollLine } from "@/lib/payroll";
+import { PayrollMonthModal } from "./PayrollMonthModal";
 import { formatMoney } from "@/lib/money";
 import { formatBusinessDate, karachiMonthKey } from "@/lib/dates";
 import { monthLabel, shiftMonth } from "@/lib/attendanceCalendar";
@@ -67,6 +68,12 @@ const CUT_LABELS: Record<Cut, string> = {
 
 const SALARIES_ICON = "M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6";
 
+/** Which figures of this month were set by hand — said on the row, so a changed month is never silent. */
+function adjustedPhrase(line: PayrollLine): string | null {
+  if (!line.adjusted?.length) return null;
+  return `Changed by hand: ${line.adjusted.map((key) => MONTH_ADJUSTABLE_LABELS[key].toLowerCase()).join(", ")}${line.note ? ` — ${line.note}` : ""}`;
+}
+
 /** True when the month was cut down — a mid-month joining, or a leaving. */
 function partMonth(line: PayrollLine): boolean {
   return Boolean(line.paidDays && line.monthDays && line.paidDays < line.monthDays);
@@ -100,6 +107,8 @@ export function PayrollView() {
   const [opened, setOpened] = useState<string | null>(null);
   const [paying, setPaying] = useState<PayrollLine | null>(null);
   const [editingSalary, setEditingSalary] = useState<PayrollLine | null>(null);
+  /** The person whose figures for the month on screen are being changed. */
+  const [editingMonth, setEditingMonth] = useState<PayrollLine | null>(null);
   const [nonce, setNonce] = useState(0);
   const [search, setSearch] = useState("");
   const [cut, setCut] = useState<Cut>("ALL");
@@ -273,10 +282,11 @@ export function PayrollView() {
     const actions: RowAction[] = [
       { key: "slip", label: "Payslip", d: ICON.receipt, tone: "quiet", onClick: () => setSlipFor(line) },
     ];
-    // Admin and HR both set salaries. Not once somebody has been paid: their
-    // month is frozen, and a changed salary would only reach next month.
+    // Admin and HR both edit a month. Not once somebody has been paid for it:
+    // the payslip is the record of what was paid and does not move. The
+    // standing salary is reached from inside the month form.
     if (paymentFor(line).paidAmount <= 0) {
-      actions.push({ key: "salary", label: "Edit salary", d: ICON.edit, tone: "quiet", onClick: () => setEditingSalary(line) });
+      actions.push({ key: "month", label: "Edit month", d: ICON.edit, tone: "quiet", onClick: () => setEditingMonth(line) });
     }
     // Absent, not disabled, once somebody is settled or for anybody but the admin.
     if (isAdmin && !isSettled(line)) {
@@ -303,8 +313,13 @@ export function PayrollView() {
           category: "Salary",
           status: statusFor(line),
           payment: left > 0 && payment.paidAmount > 0 ? { label: `${formatMoney(left)} left`, tone: TONE.warn } : null,
-          notes: joinedPhrase(line)
-            ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{joinedPhrase(line)}</span></div>
+          notes: joinedPhrase(line) || adjustedPhrase(line)
+            ? (
+              <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                {joinedPhrase(line) && <span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{joinedPhrase(line)}</span>}
+                {adjustedPhrase(line) && <span style={{ fontSize: 11.5, color: X.deep, fontWeight: 700 }}>{adjustedPhrase(line)}</span>}
+              </div>
+            )
             : null,
           detail: <FigureStrip figures={figuresFor(line)} isMobile={isMobile} />,
           actions: buildActions(line),
@@ -492,6 +507,7 @@ export function PayrollView() {
                 ? [{ label: "Last working day", value: formatBusinessDate(new Date(`${openedLine.leftAt}T12:00:00+05:00`)) }]
                 : []),
               { label: "Attendance", value: `${openedLine.presentCount} present · ${openedLine.lateCount} late · ${openedLine.absentCount} absent · ${openedLine.leaveCount} leave`, wide: true },
+              ...(adjustedPhrase(openedLine) ? [{ label: "This month", value: adjustedPhrase(openedLine)!, wide: true }] : []),
             ]}
             history={[]}
             actions={buildActions(openedLine).map((action) => (
@@ -547,6 +563,26 @@ export function PayrollView() {
             setBanner({ ok: true, text });
             salaries.reload();
             reload();
+          }}
+        />
+      )}
+
+      {editingMonth && (
+        <PayrollMonthModal
+          key={`${editingMonth.uid}_${monthKey}`}
+          line={editingMonth}
+          monthKey={monthKey}
+          monthName={monthLabel(monthKey)}
+          onClose={() => setEditingMonth(null)}
+          onSaved={(text) => {
+            setEditingMonth(null);
+            setBanner({ ok: true, text });
+            reload();
+          }}
+          onStandingSalary={() => {
+            const line = editingMonth;
+            setEditingMonth(null);
+            setEditingSalary(line);
           }}
         />
       )}
