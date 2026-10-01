@@ -121,6 +121,7 @@ export function MobileEmployees({
   onRecalculate,
   recalculating,
   canManage = true,
+  onReassignLeads,
 }: {
   metrics: EmployeeMetrics[];
   rows: EmployeeMetrics[];
@@ -150,6 +151,8 @@ export function MobileEmployees({
    * are absent rather than present-and-failing. Reading is identical.
    */
   canManage?: boolean;
+  /** Opens the panel that shares one person's open leads out. Admin only. */
+  onReassignLeads?: (employee: EmployeeMetrics) => void;
 }) {
   /** `undefined` closed, `null` creating, an employee editing. */
   const [formFor, setFormFor] = useState<EmployeeMetrics | null | undefined>(undefined);
@@ -596,6 +599,7 @@ export function MobileEmployees({
           team={selectedTeam}
           onOpenMember={(member) => onSelect(member)}
           onClose={() => onSelect(null)}
+          onReassignLeads={canManage && onReassignLeads ? () => onReassignLeads(selected) : undefined}
           onEdit={
             canManage
               ? () => {
@@ -1019,6 +1023,7 @@ export function ProfileOverlay({
   team,
   onClose,
   onEdit,
+  onReassignLeads,
   onOpenMember,
 }: {
   employee: EmployeeMetrics;
@@ -1034,6 +1039,8 @@ export function ProfileOverlay({
   onClose: () => void;
   /** Absent for a sub admin — editing is `requireAdmin` on the server. */
   onEdit?: () => void;
+  /** Share this person's open leads out among others. Admin only, as Edit is. */
+  onReassignLeads?: () => void;
   /** Open one of the manager's employees. Manager mode only. */
   onOpenMember?: (member: EmployeeMetrics) => void;
 }) {
@@ -1221,11 +1228,20 @@ export function ProfileOverlay({
             {isManager ? "Manager" : "Employee"}
           </span>
           {onEdit ? (
-            <HeaderCircle onClick={onEdit} label={isManager ? "Edit this manager" : "Edit this employee"} size={36}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
-                <path d="M4 20h4l11-11-4-4L4 16v4Z" />
-              </svg>
-            </HeaderCircle>
+            <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              {onReassignLeads && (
+                <HeaderCircle onClick={onReassignLeads} label="Reassign this person's leads" size={36}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M4 8h15m0 0-4-4m4 4-4 4M20 16H5m0 0 4-4m-4 4 4 4" />
+                  </svg>
+                </HeaderCircle>
+              )}
+              <HeaderCircle onClick={onEdit} label={isManager ? "Edit this manager" : "Edit this employee"} size={36}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                  <path d="M4 20h4l11-11-4-4L4 16v4Z" />
+                </svg>
+              </HeaderCircle>
+            </span>
           ) : (
             // Keeps the title centred between the back button and this slot.
             <span style={{ width: 36, flexShrink: 0 }} aria-hidden />

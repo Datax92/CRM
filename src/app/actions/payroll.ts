@@ -67,6 +67,31 @@ function joinedDayKeyOf(data: FirebaseFirestore.DocumentData): string | null {
   return joined && !Number.isNaN(joined.getTime()) ? karachiDayKey(joined) : null;
 }
 
+/**
+ * Somebody's last working day, once their account has been disabled.
+ *
+ * `leftAt` when it has been entered (Payroll → Edit salary), else the day the
+ * account was disabled. `null` for anybody still working — and for an account
+ * disabled before `disabledAt` was recorded, which stays off the payroll as it
+ * always was rather than being paid from a date nobody knows.
+ */
+function leftDayKeyOf(data: FirebaseFirestore.DocumentData): string | null {
+  if (data.status !== "DISABLED") return null;
+  const left = (data.leftAt?.toDate?.() ?? data.disabledAt?.toDate?.()) as Date | undefined;
+  return left && !Number.isNaN(left.getTime()) ? karachiDayKey(left) : null;
+}
+
+/**
+ * Who a month's payroll is worked out for: everybody working, plus anybody who
+ * has left with a known last day. `buildMonthLine` then drops a leaver from
+ * every month after that day, so they stay on the month they are still owed —
+ * disabling an account used to take its unpaid month off the payroll with it.
+ */
+function onPayroll(data: FirebaseFirestore.DocumentData): boolean {
+  if (data.role === "admin") return false;
+  return data.status !== "DISABLED" || leftDayKeyOf(data) !== null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Salaries                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -81,6 +106,8 @@ export interface SalaryProfileRecord {
   allowance: number;
   /** `YYYY-MM-DD`, Karachi, or null when nobody has entered it. */
   joinedAt: string | null;
+  /** Last working day. Present only for somebody whose account is disabled. */
+  leftAt?: string | null;
 }
 
 /** Everybody on the payroll — employees and managers, never the admin. */
@@ -122,7 +149,7 @@ export async function listSalaryProfiles(
 export async function saveSalaryProfile(
   token: string,
   uid: string,
-  input: { salary: number; allowance: number; joinedAt: string | null }
+  input: { salary: number; allowance: number; joinedAt: string | null; leftAt?: string | null }
 ): Promise<ActionResult<{ salary: number; allowance: number }>> {
   return runAction("saveSalaryProfile", async () => {
     const auth = await requirePayrollAccess(token);
@@ -146,7 +173,20 @@ export async function saveSalaryProfile(
     const data = snap.data() ?? {};
     if (data.role === "admin") throw new UserFacingError("The administrator's own account is not on the payroll.");
 
-    const previous = { ...readSalary(data), joinedAt: joinedDayKeyOf(data) };
+    // The last working day belongs to somebody who has left; on a working
+    // account the field is ignored rather than quietly ending their pay.
+    const leftRaw = data.status === "DISABLED" ? (input.leftAt ?? "").trim() : "";
+    if (leftRaw && !/^\d{4}-\d{2}-\d{2}$/.test(leftRaw)) {
+      throw new UserFacingError("Choose the last working day.");
+    }
+    if (leftRaw && leftRaw > karachiDayKey()) {
+      throw new UserFacingError("The last working day is in the future.");
+    }
+    if (leftRaw && joinedRaw && leftRaw < joinedRaw) {
+      throw new UserFacingError("The last working day is before the joining date.");
+    }
+
+    const previous = { ...readSalary(data), joinedAt: joinedDayKeyOf(data), leftAt: leftDayKeyOf(data) };
     const profile = normalizeSalaryProfile({ basic: salary, allowances: allowance });
 
     await ref.update({
@@ -154,12 +194,13 @@ export async function saveSalaryProfile(
       monthlySalary: salary,
       // Midday Karachi, so the stored instant reads as the same date anywhere.
       joinedAt: joinedRaw ? new Date(`${joinedRaw}T12:00:00+05:00`) : null,
+      ...(leftRaw ? { leftAt: new Date(`${leftRaw}T12:00:00+05:00`) } : {}),
       salaryHistory: FieldValue.arrayUnion({
         at: new Date(),
         byUid: auth.uid,
         byName: auth.name ?? auth.email ?? null,
         from: previous,
-        to: { salary, allowance, joinedAt: joinedRaw || null },
+        to: { salary, allowance, joinedAt: joinedRaw || null, leftAt: leftRaw || previous.leftAt },
       }),
     });
 
@@ -222,6 +263,8 @@ async function attendanceByUid(
   policy: AttendancePolicy,
   salaries: Map<string, number>,
   joined: Map<string, string | null>,
+  /** Last working day of anybody who has left; later records are ignored. */
+  left: Map<string, string | null>,
   /** True when the figures decide a payment — see `readAttendanceMonth`. */
   fresh: boolean
 ): Promise<Map<string, AttendanceFigures>> {
@@ -246,6 +289,8 @@ async function attendanceByUid(
     if (!uid) continue;
     const from = joined.get(uid);
     if (from && String(data.dayKey ?? "") < from) continue;
+    const until = left.get(uid);
+    if (until && String(data.dayKey ?? "") > until) continue;
 
     const status = statusOfRecord(data);
     const row = entry(uid);
@@ -286,13 +331,11 @@ async function liveLines(
     commissionByUid(month),
   ]);
 
-  const people = users.filter((doc) => {
-    const data = doc.data;
-    return data.role !== "admin" && data.status !== "DISABLED";
-  });
+  const people = users.filter((doc) => onPayroll(doc.data));
   const salaries = new Map(people.map((doc) => [doc.id, readSalary(doc.data).salary]));
   const joined = new Map(people.map((doc) => [doc.id, joinedDayKeyOf(doc.data)]));
-  const attendance = await attendanceByUid(month, policy, salaries, joined, fresh);
+  const left = new Map(people.map((doc) => [doc.id, leftDayKeyOf(doc.data)]));
+  const attendance = await attendanceByUid(month, policy, salaries, joined, left, fresh);
 
   const lines: PayrollLine[] = [];
   for (const doc of people) {
@@ -306,6 +349,7 @@ async function liveLines(
       monthKey: month,
       ...readSalary(data),
       joinedDayKey: joined.get(doc.id) ?? null,
+      leftDayKey: left.get(doc.id) ?? null,
       commission: commission.get(doc.id) ?? 0,
       attendanceDeduction: figures?.deduction ?? 0,
       deductionBasis: figures?.basis ?? [],

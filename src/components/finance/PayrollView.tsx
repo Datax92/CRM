@@ -67,9 +67,22 @@ const CUT_LABELS: Record<Cut, string> = {
 
 const SALARIES_ICON = "M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6";
 
+/** True when the month was cut down — a mid-month joining, or a leaving. */
+function partMonth(line: PayrollLine): boolean {
+  return Boolean(line.paidDays && line.monthDays && line.paidDays < line.monthDays);
+}
+
+/**
+ * Why a line is not an ordinary month, in words. Somebody who has left is
+ * always named as such, whole month or not: their line is on this payroll
+ * although their account is gone from every other screen.
+ */
 function joinedPhrase(line: PayrollLine): string | null {
-  if (!line.joinedAt || !line.paidDays || !line.monthDays || line.paidDays >= line.monthDays) return null;
-  return `Joined ${formatBusinessDate(new Date(`${line.joinedAt}T12:00:00+05:00`))} · paid ${line.paidDays} of ${line.monthDays} days`;
+  const day = (key: string) => formatBusinessDate(new Date(`${key}T12:00:00+05:00`));
+  const paid = partMonth(line) ? ` · paid ${line.paidDays} of ${line.monthDays} days` : "";
+  if (line.leftAt) return `Left ${day(line.leftAt)}${paid}`;
+  if (!line.joinedAt || !paid) return null;
+  return `Joined ${day(line.joinedAt)}${paid}`;
 }
 
 export function PayrollView() {
@@ -92,6 +105,9 @@ export function PayrollView() {
   const [cut, setCut] = useState<Cut>("ALL");
 
   const reload = useCallback(() => setNonce((value) => value + 1), []);
+
+  const thisMonth = karachiMonthKey();
+  const isThisMonth = monthKey === thisMonth;
 
   // The accounts a salary is paid from. Only the admin pays, so only the admin
   // opens this listener.
@@ -228,9 +244,8 @@ export function PayrollView() {
 
   /** Every figure behind a net, in the order a payslip reads them. */
   const figuresFor = useCallback((line: PayrollLine): Figure[] => {
-    const cut = joinedPhrase(line);
     const figures: Figure[] = [
-      { label: "Salary", value: formatMoney(line.basic), tone: "muted", hint: cut ? `${line.paidDays}/${line.monthDays} days` : null },
+      { label: "Salary", value: formatMoney(line.basic), tone: "muted", hint: partMonth(line) ? `${line.paidDays}/${line.monthDays} days` : null },
     ];
     if (line.allowances) figures.push({ label: "Allowance", value: formatMoney(line.allowances), tone: "muted" });
     if (line.bonus + line.extraAdditions) figures.push({ label: "Bonus", value: formatMoney(line.bonus + line.extraAdditions), tone: "muted" });
@@ -305,10 +320,10 @@ export function PayrollView() {
   );
 
   const download = () => {
-    const header = ["Month", "Name", "Role", "Joined", "Paid days", "Salary", "Allowance", "Commission",
+    const header = ["Month", "Name", "Role", "Joined", "Left", "Paid days", "Salary", "Allowance", "Commission",
       "Attendance deduction", "Present", "Late", "Absent", "Leave", "Net", "Paid"];
     const rows = lines.map((line) => [
-      monthKey, line.name, line.jobTitle ?? "", line.joinedAt ?? "",
+      monthKey, line.name, line.jobTitle ?? "", line.joinedAt ?? "", line.leftAt ?? "",
       line.paidDays && line.monthDays ? `${line.paidDays}/${line.monthDays}` : "",
       String(line.basic), String(line.allowances), String(line.commission), String(line.attendanceDeduction),
       String(line.presentCount), String(line.lateCount), String(line.absentCount), String(line.leaveCount),
@@ -357,6 +372,13 @@ export function PayrollView() {
           <div style={{ background: "rgba(255,255,255,0.92)", borderRadius: 999, padding: "3px 6px" }}>
             <MonthStepper monthKey={monthKey} onChange={setMonthKey} />
           </div>
+          {/* Salaries are paid for the month that has just ended, and the screen
+              opens on the one that has just begun. The arrows were the only way
+              back and were being missed, so the other month is named outright. */}
+          <button type="button" onClick={() => setMonthKey(isThisMonth ? shiftMonth(thisMonth, -1) : thisMonth)}
+            style={{ borderRadius: 999, border: "none", background: "#fff", color: X.deep, padding: "8px 16px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+            {isThisMonth ? `View ${monthLabel(shiftMonth(thisMonth, -1))}` : `Back to ${monthLabel(thisMonth)}`}
+          </button>
           {totals.people > 0 && !loading && (
             <span style={{ borderRadius: 999, border: "1px solid rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.18)", padding: "5px 14px", fontSize: 12, fontWeight: 700 }}>
               {totals.outstanding > 0 ? `${formatMoney(totals.outstanding)} due` : "Paid in full"}
@@ -466,6 +488,9 @@ export function PayrollView() {
               { label: "Role", value: openedLine.jobTitle ?? "—" },
               { label: "Monthly salary", value: formatMoney((openedLine.salary ?? openedLine.basic) + (openedLine.allowance ?? openedLine.allowances)) },
               { label: "Joined", value: openedLine.joinedAt ? formatBusinessDate(new Date(`${openedLine.joinedAt}T12:00:00+05:00`)) : "—" },
+              ...(openedLine.leftAt
+                ? [{ label: "Last working day", value: formatBusinessDate(new Date(`${openedLine.leftAt}T12:00:00+05:00`)) }]
+                : []),
               { label: "Attendance", value: `${openedLine.presentCount} present · ${openedLine.lateCount} late · ${openedLine.absentCount} absent · ${openedLine.leaveCount} leave`, wide: true },
             ]}
             history={[]}
@@ -513,6 +538,8 @@ export function PayrollView() {
             salary: editingSalary.salary ?? editingSalary.basic,
             allowance: editingSalary.allowance ?? editingSalary.allowances,
             joinedAt: editingSalary.joinedAt ?? null,
+            // Present only for somebody who has left — it is what shows the field.
+            ...(editingSalary.leftAt ? { leftAt: editingSalary.leftAt } : {}),
           }}
           onClose={() => setEditingSalary(null)}
           onSaved={(text) => {

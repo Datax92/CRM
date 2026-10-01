@@ -15,7 +15,9 @@ import { karachiMonthKey } from '@/lib/dates';
 import { enqueue, patchQueuedFollowUp, registerReplayers, shouldQueue } from '@/lib/outbox';
 
 import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
-  passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
+  passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk,
+  redistributeLeads as _redistributeLeads, type RedistributionResult } from '@/app/actions/leads';
+import type { RedistributionShare } from '@/lib/leadRedistribution';
 import type { PipelineStage } from '@/lib/pipelineStage';
 import { saveKyc as _saveKyc } from '@/app/actions/kyc';
 import type { KycValues } from '@/lib/kyc';
@@ -354,6 +356,16 @@ export async function assignLeadsBulk(
   return _assignLeadsBulk(token, leadIds, userId);
 }
 
+/** Shares one person's open leads out among others, by the numbers chosen. */
+export async function redistributeLeads(
+  token: string,
+  fromUid: string,
+  shares: RedistributionShare[]
+): Promise<ActionResult<RedistributionResult>> {
+  if (IS_DEMO) return demo.redistributeLeads(fromUid, shares, actor().uid);
+  return _redistributeLeads(token, fromUid, shares);
+}
+
 export async function closeDeal(
   token: string,
   leadId: string,
@@ -503,12 +515,17 @@ export async function recalculateEmployeePriorities(
 
 export async function disableEmployee(token: string, uid: string): Promise<ActionResult<{ openLeads: number }>> {
   if (IS_DEMO) return demo.setEmployeeStatus(uid, 'DISABLED');
-  return _disableEmployee(token, uid);
+  const result = await _disableEmployee(token, uid);
+  // Their pay now stops at today, so a saved month is no longer the answer.
+  if (result.ok) forgetSaved('getPayroll', 'listSalaryProfiles');
+  return result;
 }
 
 export async function enableEmployee(token: string, uid: string): Promise<ActionResult> {
   if (IS_DEMO) return demo.setEmployeeStatus(uid, 'ACTIVE') as ActionResult;
-  return _enableEmployee(token, uid);
+  const result = await _enableEmployee(token, uid);
+  if (result.ok) forgetSaved('getPayroll', 'listSalaryProfiles');
+  return result;
 }
 
 export async function recordAttendancePing(token: string): Promise<ActionResult<AttendancePingResult>> {
@@ -1021,7 +1038,7 @@ export async function listSalaryProfiles(
 export async function saveSalaryProfile(
   token: string,
   uid: string,
-  input: { salary: number; allowance: number; joinedAt: string | null }
+  input: { salary: number; allowance: number; joinedAt: string | null; leftAt?: string | null }
 ): Promise<ActionResult<{ salary: number; allowance: number }>> {
   if (IS_DEMO) return demo.saveSalaryProfile(uid, input, actor().uid);
   const result = await _saveSalaryProfile(token, uid, input);

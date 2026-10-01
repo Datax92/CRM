@@ -49,6 +49,8 @@ import { E, HeroRings, buildDirectoryStats, type DirectoryStat } from "@/compone
 import { Pager } from "@/components/employees/DossierControls";
 import { EmployeeFormModal } from "@/components/employees/EmployeeFormModal";
 import { EmployeeDetailModal } from "@/components/employees/EmployeeDetailModal";
+import { ReassignLeadsModal, type ReassignRecipient } from "@/components/employees/ReassignLeadsModal";
+import { isTerminal } from "@/lib/leadStatus";
 import { MobileEmployees } from "@/components/mobile/MobileEmployees";
 
 export type DirectoryFilter = "All" | "Active" | "Inactive";
@@ -139,6 +141,8 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
     null
   );
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
+  /** Whose open leads are being shared out. Opens over the dossier, which stays. */
+  const [reassignFor, setReassignFor] = useState<{ uid: string; name: string } | null>(null);
   const [banner, setBanner] = useState<{ tone: "error" | "success"; text: string } | null>(null);
   const [recalculating, setRecalculating] = useState(false);
 
@@ -198,6 +202,58 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
         ? metrics.filter((member) => member.subAdminUid === selected.uid)
         : undefined,
     [selectedIsManager, selected, metrics]
+  );
+
+  /** Open leads per holder — what there is to give out, and who is already full. */
+  const openByUid = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lead of leads) {
+      if (!lead.assignedUserId || isTerminal(lead.status)) continue;
+      counts.set(lead.assignedUserId, (counts.get(lead.assignedUserId) ?? 0) + 1);
+    }
+    return counts;
+  }, [leads]);
+
+  /**
+   * Who may be given somebody's leads: every working employee and manager, and
+   * the admin themselves. A paused account is not offered — the server refuses
+   * it, and a choice that will be refused is worse than none.
+   */
+  const myUid = user?.uid;
+  const reassignRecipients = useMemo<ReassignRecipient[]>(() => {
+    if (!reassignFor) return [];
+    const people = [
+      ...metrics.map((person) => ({ person, note: roleTitle(person) })),
+      ...subAdminMetrics.map((person) => ({ person, note: "Manager" })),
+    ]
+      .filter(({ person }) => person.status !== "DISABLED" && person.uid !== reassignFor.uid)
+      .map(({ person, note }) => ({
+        uid: person.uid,
+        name: person.name,
+        note,
+        held: openByUid.get(person.uid) ?? 0,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (myUid && myUid !== reassignFor.uid) {
+      people.push({ uid: myUid, name: "Me", note: "Admin", held: openByUid.get(myUid) ?? 0 });
+    }
+    return people;
+  }, [reassignFor, metrics, subAdminMetrics, openByUid, myUid]);
+
+  const reassignModal = reassignFor && canManage && (
+    <ReassignLeadsModal
+      key={reassignFor.uid}
+      source={reassignFor}
+      openCount={openByUid.get(reassignFor.uid) ?? 0}
+      recipients={reassignRecipients}
+      getIdToken={getIdToken}
+      onClose={() => setReassignFor(null)}
+      onDone={(message) => {
+        setReassignFor(null);
+        setSelectedUid(null);
+        setBanner({ tone: "success", text: message });
+      }}
+    />
   );
 
   /** The phone header's account chip. The design draws a single letter. */
@@ -270,6 +326,9 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           team={selectedTeam}
           onOpenMember={(member) => setSelectedUid(member.uid)}
           onClose={() => setSelectedUid(null)}
+          onReassignLeads={
+            canManage ? () => setReassignFor({ uid: selected.uid, name: selected.name }) : undefined
+          }
           // The dossier renders at z-110 and the form at z-120, but leaving both
           // mounted stacks two backdrops over the page. Close the dossier first.
           onEdit={
@@ -296,6 +355,8 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           }
         />
       )}
+
+      {reassignModal}
     </>
   );
 
@@ -305,6 +366,8 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
     // The phone owns its own add/edit sheet — a 680px centred dialog on a
     // 390px frame is the wrong shape, and the design file draws a bottom sheet.
     return (
+      <>
+      {reassignModal}
       <MobileEmployees
         metrics={metrics}
         rows={rows}
@@ -327,7 +390,9 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
         onRecalculate={runRecalculation}
         recalculating={recalculating}
         canManage={canManage}
+        onReassignLeads={(employee) => setReassignFor({ uid: employee.uid, name: employee.name })}
       />
+      </>
     );
   }
 

@@ -215,7 +215,7 @@ export function EmployeeFormModal({
         const open = status === "DISABLED" ? (change as { data?: { openLeads: number } }).data?.openLeads ?? 0 : 0;
         onSaved(
           status === "DISABLED"
-            ? `${name.trim()} paused${open > 0 ? ` — ${open} open lead${open === 1 ? "" : "s"} still assigned.` : "."}`
+            ? `${name.trim()} paused${open > 0 ? ` — ${open} open lead${open === 1 ? "" : "s"} still assigned. Open their record and use Reassign leads.` : "."}`
             : `${name.trim()} is back in the lane.`
         );
         return;

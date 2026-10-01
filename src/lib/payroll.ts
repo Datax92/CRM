@@ -94,6 +94,8 @@ export interface PayrollLine {
   salary?: number;
   allowance?: number;
   joinedAt?: string | null;
+  /** Last working day (`YYYY-MM-DD`). Present only on somebody who has left. */
+  leftAt?: string | null;
   paidDays?: number;
   monthDays?: number;
 }
@@ -354,6 +356,34 @@ export function joiningShare(
 }
 
 /**
+ * The same, for somebody who has also **left**: paid from their joining day to
+ * their last working day, both inclusive, in calendar days.
+ *
+ * `null` when no day of the month falls inside their employment — they joined
+ * after it ended, or left before it began. That second case is what takes a
+ * person off every later month's payroll while keeping them on the month they
+ * left in, which still has to be paid. No leaving day is `joiningShare`.
+ */
+export function employmentShare(
+  joinedDayKey: string | null | undefined,
+  leftDayKey: string | null | undefined,
+  monthKey: string
+): { paidDays: number; monthDays: number } | null {
+  const joined = joiningShare(joinedDayKey, monthKey);
+  if (!joined) return null;
+  if (!leftDayKey || !/^\d{4}-\d{2}-\d{2}$/.test(leftDayKey)) return joined;
+
+  const leftMonth = leftDayKey.slice(0, 7);
+  if (leftMonth < monthKey) return null;
+  if (leftMonth > monthKey) return joined;
+
+  const firstDay = joined.monthDays - joined.paidDays + 1;
+  const lastDay = Math.min(joined.monthDays, Number(leftDayKey.slice(8, 10)));
+  if (lastDay < firstDay) return null;
+  return { paidDays: lastDay - firstDay + 1, monthDays: joined.monthDays };
+}
+
+/**
  * One person's month: salary + allowance (cut down for a mid-month joining)
  * + commission − the attendance deduction Attendance Settings produced.
  * `null` when they had not joined yet.
@@ -367,6 +397,8 @@ export function buildMonthLine(input: {
   salary: number;
   allowance: number;
   joinedDayKey?: string | null;
+  /** Their last working day, once they have left. */
+  leftDayKey?: string | null;
   commission: number;
   attendanceDeduction: number;
   deductionBasis?: string[];
@@ -375,7 +407,7 @@ export function buildMonthLine(input: {
   leaveCount?: number;
   presentCount?: number;
 }): PayrollLine | null {
-  const share = joiningShare(input.joinedDayKey, input.monthKey);
+  const share = employmentShare(input.joinedDayKey, input.leftDayKey, input.monthKey);
   if (!share) return null;
   const part = (value: number) => money((money(value) * share.paidDays) / share.monthDays);
 
@@ -405,6 +437,7 @@ export function buildMonthLine(input: {
     salary: money(input.salary),
     allowance: money(input.allowance),
     joinedAt: input.joinedDayKey ?? null,
+    ...(input.leftDayKey ? { leftAt: input.leftDayKey } : {}),
     paidDays: share.paidDays,
     monthDays: share.monthDays,
   };

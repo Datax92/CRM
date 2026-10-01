@@ -5,6 +5,7 @@ import {
   DEFAULT_SALARY_PROFILE,
   buildMonthLine,
   joiningShare,
+  employmentShare,
   readSalary,
   allowedTransitions,
   buildPayrollLine,
@@ -302,4 +303,34 @@ test('the allowance gathers every extra the old profile held', () => {
   assert.deepEqual(readSalary({ monthlySalary: 22000, salaryProfile: { basic: 22000, allowances: 1000, bonus: 2000, otherAdditions: 0 } }), { salary: 22000, allowance: 3000 });
   assert.deepEqual(readSalary({ monthlySalary: 18000 }), { salary: 18000, allowance: 0 });
   assert.deepEqual(readSalary({}), { salary: 0, allowance: 0 });
+});
+
+/* ---- somebody who has left ---- */
+
+test('no leaving day is the joining share unchanged', () => {
+  assert.deepEqual(employmentShare('2026-09-04', null, '2026-09'), { paidDays: 27, monthDays: 30 });
+  assert.deepEqual(employmentShare(null, 'junk', '2026-09'), { paidDays: 30, monthDays: 30 });
+});
+
+test('the month somebody leaves in is paid up to their last working day, inclusive', () => {
+  assert.deepEqual(employmentShare('2026-08-27', '2026-09-30', '2026-09'), { paidDays: 30, monthDays: 30 });
+  assert.deepEqual(employmentShare('2026-08-27', '2026-09-20', '2026-09'), { paidDays: 20, monthDays: 30 });
+  // Joined and left inside the same month: the 4th to the 20th is 17 days.
+  assert.deepEqual(employmentShare('2026-09-04', '2026-09-20', '2026-09'), { paidDays: 17, monthDays: 30 });
+});
+
+test('earlier months are whole, and every month after the leaving one is off the payroll', () => {
+  assert.deepEqual(employmentShare('2026-08-27', '2026-10-01', '2026-09'), { paidDays: 30, monthDays: 30 });
+  assert.equal(employmentShare('2026-08-27', '2026-09-30', '2026-10'), null);
+  assert.equal(employmentShare('2026-09-10', '2026-09-05', '2026-09'), null);
+});
+
+test('the line of somebody who left is cut to their days and carries the leaving day', () => {
+  const line = buildMonthLine({
+    uid: 'a', name: 'A', monthKey: '2026-09', salary: 30000, allowance: 0,
+    joinedDayKey: '2026-08-27', leftDayKey: '2026-09-20', commission: 0, attendanceDeduction: 0,
+  })!;
+  assert.equal(line.basic, 20000);
+  assert.equal(line.leftAt, '2026-09-20');
+  assert.equal(buildMonthLine({ uid: 'a', name: 'A', monthKey: '2026-10', salary: 30000, allowance: 0, leftDayKey: '2026-09-20', commission: 0, attendanceDeduction: 0 }), null);
 });

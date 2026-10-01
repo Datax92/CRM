@@ -60,6 +60,7 @@ follow-ups, attendance, payroll and financial reporting.
   - **A manager's Meta Ads is their team; their Meta Leads is their own** (owner, 2026-09-23). `/subadmin/meta-ads` is `TeamMetaAdsView` — the admin's card layout, built from the manager's `useLeads` (their team's leads plus their own), because the admin's campaign folders are not the manager's and the shared `MetaAdsView` rendered empty for them. A card opens `/subadmin/meta-ads/{folderId}`, which is `MetaLeadsFolder scope="team"`: every row names its holder, with the admin's who-holds-it picker. `/subadmin/meta-leads` is unchanged — only leads assigned to the manager. No reassign on either, as on a manager's leads screen.
   - **An `AssignedLeadRow` must sit in a row wrapper.** It is `flex-1`; as a direct child of the list's flex column it grew to the list's full height, so one lead drew as a tall box with its name mid-way down (the Meta Leads folder, fixed 2026-09-23). The admin's list always wrapped it.
 - Closed leads (Closed Won / Closed Lost / Not Interested) cannot be reassigned.
+- **One person's open leads can be shared out by number** (owner, 2026-10-01 — somebody let go holding 185). **Reassign leads** on a person's record, admin only, both widths (`ReassignLeadsModal`, `redistributeLeads`): the admin types how many each person gets and the rest stay. The leads are found **on the server** by holder, newest first, and dealt round the recipients (`lib/leadRedistribution`) so nobody gets only the old ones; each is written as `assignLeadsBulk` writes it (`ACCEPTED`, filed under the recipient's manager, a `BULK_ASSIGNED` event). **An admin may be a recipient here** — the ordinary assign actions refuse one. More than the person holds is refused with the real figure, never trimmed. KPI counters do not move.
 - Windows and the 1–10 scale are defined once in `src/lib/constants/distribution.ts`, including the minute figures used in user-facing copy, so wording cannot drift from the clock.
 
 ## Leads
@@ -2793,3 +2794,29 @@ adjustments to HR managers only.
 4. **Demo Store Parity:**
    - `src/lib/demo/store.ts` maps `adjustedCheckIn`/`adjustedCheckOut` to `checkIn`/`checkOut`
      and updates `workedMinutes` and the `adjustments` audit trail on `adjustAttendance`.
+
+### 2026-09-29 — Amanat (Trust & Safekeeping) missing security rule fixed
+
+**Client issue:** "Amanat mein add nai ho rahi. Idher show nai ho rai lekin jiss acount mein bheg ra waha a rahi"
+1. **Diagnosis & Root Cause:**
+   - The Server Action `saveAmanatEntry` in `src/app/actions/amanatSheet.ts` writes records using the Admin SDK into collection `amanatEntries` and creates an IN transaction in collection `transactions` if a deposit account is specified.
+   - The destination account ledger reads `transactions` which was permitted by `match /transactions/{transactionId} { allow read: if isAdmin() || isHr(); }`.
+   - However, `amanatEntries` collection was completely absent in `firestore.rules`.
+   - The default-deny rule `match /{document=**} { allow read, write: if false; }` blocked client-side reads (`useAmanatEntries`), throwing permission-denied and rendering an empty table despite successful backend writes.
+2. **Resolution:**
+   - Added rule for `amanatEntries` in `firestore.rules`:
+     `match /amanatEntries/{entryId} { allow read: if isAdmin() || isHr(); allow write: if false; }`
+   - Deployed updated rules to live Firebase project via `node scripts/deploy-rules-rest.mjs --confirm`.
+   - Verified all 867 unit tests pass.
+
+### 2026-10-01 — letting somebody go: their leads, their last month, and September's payroll
+
+*"he fired one of his employees aroosa abbasi and now he wants to reassign her leads to anyone he wants in any amount … unable to see september progress."* Measured first, read-only: Aroosa was still `ACTIVE`, `autoAssign: true`, priority 2 — still being offered paid leads — holding 200 leads (185 open, 15 Not Interested); September had 140 attendance records and no payslips.
+
+- **Reassign leads** — rule under **Distribution**.
+- **Somebody who has left stays on the month they left in** (`employmentShare`, `leftDayKeyOf`, `onPayroll`). `liveLines` dropped every `DISABLED` account, so disabling somebody before paying them took their unpaid month off the payroll. Now: last working day = `users/{uid}.leftAt`, else the day the account was disabled; that month is paid up to it (calendar days, as joining is), attendance after it is ignored, and they are on no later month. Editable as **Last working day** in Payroll → Edit salary, shown only for somebody who has left. `enableEmployee` clears it. An account disabled with no `disabledAt` stays off, as before.
+- **Payroll names the other month.** The stepper was always there; on the 1st the screen opens on the new month and the arrows were being missed. A **View September 2026** / **Back to October 2026** button sits beside it.
+- **`disableEmployee`'s open-lead count was wrong** — its status list counted closed leads and missed most working statuses. Now everything held less the three terminal statuses.
+- **Passwords cannot be shown** — Firebase Auth stores a hash. The admin sets a new one from Edit (it is visible while typing). Storing them readable was not built.
+- **Validation**: typecheck 0, `test` 878/878 (11 new), `eslint src` 8 / 45 (same with and without the change), `next build` compiles. Replayed read-only on live data: Aroosa's September is 25,000 whole or 16,667 leaving on the 20th, and she is off October; a 100/60/25 split covers her 185 open leads once each. **Not driven in a browser; no lead was moved and her account was not touched.**
+

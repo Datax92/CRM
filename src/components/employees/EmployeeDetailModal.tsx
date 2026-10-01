@@ -80,6 +80,7 @@ export function EmployeeDetailModal({
   team,
   onClose,
   onEdit,
+  onReassignLeads,
   onOpenMember,
 }: {
   employee: EmployeeMetrics;
@@ -99,6 +100,11 @@ export function EmployeeDetailModal({
    * administrators". Everything else in the dossier reads the same for both.
    */
   onEdit?: () => void;
+  /**
+   * Share this person's open leads out among others. Absent for anybody but
+   * the admin, for the same reason `onEdit` is.
+   */
+  onReassignLeads?: () => void;
   /** Open one of the manager's employees. Manager mode only. */
   onOpenMember?: (member: EmployeeMetrics) => void;
 }) {
@@ -461,6 +467,31 @@ export function EmployeeDetailModal({
           </div>
 
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            {onReassignLeads && (
+            <button
+              type="button"
+              onClick={onReassignLeads}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "10px 16px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.55)",
+                background: "rgba(255,255,255,0.14)",
+                color: "#fff",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M4 8h15m0 0-4-4m4 4-4 4M20 16H5m0 0 4-4m-4 4 4 4" />
+              </svg>
+              <span style={{ whiteSpace: "nowrap" }}>Reassign leads</span>
+            </button>
+            )}
             {onEdit && (
             <button
               type="button"

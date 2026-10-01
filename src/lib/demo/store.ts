@@ -47,6 +47,7 @@ import {
   type LeaveType,
 } from '@/lib/attendancePolicy';
 import { isTerminal, type LeadStatus } from '@/lib/leadStatus';
+import { normalizeShares, planRedistribution, totalOf, type RedistributionShare } from '@/lib/leadRedistribution';
 import { addTally, entryTally, EMPTY_TALLY, type EntryTally } from '@/lib/leadBuckets';
 import type { DistributionLine } from '@/lib/profitDistribution';
 import { calculateDistribution, type DistributionShare } from '@/lib/profitDistribution';
@@ -179,6 +180,13 @@ function demoJoinedDayKey(employee: { joinedAt?: { toDate?: () => Date } | null 
   const joined = employee.joinedAt?.toDate?.();
   return joined && !Number.isNaN(joined.getTime()) ? karachiDayKey(joined) : null;
 }
+
+/**
+ * Last working days of demo people whose account was disabled in this session,
+ * mirroring `leftAt ?? disabledAt` on the real user document. Somebody seeded
+ * as disabled has none, and stays off the payroll as on the real path.
+ */
+const demoLeftDays = new Map<string, string>();
 /**
  * The report selector, mirroring `buildOptions` on the server.
  *
@@ -1986,6 +1994,77 @@ export const demo = {
     return ok({ assigned, skipped });
   },
 
+  /** Mirrors `redistributeLeads`: one person's open leads, dealt out by count. */
+  redistributeLeads(
+    fromUid: string,
+    shares: RedistributionShare[],
+    actorUid: string
+  ): Result<{ moved: Array<{ uid: string; name: string; count: number }>; remaining: number }> {
+    const cleaned = normalizeShares(shares, fromUid);
+    if ('error' in cleaned) return fail(cleaned.error);
+
+    const source = state.employees.find((e) => e.uid === fromUid);
+    if (!source) return fail('That person no longer exists.');
+
+    const recipients = new Map<string, { name: string; subAdminUid: string | null }>();
+    for (const share of cleaned.shares) {
+      const person = state.employees.find((e) => e.uid === share.uid);
+      // The demo admin is the session, not a row in the roster.
+      if (!person && share.uid === actorUid) {
+        recipients.set(share.uid, { name: 'Admin', subAdminUid: null });
+        continue;
+      }
+      if (!person) return fail('One of the people chosen no longer exists.');
+      if (person.status === 'DISABLED') return fail(`${person.name} is paused and cannot receive leads.`);
+      recipients.set(share.uid, { name: person.name, subAdminUid: person.subAdminUid ?? null });
+    }
+
+    const open = state.leads
+      .filter((lead) => lead.assignedUserId === fromUid && !isTerminal(lead.status))
+      .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0) || a.id.localeCompare(b.id));
+
+    const asked = totalOf(cleaned.shares);
+    if (asked > open.length) {
+      return fail(`${source.name} holds ${open.length} open lead${open.length === 1 ? '' : 's'} — you asked for ${asked}.`);
+    }
+
+    const plan = planRedistribution(open.map((lead) => lead.id), cleaned.shares);
+    const goesTo = new Map<string, string>();
+    for (const [uid, ids] of plan) for (const id of ids) goesTo.set(id, uid);
+
+    state.leads = state.leads.map((lead) => {
+      const uid = goesTo.get(lead.id);
+      if (!uid) return lead;
+      return {
+        ...lead,
+        assignedUserId: uid,
+        assigneeName: recipients.get(uid)!.name,
+        subAdminUid: recipients.get(uid)!.subAdminUid,
+        assignedAt: now(),
+        acceptedAt: now(),
+        lastActivityAt: now(),
+        status: 'ACCEPTED' as const,
+        distributionMethod: 'MANUAL' as const,
+        acceptDeadlineAt: undefined,
+        attemptedAssignees: [uid],
+        assignedByUid: actorUid,
+      };
+    });
+
+    for (const [id, uid] of goesTo) {
+      addEvent(id, 'BULK_ASSIGNED', actorUid, { previousAssignee: fromUid, newAssignee: uid, redistributed: true });
+    }
+    emit();
+    return ok({
+      moved: cleaned.shares.map((share) => ({
+        uid: share.uid,
+        name: recipients.get(share.uid)!.name,
+        count: plan.get(share.uid)?.length ?? 0,
+      })),
+      remaining: open.length - goesTo.size,
+    });
+  },
+
   closeDeal(
     leadId: string,
     input: {
@@ -2246,6 +2325,8 @@ export const demo = {
 
   setEmployeeStatus(uid: string, status: 'ACTIVE' | 'DISABLED'): Result<{ openLeads: number }> {
     state.employees = state.employees.map((e) => (e.uid === uid ? { ...e, status } : e));
+    if (status === 'DISABLED') demoLeftDays.set(uid, karachiDayKey());
+    else demoLeftDays.delete(uid);
     sortEmployees();
     const openLeads = state.leads.filter(
       (l) => l.assignedUserId === uid && !['CLOSED_WON', 'CLOSED_LOST', 'NOT_INTERESTED'].includes(l.status)
@@ -2699,9 +2780,12 @@ export const demo = {
     });
   },
 
-  saveSalaryProfile(uid: string, input: { salary: number; allowance: number; joinedAt: string | null }, actorUid: string) {
+  saveSalaryProfile(uid: string, input: { salary: number; allowance: number; joinedAt: string | null; leftAt?: string | null }, actorUid: string) {
     const employee = state.employees.find((row) => row.uid === uid);
     if (!employee) return fail('That person no longer exists.');
+    const left = employee.status === 'DISABLED' ? (input.leftAt ?? '').trim() : '';
+    if (left && left > karachiDayKey()) return fail('The last working day is in the future.');
+    if (left) demoLeftDays.set(uid, left);
     const salary = Math.max(0, Math.round(Number(input.salary) || 0));
     const allowance = Math.max(0, Math.round(Number(input.allowance) || 0));
     const joined = (input.joinedAt ?? '').trim();
@@ -2746,10 +2830,16 @@ export const demo = {
 
     const lines: PayrollLine[] = [];
     for (const employee of state.employees) {
-      if (employee.status === 'DISABLED') continue;
+      // Somebody who has left stays on the month they left in — see `onPayroll`.
+      const left = employee.status === 'DISABLED' ? demoLeftDays.get(employee.uid) ?? null : null;
+      if (employee.status === 'DISABLED' && !left) continue;
       const joined = demoJoinedDayKey(employee);
       const days = state.attendance.filter(
-        (row) => row.uid === employee.uid && row.dayKey.startsWith(month) && (!joined || row.dayKey >= joined)
+        (row) =>
+          row.uid === employee.uid &&
+          row.dayKey.startsWith(month) &&
+          (!joined || row.dayKey >= joined) &&
+          (!left || row.dayKey <= left)
       );
       const count = (status: AttendanceStatus) => days.filter((row) => statusOfRecord(row) === status).length;
       const late = count('LATE');
@@ -2766,6 +2856,7 @@ export const demo = {
         salary,
         allowance,
         joinedDayKey: joined,
+        leftDayKey: left,
         commission: commission.get(employee.uid) ?? 0,
         attendanceDeduction: frozen.get(employee.uid) ?? charges.total,
         deductionBasis: [...charges.late, ...charges.absent].filter((o) => o.deducted).map((o) => o.basis),

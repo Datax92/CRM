@@ -275,6 +275,9 @@ export function SalaryModal({
   const [salary, setSalary] = useState(String(profile.salary || ""));
   const [allowance, setAllowance] = useState(String(profile.allowance || ""));
   const [joinedAt, setJoinedAt] = useState(profile.joinedAt ?? "");
+  // Only somebody who has left has one; for everybody else the field is absent.
+  const hasLeft = Boolean(profile.leftAt);
+  const [leftAt, setLeftAt] = useState(profile.leftAt ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -288,6 +291,7 @@ export function SalaryModal({
       salary: Number(salary) || 0,
       allowance: Number(allowance) || 0,
       joinedAt: joinedAt || null,
+      ...(hasLeft ? { leftAt: leftAt || null } : {}),
     });
     setBusy(false);
     if (!result.ok) {
@@ -337,6 +341,15 @@ export function SalaryModal({
               onChange={(event) => setJoinedAt(event.target.value)} style={input} />
           </Field>
         </OverlayCard>
+
+        {hasLeft && (
+          <OverlayCard title="Last working day" hint="Their final month is paid up to and including this day">
+            <Field label="Left on">
+              <input type="date" value={leftAt} disabled={busy}
+                onChange={(event) => setLeftAt(event.target.value)} style={input} />
+            </Field>
+          </OverlayCard>
+        )}
 
         {error && <Banner ok={false}>{error}</Banner>}
       </div>

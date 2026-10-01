@@ -7,6 +7,7 @@ import { MAX_LEADS_PER_TURN } from "@/lib/distribution";
 import { normalizeJobTitle } from "@/lib/constants/roles";
 import { normalizeManagerKind, type ManagerKind, type UserRole } from "@/lib/constants/hierarchy";
 import type { KpiTargets } from "@/lib/kpi";
+import { TERMINAL_STATUSES } from "@/lib/leadStatus";
 import {
   normalizeTargets,
   recalculatePriorities,
@@ -710,15 +711,16 @@ export async function disableEmployee(token: string, uid: string): Promise<Actio
       disabledByUid: admin.uid,
     });
 
-    // Tell the admin how many leads now need rehoming (FR-3).
-    const openLeads = await adminDb
-      .collection("leads")
-      .where("assignedUserId", "==", uid)
-      .where("status", "in", ["ASSIGNED", "ACCEPTED", "CONTACTED", "FOLLOW_UP", "INTERESTED", "NEGOTIATION", "CLOSED_LOST", "CLOSED_WON", "DEAD"])
-      .count()
-      .get();
+    // Tell the admin how many leads now need rehoming (FR-3): everything they
+    // hold less what is closed. The status list this used to name counted
+    // closed leads and missed most of the working statuses.
+    const held = adminDb.collection("leads").where("assignedUserId", "==", uid);
+    const [all, closed] = await Promise.all([
+      held.count().get(),
+      held.where("status", "in", TERMINAL_STATUSES).count().get(),
+    ]);
 
-    return { openLeads: openLeads.data().count };
+    return { openLeads: Math.max(0, all.data().count - closed.data().count) };
   });
 }
 
@@ -738,6 +740,9 @@ export async function enableEmployee(token: string, uid: string): Promise<Action
       status: "ACTIVE",
       disabledAt: FieldValue.delete(),
       disabledByUid: FieldValue.delete(),
+      // Back at work: payroll must not go on cutting their month at the old
+      // last working day.
+      leftAt: FieldValue.delete(),
       reEnabledAt: FieldValue.serverTimestamp(),
       reEnabledByUid: admin.uid,
     });
