@@ -419,3 +419,56 @@ export function postedEffect(raw: { status?: unknown; direction?: unknown; amoun
 export function isRoundOverdue(round: { received: boolean; returnDayKey: string | null }, today: string): boolean {
   return !round.received && Boolean(round.returnDayKey) && (round.returnDayKey as string) < today;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Cuts of a book's rounds                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The ways the sheet can be cut by where a round's money is (owner,
+ * 2026-10-01). **Overdue is part of To be received, and Reinvested is part of
+ * Received** — each is the narrower question about the same rounds, so the
+ * counts on those two pairs are not meant to add up to the total.
+ */
+export const ROUND_CUTS = ['ALL', 'AWAITING', 'OVERDUE', 'RECEIVED', 'REINVESTED'] as const;
+export type RoundCut = (typeof ROUND_CUTS)[number];
+
+export const ROUND_CUT_LABELS: Record<RoundCut, string> = {
+  ALL: 'All rounds',
+  AWAITING: 'To be received',
+  OVERDUE: 'Overdue',
+  RECEIVED: 'Received',
+  REINVESTED: 'Reinvested',
+};
+
+export function matchesRoundCut(
+  round: { received: boolean; returnDayKey: string | null; reinvestedInto?: readonly string[] },
+  cut: RoundCut,
+  today: string
+): boolean {
+  switch (cut) {
+    case 'ALL':
+      return true;
+    case 'AWAITING':
+      return !round.received;
+    case 'OVERDUE':
+      return isRoundOverdue(round, today);
+    case 'RECEIVED':
+      return round.received;
+    case 'REINVESTED':
+      return round.received && (round.reinvestedInto?.length ?? 0) > 0;
+  }
+}
+
+/** Stands for "no account recorded" in the Taken-from filter. */
+export const NO_FUNDING = '__none';
+
+/** Whether a round's amount came, in whole or part, out of `accountId`. */
+export function matchesFunding(
+  round: { funding: ReadonlyArray<{ accountId: string }> },
+  accountId: string
+): boolean {
+  if (!accountId) return true;
+  if (accountId === NO_FUNDING) return round.funding.length === 0;
+  return round.funding.some((line) => line.accountId === accountId);
+}

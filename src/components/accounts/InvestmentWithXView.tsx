@@ -35,7 +35,13 @@ import { formatMoney } from "@/lib/money";
 import { karachiDayKey } from "@/lib/dates";
 import {
   NET_BASIS_LABELS,
+  NO_FUNDING,
+  ROUND_CUTS,
+  ROUND_CUT_LABELS,
   bookTotals,
+  matchesFunding,
+  matchesRoundCut,
+  type RoundCut,
   calculateRound,
   checkRoundFunding,
   isRoundOverdue,
@@ -144,6 +150,10 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [search, setSearch] = useState("");
+  /** Where a round's money is — still out, late, home, or back at work. */
+  const [cut, setCut] = useState<RoundCut>("ALL");
+  /** The account a round was taken from; "" is any. */
+  const [fundedFrom, setFundedFrom] = useState("");
   const [showPeriod, setShowPeriod] = useState(false);
   const [bookForm, setBookForm] = useState<{ book: InvestmentBook | null } | null>(null);
   const [roundForm, setRoundForm] = useState<{ round: Round | null; bookId?: string; prefill?: RoundPrefill } | null>(null);
@@ -197,16 +207,51 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
     () => rounds.filter((round) => (!from || round.dayKey >= from) && (!to || round.dayKey <= to)),
     [rounds, from, to]
   );
+  const today = karachiDayKey();
+
+  /** The accounts this book's rounds were actually taken from — never the whole chart. */
+  const fundingOptions = useMemo(() => {
+    const names = new Map<string, string>();
+    let unrecorded = false;
+    for (const round of inRange) {
+      if (round.funding.length === 0) unrecorded = true;
+      for (const line of round.funding) {
+        names.set(line.accountId, ledger.accounts.find((entry) => entry.id === line.accountId)?.name ?? line.accountName ?? "A deleted account");
+      }
+    }
+    return [
+      { value: "", label: "Any account" },
+      ...[...names].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)),
+      ...(unrecorded ? [{ value: NO_FUNDING, label: "No account recorded" }] : []),
+    ];
+  }, [inRange, ledger.accounts]);
+  // A choice the period no longer offers reads as "any", never as an empty sheet.
+  const fundedFromActive = fundingOptions.some((option) => option.value === fundedFrom) ? fundedFrom : "";
+
+  /** The period and the account, before the status cut — what the chips count. */
+  const scoped = useMemo(
+    () => inRange.filter((round) => matchesFunding(round, fundedFromActive)),
+    [inRange, fundedFromActive]
+  );
+  const cutCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        ROUND_CUTS.map((key) => [key, scoped.filter((round) => matchesRoundCut(round, key, today)).length])
+      ) as Record<RoundCut, number>,
+    [scoped, today]
+  );
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    if (!needle) return inRange;
-    return inRange.filter(
+    return scoped.filter(
       (round) =>
-        (round.description ?? "").toLowerCase().includes(needle) ||
-        String(round.amount).includes(needle) ||
-        round.dayKey.includes(needle)
+        matchesRoundCut(round, cut, today) &&
+        (!needle ||
+          (round.description ?? "").toLowerCase().includes(needle) ||
+          String(round.amount).includes(needle) ||
+          round.dayKey.includes(needle))
     );
-  }, [inRange, search]);
+  }, [scoped, search, cut, today]);
 
   const totals = useMemo(() => bookTotals(inRange, book?.columns ?? []), [inRange, book]);
   const listedTotals = useMemo(() => bookTotals(filtered, book?.columns ?? []), [filtered, book]);
@@ -216,6 +261,38 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
   const spent = account ? ledger.balances.get(account.id)?.outflow ?? 0 : 0;
 
   const page = usePagination(filtered, 12);
+
+  /**
+   * The figures of **what is listed** — every filter applied. The stat cards
+   * above describe the whole book and do not move; this strip is the answer to
+   * "how much is that" about the rows on screen.
+   */
+  const listedFigures = useMemo<Figure[]>(() => {
+    const out = filtered.filter((round) => !round.received);
+    const home = filtered.filter((round) => round.received);
+    const sum = (list: Round[], pick: (round: Round) => number) => list.reduce((total, round) => total + pick(round), 0);
+    const figures: Figure[] = [
+      { label: "Amount", value: money(listedTotals.amount), strong: true, hint: `${filtered.length} round${filtered.length === 1 ? "" : "s"}` },
+      { label: "Profit", value: money(listedTotals.profit), tone: "ink" },
+    ];
+    if (listedTotals.totalShares) figures.push({ label: "Shares", value: `− ${money(listedTotals.totalShares)}`, tone: "warn" });
+    figures.push({ label: "Net profit", value: money(listedTotals.netProfit), tone: listedTotals.netProfit < 0 ? "bad" : "good", strong: true });
+    // Only when the list holds both kinds: for one kind alone these repeat the figures above.
+    if (out.length > 0 && home.length > 0) {
+      figures.push(
+        { label: "Net received", value: money(sum(home, (round) => round.netProfit)), tone: "good", hint: `${home.length} received` },
+        { label: "Net to come", value: money(sum(out, (round) => round.netProfit)), tone: "warn", hint: `${out.length} awaited` },
+        { label: "Amount still out", value: money(sum(out, (round) => round.amount)), tone: "muted" }
+      );
+    }
+    return figures;
+  }, [filtered, listedTotals]);
+
+  const filtering = cut !== "ALL" || fundedFromActive !== "" || search.trim() !== "";
+  const emptyText =
+    inRange.length === 0
+      ? "No rounds yet. Add the first with its amount, dates and profit."
+      : "No rounds match these filters.";
 
   const periodLabel = !from && !to ? "All rounds" : !from ? `Up to ${to}` : !to ? `From ${from}` : `${from} → ${to}`;
 
@@ -495,8 +572,53 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
               periodLabel={periodLabel}
               search={search} onSearch={setSearch}
               onDownload={() => downloadSheet(book, filtered, ledger.accounts)} canDownload={filtered.length > 0}
-              selects={[]}
+              selects={
+                fundingOptions.length > 2
+                  ? [{ label: "Taken from", value: fundedFromActive, onChange: setFundedFrom, options: fundingOptions, width: "188px" }]
+                  : []
+              }
             />
+          )}
+
+          {/* Where each round's money is. The counts follow the period and the account. */}
+          <ChipRow
+            chips={ROUND_CUTS.filter((key) => key === "ALL" || key === cut || cutCounts[key] > 0).map((key) => ({
+              label: `${ROUND_CUT_LABELS[key]} · ${cutCounts[key]}`,
+              active: cut === key,
+              pick: () => setCut(key),
+            }))}
+          />
+
+          {isMobile && fundingOptions.length > 2 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: X.faint }}>
+              Taken from
+              <select value={fundedFromActive} onChange={(event) => setFundedFrom(event.target.value)}
+                // 16px, or iOS Safari zooms the page on focus.
+                style={{ ...fieldStyle(true), fontSize: 16, cursor: "pointer" }}>
+                {fundingOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {inRange.length > 0 && (
+            <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 18, padding: isMobile ? "13px 15px" : "14px 20px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>
+                  {ROUND_CUT_LABELS[cut]}
+                  {fundedFromActive ? ` · ${fundingOptions.find((option) => option.value === fundedFromActive)?.label}` : ""}
+                  {" · "}{filtered.length} of {inRange.length} round{inRange.length === 1 ? "" : "s"}
+                </span>
+                {filtering && (
+                  <button type="button" onClick={() => { setCut("ALL"); setFundedFrom(""); setSearch(""); }}
+                    style={{ border: "none", background: "transparent", color: X.deep, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                    Clear filters
+                  </button>
+                )}
+              </div>
+              <FigureStrip figures={listedFigures} isMobile={isMobile} />
+            </section>
           )}
 
           {isMobile ? (
@@ -507,7 +629,7 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
               rows={rowModels}
               isMobile
               loading={roundsLoading}
-              empty={inRange.length === 0 ? "No rounds yet. Add the first with its amount, dates and profit." : "Nothing matches that search."}
+              empty={emptyText}
               formatMoney={money}
               pager={<Pager pagination={page} variant="mobile" noun="rounds" />}
             />
@@ -523,7 +645,7 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
               rows={filtered}
               rowKey={(round) => round.id}
               onRowClick={(round) => setRoundForm({ round })}
-              empty={roundsLoading ? "Loading…" : inRange.length === 0 ? "No rounds yet. Add the first with its amount, dates and profit." : "Nothing matches that search."}
+              empty={roundsLoading ? "Loading…" : emptyText}
             />
           )}
 

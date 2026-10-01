@@ -8,6 +8,9 @@ import {
   fundingDeltas,
   fundingLegs,
   isRoundOverdue,
+  matchesRoundCut,
+  matchesFunding,
+  NO_FUNDING,
   isRoundReceived,
   possibleFundingLegIds,
   postedEffect,
@@ -227,4 +230,34 @@ test('overdue means past the return date and still not received', () => {
   assert.equal(isRoundOverdue({ received: false, returnDayKey: '2026-09-23' }, '2026-09-23'), false);
   assert.equal(isRoundOverdue({ received: true, returnDayKey: '2026-09-18' }, '2026-09-23'), false);
   assert.equal(isRoundOverdue({ received: false, returnDayKey: null }, '2026-09-23'), false);
+});
+
+/* ---- cuts of the sheet ---- */
+
+const cutRounds = [
+  { id: 'out', received: false, returnDayKey: '2026-10-09', reinvestedInto: [], funding: [{ accountId: 'a' }] },
+  { id: 'late', received: false, returnDayKey: '2026-09-18', reinvestedInto: [], funding: [{ accountId: 'b' }] },
+  { id: 'home', received: true, returnDayKey: '2026-09-18', reinvestedInto: [], funding: [] },
+  { id: 'again', received: true, returnDayKey: '2026-09-10', reinvestedInto: ['out'], funding: [{ accountId: 'a' }, { accountId: 'b' }] },
+];
+const idsIn = (cut: Parameters<typeof matchesRoundCut>[1]) =>
+  cutRounds.filter((round) => matchesRoundCut(round, cut, '2026-10-01')).map((round) => round.id);
+
+test('to be received and received split every round between them', () => {
+  assert.deepEqual(idsIn('ALL'), ['out', 'late', 'home', 'again']);
+  assert.deepEqual(idsIn('AWAITING'), ['out', 'late']);
+  assert.deepEqual(idsIn('RECEIVED'), ['home', 'again']);
+});
+
+test('overdue is the late part of to-be-received; reinvested the reused part of received', () => {
+  assert.deepEqual(idsIn('OVERDUE'), ['late']);
+  assert.deepEqual(idsIn('REINVESTED'), ['again']);
+});
+
+test('the taken-from filter finds a round by any account it came out of', () => {
+  const from = (accountId: string) => cutRounds.filter((round) => matchesFunding(round, accountId)).map((round) => round.id);
+  assert.deepEqual(from(''), ['out', 'late', 'home', 'again']);
+  assert.deepEqual(from('a'), ['out', 'again']);
+  assert.deepEqual(from('b'), ['late', 'again']);
+  assert.deepEqual(from(NO_FUNDING), ['home']);
 });
