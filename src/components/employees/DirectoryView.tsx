@@ -242,7 +242,10 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
 
   const reassignModal = reassignFor && canManage && (
     <ReassignLeadsModal
-      key={reassignFor.uid}
+      // Not the bare uid: the dossier beside it in `modals` is keyed by the same
+      // person's uid, and two siblings sharing a key made React mount a second
+      // dossier when this one closed, which nothing could then close.
+      key={`reassign:${reassignFor.uid}`}
       source={reassignFor}
       openCount={openByUid.get(reassignFor.uid) ?? 0}
       recipients={reassignRecipients}
@@ -250,8 +253,13 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
       onClose={() => setReassignFor(null)}
       onDone={(message) => {
         setReassignFor(null);
-        setSelectedUid(null);
         setBanner({ tone: "success", text: message });
+        // The dossier closes a tick later, never in the same commit. Each of
+        // the two locks page scroll and puts it back on unmount; unmounted
+        // together, this panel restores the "locked" it found when it opened
+        // *after* the dossier has unlocked, and the page cannot be scrolled
+        // again until it is reloaded.
+        setTimeout(() => setSelectedUid(null), 0);
       }}
     />
   );
@@ -325,7 +333,11 @@ export function DirectoryView({ scope }: { scope: DirectoryScope }) {
           // nobody under them yet.
           team={selectedTeam}
           onOpenMember={(member) => setSelectedUid(member.uid)}
-          onClose={() => setSelectedUid(null)}
+          // Escape reaches both windows. While Reassign leads is open over this
+          // one it closes that panel only — see the note on its `onDone`.
+          onClose={() => {
+            if (!reassignFor) setSelectedUid(null);
+          }}
           onReassignLeads={
             canManage ? () => setReassignFor({ uid: selected.uid, name: selected.name }) : undefined
           }
