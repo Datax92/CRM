@@ -84,6 +84,11 @@ function hasOwnChrome(pathname: string): boolean {
     // The sub admin's Team page is the same component as the admin directory
     // and draws the same teal header, so it needs the same treatment.
     pathname === "/subadmin/team" ||
+    // My Profile is the Team screen's `ProfileOverlay` on its own: a sheet
+    // that is `absolute; inset: 0`. Inside the padded region it drew 16px in
+    // from every edge with the page showing round it.
+    pathname === "/employee/profile" ||
+    pathname === "/subadmin/profile" ||
     // The Money hubs draw their own teal header, so the shell must not add its
     // padded scroll wrapper on top of one.
     pathname === "/admin/money" ||

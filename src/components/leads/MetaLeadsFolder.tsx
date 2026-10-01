@@ -42,6 +42,7 @@ import { Pager } from "@/components/employees/DossierControls";
 import { LeadDetailPane } from "@/components/leads/LeadDetailPane";
 import { WorkspaceEmpty } from "@/components/leads/WorkspaceEmpty";
 import { MobileLeadDetail } from "@/components/mobile/MobileLeadDetail";
+import { MobileSheetFrame } from "@/components/mobile/MobileSheetFrame";
 import { AssignedLeadRow, type RowChip } from "@/components/dataBank/AssignedLeadRow";
 
 type View = "ALL" | "WAITING" | "TAKEN";
@@ -301,14 +302,17 @@ export function MetaLeadsFolder({ folderId, scope = "own" }: { folderId: string;
     return (
       <>
         {list}
+        {/* Full-screen, not inset in the page — see `MobileSheetFrame`. */}
         {selected && (
-          <MobileLeadDetail
-            key={selected.id}
-            lead={selected}
-            userRole={paneRole}
-            getIdToken={getIdToken}
-            onClose={() => setSelectedId(null)}
-          />
+          <MobileSheetFrame>
+            <MobileLeadDetail
+              key={selected.id}
+              lead={selected}
+              userRole={paneRole}
+              getIdToken={getIdToken}
+              onClose={() => setSelectedId(null)}
+            />
+          </MobileSheetFrame>
         )}
       </>
     );

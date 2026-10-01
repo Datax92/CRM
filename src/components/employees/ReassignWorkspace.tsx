@@ -38,6 +38,7 @@ import { matchesAssignedSearch, type AssignedItem } from "@/lib/dataBankAssigned
 import { Banner, FullPageSpinner } from "@/components/admin/AdminShared";
 import { LeadDetailPane } from "@/components/leads/LeadDetailPane";
 import { MobileLeadDetail } from "@/components/mobile/MobileLeadDetail";
+import { MobileSheetFrame } from "@/components/mobile/MobileSheetFrame";
 import { WorkspaceEmpty } from "@/components/leads/WorkspaceEmpty";
 import { LeadWindowNotice } from "@/components/leads/LeadWindowNotice";
 import { Pager } from "@/components/employees/DossierControls";
@@ -309,15 +310,18 @@ export function ReassignWorkspace({ uid }: { uid: string }) {
         {header}
         {controls}
         <div className="flex flex-col gap-2.5 px-3.5 pb-6">{rows}</div>
+        {/* Full-screen, not inset in the page — see `MobileSheetFrame`. */}
         {openLead && (
-          <MobileLeadDetail
-            key={openLead.id}
-            lead={openLead}
-            onClose={() => setOpenId(null)}
-            userRole="admin"
-            getIdToken={getIdToken}
-            assigneeName={sourceName}
-          />
+          <MobileSheetFrame>
+            <MobileLeadDetail
+              key={openLead.id}
+              lead={openLead}
+              onClose={() => setOpenId(null)}
+              userRole="admin"
+              getIdToken={getIdToken}
+              assigneeName={sourceName}
+            />
+          </MobileSheetFrame>
         )}
       </div>
     );
