@@ -63,9 +63,13 @@ export async function reassignAssignedItems(
   let skipped = 0;
   let duplicates = 0;
 
-  if (leads.length > 0) {
-    const res = await assignLeadsBulk(token, leads, option.uid);
-    if (!res.ok) return { ok: false, error: res.error };
+  // The action takes 500 at a time; a whole pipeline goes in as many calls as
+  // it needs. A refusal part-way says how many had already moved.
+  for (let i = 0; i < leads.length; i += 500) {
+    const res = await assignLeadsBulk(token, leads.slice(i, i + 500), option.uid);
+    if (!res.ok) {
+      return { ok: false, error: moved > 0 ? `${moved} were reassigned, then: ${res.error}` : res.error };
+    }
     moved += res.data.assigned;
     skipped += res.data.skipped;
   }
@@ -102,6 +106,7 @@ export function ReassignBar({
   options,
   getIdToken,
   onSelectCount,
+  onSelectAll,
   onClear,
   onDone,
   compact = false,
@@ -115,6 +120,8 @@ export function ReassignBar({
   getIdToken: () => Promise<string>;
   /** Take the first `n` visible rows. The parent owns the ordering. */
   onSelectCount: (n: number) => number;
+  /** Take every row the filter shows. Absent where the list is a page of a larger one. */
+  onSelectAll?: () => number;
   onClear: () => void;
   onDone: (message: string) => void;
   compact?: boolean;
@@ -190,6 +197,30 @@ export function ReassignBar({
             {quantity}
           </button>
         ))}
+
+        {onSelectAll && (
+          <button
+            type="button"
+            disabled={busy || available === 0}
+            onClick={() => {
+              onSelectAll();
+              setError(null);
+            }}
+            style={{
+              borderRadius: 999,
+              border: `1px solid ${T.line}`,
+              background: T.ground,
+              padding: "7px 13px",
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: T.muted,
+              cursor: available === 0 ? "not-allowed" : "pointer",
+              opacity: available === 0 ? 0.5 : 1,
+            }}
+          >
+            All {available.toLocaleString()}
+          </button>
+        )}
 
         {selected.length > 0 && (
           <span

@@ -15,9 +15,7 @@ import { karachiMonthKey } from '@/lib/dates';
 import { enqueue, patchQueuedFollowUp, registerReplayers, shouldQueue } from '@/lib/outbox';
 
 import { assignLead as _assignLead, reassignLeadManual as _reassignLeadManual, acceptLead as _acceptLead,
-  passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk,
-  redistributeLeads as _redistributeLeads, type RedistributionResult } from '@/app/actions/leads';
-import type { RedistributionShare } from '@/lib/leadRedistribution';
+  passLead as _passLead, setLeadStatus as _setLeadStatus, setLeadPipelineStage as _setLeadPipelineStage, createLead as _createLead, reviewColdLead as _reviewColdLead, assignLeadsBulk as _assignLeadsBulk } from '@/app/actions/leads';
 import type { PipelineStage } from '@/lib/pipelineStage';
 import { saveKyc as _saveKyc } from '@/app/actions/kyc';
 import type { KycValues } from '@/lib/kyc';
@@ -354,16 +352,6 @@ export async function assignLeadsBulk(
 ): Promise<ActionResult<{ assigned: number; skipped: number }>> {
   if (IS_DEMO) return demo.assignLeadsBulk(leadIds, userId, actor().uid);
   return _assignLeadsBulk(token, leadIds, userId);
-}
-
-/** Shares one person's open leads out among others, by the numbers chosen. */
-export async function redistributeLeads(
-  token: string,
-  fromUid: string,
-  shares: RedistributionShare[]
-): Promise<ActionResult<RedistributionResult>> {
-  if (IS_DEMO) return demo.redistributeLeads(fromUid, shares, actor().uid);
-  return _redistributeLeads(token, fromUid, shares);
 }
 
 export async function closeDeal(

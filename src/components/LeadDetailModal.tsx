@@ -813,6 +813,7 @@ const EVENT_LABELS: Record<string, string> = {
   MANUALLY_ASSIGNED: "Assigned by Admin",
   AUTO_ASSIGNED: "Auto-assigned by rotation",
   MANUALLY_REASSIGNED: "Reassigned by Admin",
+  BULK_ASSIGNED: "Reassigned in bulk",
   AUTO_REASSIGNED: "Reassigned automatically",
   LEAD_ACCEPTED: "Accepted by Employee",
   // The lane no longer has a floor; the only writer left is an admin

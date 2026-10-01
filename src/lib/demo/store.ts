@@ -47,7 +47,6 @@ import {
   type LeaveType,
 } from '@/lib/attendancePolicy';
 import { isTerminal, type LeadStatus } from '@/lib/leadStatus';
-import { normalizeShares, planRedistribution, totalOf, type RedistributionShare } from '@/lib/leadRedistribution';
 import { addTally, entryTally, EMPTY_TALLY, type EntryTally } from '@/lib/leadBuckets';
 import type { DistributionLine } from '@/lib/profitDistribution';
 import { calculateDistribution, type DistributionShare } from '@/lib/profitDistribution';
@@ -1960,11 +1959,17 @@ export const demo = {
 
   /** Mirrors `assignLeadsBulk`: moves the assignment, never copies a lead. */
   assignLeadsBulk(leadIds: string[], userId: string, actorUid: string): Result<{ assigned: number; skipped: number }> {
-    const employee = state.employees.find((e) => e.uid === userId);
+    // The demo admin is the session, not a row in the roster; they may take
+    // leads themselves, as on the real path.
+    const employee =
+      state.employees.find((e) => e.uid === userId) ??
+      (userId === actorUid ? { name: 'Admin', subAdminUid: null as string | null } : undefined);
     if (!employee) return fail('Choose a team member to assign these to.');
 
     let assigned = 0;
     let skipped = 0;
+    /** Who each moved lead came from, for the audit line — as the real path records it. */
+    const moved: Array<{ id: string; from: string | null; fromName: string | null }> = [];
 
     state.leads = state.leads.map((lead) => {
       if (!leadIds.includes(lead.id)) return lead;
@@ -1973,6 +1978,7 @@ export const demo = {
         return lead;
       }
       assigned += 1;
+      moved.push({ id: lead.id, from: lead.assignedUserId ?? null, fromName: lead.assigneeName ?? null });
       return {
         ...lead,
         assignedUserId: userId,
@@ -1989,80 +1995,16 @@ export const demo = {
       };
     });
 
-    for (const id of leadIds) addEvent(id, 'BULK_ASSIGNED', actorUid, { newAssignee: userId });
+    for (const entry of moved) {
+      addEvent(entry.id, 'BULK_ASSIGNED', actorUid, {
+        previousAssignee: entry.from,
+        previousAssigneeName: entry.fromName,
+        newAssignee: userId,
+        newAssigneeName: employee.name,
+      });
+    }
     emit();
     return ok({ assigned, skipped });
-  },
-
-  /** Mirrors `redistributeLeads`: one person's open leads, dealt out by count. */
-  redistributeLeads(
-    fromUid: string,
-    shares: RedistributionShare[],
-    actorUid: string
-  ): Result<{ moved: Array<{ uid: string; name: string; count: number }>; remaining: number }> {
-    const cleaned = normalizeShares(shares, fromUid);
-    if ('error' in cleaned) return fail(cleaned.error);
-
-    const source = state.employees.find((e) => e.uid === fromUid);
-    if (!source) return fail('That person no longer exists.');
-
-    const recipients = new Map<string, { name: string; subAdminUid: string | null }>();
-    for (const share of cleaned.shares) {
-      const person = state.employees.find((e) => e.uid === share.uid);
-      // The demo admin is the session, not a row in the roster.
-      if (!person && share.uid === actorUid) {
-        recipients.set(share.uid, { name: 'Admin', subAdminUid: null });
-        continue;
-      }
-      if (!person) return fail('One of the people chosen no longer exists.');
-      if (person.status === 'DISABLED') return fail(`${person.name} is paused and cannot receive leads.`);
-      recipients.set(share.uid, { name: person.name, subAdminUid: person.subAdminUid ?? null });
-    }
-
-    const open = state.leads
-      .filter((lead) => lead.assignedUserId === fromUid && !isTerminal(lead.status))
-      .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0) || a.id.localeCompare(b.id));
-
-    const asked = totalOf(cleaned.shares);
-    if (asked > open.length) {
-      return fail(`${source.name} holds ${open.length} open lead${open.length === 1 ? '' : 's'} — you asked for ${asked}.`);
-    }
-
-    const plan = planRedistribution(open.map((lead) => lead.id), cleaned.shares);
-    const goesTo = new Map<string, string>();
-    for (const [uid, ids] of plan) for (const id of ids) goesTo.set(id, uid);
-
-    state.leads = state.leads.map((lead) => {
-      const uid = goesTo.get(lead.id);
-      if (!uid) return lead;
-      return {
-        ...lead,
-        assignedUserId: uid,
-        assigneeName: recipients.get(uid)!.name,
-        subAdminUid: recipients.get(uid)!.subAdminUid,
-        assignedAt: now(),
-        acceptedAt: now(),
-        lastActivityAt: now(),
-        status: 'ACCEPTED' as const,
-        distributionMethod: 'MANUAL' as const,
-        acceptDeadlineAt: undefined,
-        attemptedAssignees: [uid],
-        assignedByUid: actorUid,
-      };
-    });
-
-    for (const [id, uid] of goesTo) {
-      addEvent(id, 'BULK_ASSIGNED', actorUid, { previousAssignee: fromUid, newAssignee: uid, redistributed: true });
-    }
-    emit();
-    return ok({
-      moved: cleaned.shares.map((share) => ({
-        uid: share.uid,
-        name: recipients.get(share.uid)!.name,
-        count: plan.get(share.uid)?.length ?? 0,
-      })),
-      remaining: open.length - goesTo.size,
-    });
   },
 
   closeDeal(

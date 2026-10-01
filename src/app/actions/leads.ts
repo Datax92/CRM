@@ -23,12 +23,6 @@ import { readLaneRoster } from "@/lib/server/laneRoster";
 import { startOfKarachiDay, karachiDayKey, karachiMonthKey } from "@/lib/dates";
 import { normalizeDealCategory } from "@/lib/constants/deals";
 import { canAssignLeadTo, owningSubAdminFor } from "@/lib/constants/hierarchy";
-import {
-  normalizeShares,
-  planRedistribution,
-  totalOf,
-  type RedistributionShare,
-} from "@/lib/leadRedistribution";
 
 /**
  * Manual assignment inside the 5-minute window (FR-8, BR-4).
@@ -675,15 +669,24 @@ export async function assignLeadsBulk(
 
     const employeeSnap = await adminDb.collection("users").doc(userId).get();
     const bulkRole = employeeSnap.data()?.role;
-    if (!employeeSnap.exists || (bulkRole !== "employee" && bulkRole !== "subadmin")) {
+    // **An admin may take leads themselves, and only an admin may give them
+    // one.** The single-lead actions still refuse an admin recipient; this is
+    // the path the Reassign leads screen uses to empty somebody's pipeline,
+    // where the owner's instruction was "to anyone he wants".
+    const toAdmin = bulkRole === "admin" && actor.role === "admin";
+    if (!employeeSnap.exists || (bulkRole !== "employee" && bulkRole !== "subadmin" && !toAdmin)) {
       throw new UserFacingError("Choose a team member to assign these to.");
     }
-    const employee = employeeSnap.data()!;
+    // `uid` rides along so `assignmentStamp` files a manager's lead under
+    // themselves — it used to be absent here, which left such a lead filed
+    // under nobody.
+    const employee: Record<string, unknown> = { ...employeeSnap.data()!, uid: userId };
+    const recipientName = (employee.name as string | undefined) ?? (employee.email as string | undefined) ?? null;
     if (employee.status === "DISABLED") {
       throw new UserFacingError("That employee is paused — resume them or choose someone else.");
     }
     // Same reach rule as `readAssignableEmployee`, from the same predicate.
-    if (!canAssignLeadTo(actor, { subAdminUid: employee.subAdminUid ?? null, role: bulkRole })) {
+    if (!canAssignLeadTo(actor, { subAdminUid: (employee.subAdminUid as string | undefined) ?? null, role: bulkRole })) {
       throw new UserFacingError("That team member is not on your team.");
     }
 
@@ -731,11 +734,16 @@ export async function assignLeadsBulk(
           type: "BULK_ASSIGNED",
           actorUid: actor.uid,
           at: now,
+          // Names beside the uids: the trail has to say who a lead came from
+          // after that person's account is gone.
           meta: {
             previousAssignee: lead.assignedUserId ?? null,
+            previousAssigneeName: lead.assigneeName ?? null,
             newAssignee: userId,
+            newAssigneeName: recipientName,
             batchSize: ids.length,
             assignedByRole: actor.role,
+            assignedByName: actor.name ?? actor.email ?? null,
           },
         });
 
@@ -747,7 +755,8 @@ export async function assignLeadsBulk(
 
     // One notification for the batch, not one per lead. Fifty separate alerts
     // would bury everything else in the employee's bell.
-    if (assigned > 0) {
+    // Nobody is told about leads they have just given themselves.
+    if (assigned > 0 && userId !== actor.uid) {
       await adminDb.collection("notifications").add({
         type: "NEW_LEAD_ASSIGNED",
         leadId: ids[0],
@@ -763,155 +772,6 @@ export async function assignLeadsBulk(
     }
 
     return { assigned, skipped };
-  });
-}
-
-export interface RedistributionResult {
-  /** Who received how many. */
-  moved: Array<{ uid: string; name: string; count: number }>;
-  /** Open leads the person still holds afterwards. */
-  remaining: number;
-}
-
-/**
- * Shares one person's open leads out among others, in the numbers the admin
- * chose (owner, 2026-10-01 — somebody was let go holding 185 open leads).
- *
- * The leads are found **on the server**, by who holds them, so nothing depends
- * on what a browser happened to have loaded, and `planRedistribution` deals
- * them round the recipients newest first. Each one is written exactly as
- * `assignLeadsBulk` writes it — a hand-out is a decision, so it is `ACCEPTED`
- * on the spot, filed under the recipient's own manager, and audited.
- *
- * **Anybody working may receive them: an employee, a manager, an admin.** An
- * admin is not offered by the ordinary assign actions; here the instruction was
- * "anyone he wants", and an admin already holds leads when a folder's lane
- * names them.
- *
- * **Closed leads stay where they are** — they are history and are never
- * reassigned. So do the KPI counters: work already logged was the leaver's.
- *
- * Asking for more than the person holds is refused with the real figure rather
- * than trimmed, so the split that happens is the split that was typed.
- */
-export async function redistributeLeads(
-  token: string,
-  fromUid: string,
-  shares: RedistributionShare[]
-): Promise<ActionResult<RedistributionResult>> {
-  return runAction("redistributeLeads", async () => {
-    const actor = await requireAdmin(token);
-
-    const cleaned = normalizeShares(shares, fromUid);
-    if ("error" in cleaned) throw new UserFacingError(cleaned.error);
-
-    const users = adminDb.collection("users");
-    const [sourceSnap, ...recipientSnaps] = await adminDb.getAll(
-      users.doc(fromUid),
-      ...cleaned.shares.map((share) => users.doc(share.uid))
-    );
-    if (!sourceSnap.exists) throw new UserFacingError("That person no longer exists.");
-    const sourceName = (sourceSnap.data()?.name as string) ?? (sourceSnap.data()?.email as string) ?? "them";
-
-    const recipients = new Map<string, Record<string, unknown> & { uid: string }>();
-    for (const snap of recipientSnaps) {
-      const data = snap.data();
-      const role = data?.role;
-      if (!snap.exists || (role !== "employee" && role !== "subadmin" && role !== "admin")) {
-        throw new UserFacingError("One of the people chosen no longer exists.");
-      }
-      if (data!.status === "DISABLED") {
-        throw new UserFacingError(`${data!.name ?? "Somebody chosen"} is paused and cannot receive leads.`);
-      }
-      recipients.set(snap.id, { ...data!, uid: snap.id });
-    }
-
-    const held = await adminDb.collection("leads").where("assignedUserId", "==", fromUid).get();
-    const open = held.docs
-      .filter((doc) => !isTerminal(doc.data().status))
-      .sort(
-        (a, b) =>
-          (b.data().createdAt?.toMillis?.() ?? 0) - (a.data().createdAt?.toMillis?.() ?? 0) ||
-          a.id.localeCompare(b.id)
-      );
-
-    const asked = totalOf(cleaned.shares);
-    if (asked > open.length) {
-      throw new UserFacingError(
-        `${sourceName} holds ${open.length} open lead${open.length === 1 ? "" : "s"} — you asked for ${asked}.`
-      );
-    }
-
-    const plan = planRedistribution(open.map((doc) => doc.id), cleaned.shares);
-    const byId = new Map(open.map((doc) => [doc.id, doc]));
-    const moves = [...plan].flatMap(([uid, ids]) => ids.map((id) => ({ uid, doc: byId.get(id)! })));
-
-    // Two writes a lead (the lead and its audit event), 500 to a batch.
-    for (let i = 0; i < moves.length; i += 200) {
-      const batch = adminDb.batch();
-      const now = FieldValue.serverTimestamp();
-
-      for (const { uid, doc } of moves.slice(i, i + 200)) {
-        batch.update(doc.ref, {
-          assignedUserId: uid,
-          assignedAt: now,
-          acceptedAt: now,
-          lastActivityAt: now,
-          distributionMethod: "MANUAL",
-          status: "ACCEPTED",
-          acceptDeadlineAt: FieldValue.delete(),
-          adminAssignDeadlineAt: FieldValue.delete(),
-          attemptedAssignees: [uid],
-          ...assignmentStamp(actor, recipients.get(uid)!),
-        });
-        batch.create(doc.ref.collection("events").doc(), {
-          type: "BULK_ASSIGNED",
-          actorUid: actor.uid,
-          at: now,
-          meta: {
-            previousAssignee: fromUid,
-            previousAssigneeName: sourceName,
-            newAssignee: uid,
-            batchSize: moves.length,
-            assignedByRole: actor.role,
-            redistributed: true,
-          },
-        });
-      }
-
-      await batch.commit();
-    }
-
-    const moved = cleaned.shares.map((share) => ({
-      uid: share.uid,
-      name:
-        (recipients.get(share.uid)!.name as string | undefined) ??
-        (recipients.get(share.uid)!.email as string | undefined) ??
-        "Unnamed",
-      count: plan.get(share.uid)?.length ?? 0,
-    }));
-
-    // One alert each, and none for an admin, whose panel does not carry this
-    // type and who is usually the one pressing the button.
-    const alerts = adminDb.batch();
-    for (const entry of moved) {
-      if (entry.count === 0 || recipients.get(entry.uid)!.role === "admin") continue;
-      alerts.set(adminDb.collection("notifications").doc(), {
-        type: "NEW_LEAD_ASSIGNED",
-        leadId: plan.get(entry.uid)![0],
-        targetRole: "employee",
-        targetUid: entry.uid,
-        payload: {
-          message: `${entry.count} of ${sourceName}'s lead${entry.count === 1 ? "" : "s"} ${entry.count === 1 ? "has" : "have"} been assigned to you by ${actor.name ?? actor.email ?? "an admin"}.`,
-          count: entry.count,
-        },
-        createdAt: FieldValue.serverTimestamp(),
-        readAt: null,
-      });
-    }
-    await alerts.commit();
-
-    return { moved, remaining: open.length - moves.length };
   });
 }
 

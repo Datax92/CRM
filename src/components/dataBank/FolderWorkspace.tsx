@@ -292,6 +292,9 @@ export function FolderWorkspace({ folderId }: { folderId: string }) {
               href={role === "subadmin" ? "/subadmin/data-bank" : "/admin/data-bank"}
               aria-label="Back to the Data Bank"
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-white/20"
+              // Inline: the global link colour is this band's teal and beats the
+              // inherited white, so the arrow was there and invisible.
+              style={{ color: "#fff" }}
             >
               <ArrowLeft size={17} />
             </Link>
