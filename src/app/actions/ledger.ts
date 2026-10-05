@@ -777,7 +777,10 @@ export async function deleteTransaction(token: string, transactionId: string): P
     if (txn.status === "POSTED") {
       // Undo its effect on the balance: the opposite of what it contributed.
       await bumpBalance(txn.accountId as string, -deltaOf(txn.direction as "IN" | "OUT", amount));
-      await unpaySource(txn.sourceModule as SourceModule, txn.sourceId as string | null, amount);
+      await unpaySource(txn.sourceModule as SourceModule, txn.sourceId as string | null, amount, {
+        accountId: txn.accountId as string,
+        direction: txn.direction as "IN" | "OUT",
+      });
     }
   });
 }
@@ -813,8 +816,45 @@ const SOURCE_COLLECTIONS: Partial<Record<SourceModule, string>> = {
 async function unpaySource(
   sourceModule: SourceModule,
   sourceId: string | null,
-  amount: number
+  amount: number,
+  /** The row being removed, for the modules that need to know which one it was. */
+  leg?: { accountId: string; direction: "IN" | "OUT" }
 ): Promise<void> {
+  // Amanat: a payment row removed makes the expense payable again; the row
+  // holding a receipt removed leaves the receipt held in no account. Either
+  // way the entry stops claiming a movement that is no longer on a statement.
+  if (sourceModule === "AMANAT" && sourceId) {
+    const entryRef = adminDb.collection("amanatEntries").doc(sourceId);
+    const entry = await entryRef.get();
+    if (!entry.exists) return;
+    const data = entry.data()!;
+
+    if (data.type === "EXPENSE") {
+      if (leg?.direction === "IN") return;
+      const history = Array.isArray(data.history) ? [...data.history] : [];
+      // The newest payment line of that size from that account is the one.
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const line = history[i];
+        if (money(line?.amount) === amount && (!leg || line?.accountId === leg.accountId)) {
+          history.splice(i, 1);
+          break;
+        }
+      }
+      await entryRef.update({
+        paidAmount: Math.max(0, Math.round((money(data.paidAmount) - amount) * 100) / 100),
+        history,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } else if (!leg || leg.direction === "IN") {
+      await entryRef.update({
+        depositAccountId: null,
+        depositAccountName: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    return;
+  }
+
   // A receivable or payable counts what came back as `settled`, not
   // `paidAmount`: removing the movement takes it back off both that and the
   // part that went through an account, so the entry is pending again.
@@ -902,7 +942,10 @@ export async function deleteAccount(token: string, accountId: string): Promise<A
       for (const doc of page.docs) {
         const txn = doc.data();
         if (txn.status === "POSTED") {
-          await unpaySource(txn.sourceModule as SourceModule, txn.sourceId as string | null, money(txn.amount));
+          await unpaySource(txn.sourceModule as SourceModule, txn.sourceId as string | null, money(txn.amount), {
+            accountId,
+            direction: txn.direction as "IN" | "OUT",
+          });
         }
       }
 

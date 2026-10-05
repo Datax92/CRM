@@ -38,6 +38,7 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { karachiDayKey } from "@/lib/dates";
 import { money } from "@/lib/ledger";
 import { formatMoney } from "@/lib/money";
+import { amanatReceiptLegId } from "@/lib/amanatSheet";
 import {
   DEFAULT_SHARE_COLUMNS,
   calculateRound,
@@ -291,7 +292,7 @@ export interface InvestmentRoundInput {
    * The account(s) the amount was taken out of. One line takes the whole
    * amount; several must add up to it. Empty leaves it a figure on the sheet.
    */
-  funding?: Array<{ accountId: string; amount: number | string }>;
+  funding?: Array<{ accountId: string; amount: number | string; amanatEntryId?: string | null }>;
   /**
    * Whether the partner has paid it back. Omitted on an edit keeps what the
    * round already was; a new round is not received unless this says so.
@@ -391,6 +392,7 @@ export async function saveInvestmentRound(
 
       const previousLines = existing ? readFunding(existing.funding) : [];
       const state = await readRoundLedger(t, ref.id, input.bookId, previousLines, funding.lines, dayKey, receivedDayKey);
+      const amanatParties = await readAmanatParties(t, funding.lines);
 
       // Unticking Received takes the net back out; an account cannot un-spend.
       if (existing && isRoundReceived(existing) && !isReceived) {
@@ -432,6 +434,7 @@ export async function saveInvestmentRound(
         funding: funding.lines.map((line) => ({
           ...line,
           accountName: (state.accounts.get(line.accountId)?.data()?.name as string) ?? null,
+          ...(line.amanatEntryId ? { amanatParty: amanatParties.get(line.amanatEntryId) ?? null } : {}),
         })),
       };
       t.set(
@@ -482,6 +485,40 @@ export async function saveInvestmentRound(
 /* -------------------------------------------------------------------------- */
 /* What a round has posted, and what it should have posted                     */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The people whose Amanat the lines name, checked against where their money is
+ * actually held: the receipt's posted row first, the entry's stored account as
+ * the fallback (`heldInAccountId`). Reads only, so it runs before any write.
+ */
+async function readAmanatParties(
+  t: FirebaseFirestore.Transaction,
+  lines: FundingLine[]
+): Promise<Map<string, string>> {
+  const ids = [...new Set(lines.flatMap((line) => (line.amanatEntryId ? [line.amanatEntryId] : [])))];
+  if (ids.length === 0) return new Map();
+  const snaps = await t.getAll(
+    ...ids.flatMap((id) => [adminDb.collection("amanatEntries").doc(id), adminDb.collection(TRANSACTIONS).doc(amanatReceiptLegId(id))])
+  );
+  const parties = new Map<string, string>();
+  ids.forEach((id, i) => {
+    const entry = snaps[i * 2];
+    const leg = snaps[i * 2 + 1];
+    if (!entry.exists || entry.data()?.type === "EXPENSE") {
+      throw new UserFacingError("One of the Amanat people on this round no longer has an Amanat. Choose another.");
+    }
+    const party = (entry.data()?.party as string | undefined)?.trim() || "Unnamed Party";
+    const live = leg.exists && (leg.data()?.status ?? "POSTED") === "POSTED" && !leg.data()?.reversedBy;
+    const postedIn = live ? (leg.data()?.accountId as string) : null;
+    const heldIn = postedIn ?? (entry.data()?.depositAccountId as string | null) ?? null;
+    const line = lines.find((l) => l.amanatEntryId === id)!;
+    if (heldIn !== line.accountId) {
+      throw new UserFacingError(`${party}'s Amanat is not held in that account. Choose it again.`);
+    }
+    parties.set(id, party);
+  });
+  return parties;
+}
 
 interface RoundLedgerState {
   legs: FundingLeg[];
@@ -587,9 +624,10 @@ function writeRoundLedger(
         sourceModule: "INVESTMENT_WITH_X",
         sourceId: roundId,
         sourceLabel:
-          leg.kind === "OUT"
+          (leg.kind === "OUT"
             ? `${bookName} — handed to ${partner} (${total} round)`
-            : `${bookName} — back from ${partner} (${total} round)`,
+            : `${bookName} — back from ${partner} (${total} round)`) + (leg.amanatEntryId ? " · Amanat" : ""),
+        amanatEntryId: leg.amanatEntryId ?? null,
         groupId: `invx_${roundId}`,
         status: "POSTED",
         note: round.description,

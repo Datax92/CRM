@@ -4,12 +4,16 @@
  * Amanat (Trust & Safekeeping Sheet) — Full trust money management.
  *
  * Matches the layout and UX of other sheets (Office Expenses, Personal Expenses, Receivables).
- * Features:
- * - Stat cards: Total Amanat Received, Disbursed / Paid, Pending Obligations, Trust Balance In Hand
- * - Record Amanat Received (Money In) into an account or offline safekeeping
- * - Record Amanat Expenses (Money Out) and pay them from ANY account via PayFromAccounts
- * - Detail drawers and history tracking
- * - Full desktop & mobile responsive interfaces
+ * **Amanat is an account** (`lib/amanatSheet`): a receipt is held in the Amanat
+ * account unless another is chosen, so every "Pay from…" in the CRM can spend
+ * out of it. This screen reads those accounts' statements to show what the
+ * rest of the CRM has paid from Amanat — an office expense, a salary — beside
+ * what was received and what was returned.
+ *
+ * - Stat cards: Received, Returned / Disbursed, Used for payments, Pending, In hand
+ * - Record Amanat Received into the Amanat account (or another, or none)
+ * - Record Amanat Expenses and pay them from ANY account via PayFromAccounts
+ * - Paid from Amanat: every movement other modules made on the Amanat accounts
  */
 
 import { useMemo, useState } from "react";
@@ -32,17 +36,23 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useLedger, type AccountDoc } from "@/hooks/useLedger";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import { useAmanatEntries } from "@/hooks/useAccountSheets";
+import { useAmanatEntries, useInvestmentRounds } from "@/hooks/useAccountSheets";
+import { amanatOutInRounds } from "@/lib/investmentWithX";
 import {
   readAmanatEntry,
   calculateAmanatTotals,
   amanatPaymentState,
   pendingOfAmanat,
+  amanatUsage,
+  heldInAccountId,
+  AMANAT_ACCOUNT_ID,
+  AMANAT_ACCOUNT_NAME,
   type AmanatEntry,
   type AmanatType,
   type AmanatPaymentState,
 } from "@/lib/amanatSheet";
 import { formatMoney } from "@/lib/money";
+import { TRANSACTION_TYPE_LABELS } from "@/lib/ledger";
 import { karachiDayKey } from "@/lib/dates";
 import {
   saveAmanatEntry,
@@ -58,7 +68,7 @@ import {
   type StatCard,
 } from "@/components/finance/expensesChrome";
 
-type TabMode = "ALL" | "EXPENSES" | "RECEIVED";
+type TabMode = "ALL" | "EXPENSES" | "RECEIVED" | "USED";
 type ExpenseFilterState = "ALL" | "UNPAID" | "PART" | "PAID";
 
 const IN_ICON = "M17 7 7 17M15 17H7V9";
@@ -69,8 +79,11 @@ export function AmanatSheetView() {
   const ready = role === "admin" || role === "subadmin";
   const isMobile = useIsMobile();
 
-  const { accounts, balances } = useLedger(ready);
+  const { accounts, balances, transactions } = useLedger(ready);
   const { entries, loading } = useAmanatEntries(ready);
+  const { rounds } = useInvestmentRounds(ready);
+  /** Each person's Amanat still out in Investment with X rounds. */
+  const outInRounds = useMemo(() => amanatOutInRounds(rounds), [rounds]);
 
   const [tab, setTab] = useState<TabMode>("ALL");
   const [expenseFilter, setExpenseFilter] = useState<ExpenseFilterState>("ALL");
@@ -89,6 +102,23 @@ export function AmanatSheetView() {
   const [banner, setBanner] = useState<string | null>(null);
 
   const totals = useMemo(() => calculateAmanatTotals(entries), [entries]);
+
+  // The Amanat accounts, and what the rest of the CRM has paid out of them.
+  const amanatAccounts = useMemo(() => accounts.filter((a) => a.kind === "AMANAT"), [accounts]);
+  const usage = useMemo(
+    () => amanatUsage(new Set(amanatAccounts.map((a) => a.id)), transactions),
+    [amanatAccounts, transactions]
+  );
+  const accountNames = useMemo(() => new Map(accounts.map((a) => [a.id, a.name])), [accounts]);
+  /** Held on trust, less what has been used for other payments. */
+  const inHand = Math.round((totals.trustBalance - usage.used) * 100) / 100;
+  const usedLines = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return usage.lines;
+    return usage.lines.filter(
+      (t) => (t.sourceLabel ?? "").toLowerCase().includes(q) || (t.note ?? "").toLowerCase().includes(q)
+    );
+  }, [usage.lines, search]);
 
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -116,14 +146,14 @@ export function AmanatSheetView() {
       label: "Total Amanat Received",
       value: formatMoney(totals.totalReceived),
       note: `${entries.filter((e) => e.type === "RECEIVED").length} trust deposit${entries.filter((e) => e.type === "RECEIVED").length === 1 ? "" : "s"}`,
-      pill: "In Hand",
+      pill: null,
       pct: 100,
       color: "#141f1e",
       accent: X.teal,
       icon: IN_ICON,
     },
     {
-      label: "Disbursed / Paid",
+      label: "Returned / Disbursed",
       value: formatMoney(totals.totalPaid),
       note: totals.totalExpenses > 0 ? `${Math.round((totals.totalPaid / totals.totalExpenses) * 100)}% of obligations paid` : "No disbursements yet",
       pill: totals.totalExpenses > 0 ? `${Math.round((totals.totalPaid / totals.totalExpenses) * 100)}%` : null,
@@ -132,6 +162,19 @@ export function AmanatSheetView() {
       accent: "#c0574a",
       icon: OUT_ICON,
       tone: "bad",
+    },
+    {
+      label: "Used For Payments",
+      value: formatMoney(usage.used),
+      note: usage.lines.length > 0
+        ? `${usage.lines.length} payment${usage.lines.length === 1 ? "" : "s"} made from Amanat elsewhere in the CRM`
+        : "Nothing paid from Amanat yet",
+      pill: usage.lines.length > 0 ? `${usage.lines.length}` : null,
+      pct: totals.totalReceived > 0 ? Math.max(0, Math.min(100, Math.round((usage.used / totals.totalReceived) * 100))) : 0,
+      color: usage.used > 0 ? "#3f7ea3" : X.deep,
+      accent: "#3f7ea3",
+      icon: "M3 7h18v12H3zM16 13h2",
+      onClick: () => setTab("USED"),
     },
     {
       label: "Pending To Pay",
@@ -145,17 +188,19 @@ export function AmanatSheetView() {
       tone: totals.pendingExpenses > 0 ? "bad" : "good",
     },
     {
-      label: "Trust Balance In Hand",
-      value: formatMoney(totals.trustBalance),
-      note: totals.trustBalance < 0 ? "Overdisbursed trust" : "Remaining trust funds in custody",
-      pill: totals.trustBalance >= 0 ? "Net Positive" : "Deficit",
-      pct: totals.totalReceived > 0 ? Math.max(0, Math.min(100, Math.round((totals.trustBalance / totals.totalReceived) * 100))) : 0,
-      color: totals.trustBalance >= 0 ? X.deep : "#b4524a",
-      accent: totals.trustBalance >= 0 ? X.deep : "#c0574a",
+      label: "Amanat In Hand",
+      value: formatMoney(inHand),
+      note: inHand < 0
+        ? "More has gone out than was received"
+        : `${formatMoney(totals.trustBalance)} still owed back to the people who placed it`,
+      pill: inHand >= 0 ? "In hand" : "Deficit",
+      pct: totals.totalReceived > 0 ? Math.max(0, Math.min(100, Math.round((inHand / totals.totalReceived) * 100))) : 0,
+      color: inHand >= 0 ? X.deep : "#b4524a",
+      accent: inHand >= 0 ? X.deep : "#c0574a",
       icon: "M3 7h18v12H3zM3 11h18M7 15h4",
-      tone: totals.trustBalance >= 0 ? "good" : "bad",
+      tone: inHand >= 0 ? "good" : "bad",
     },
-  ], [totals, entries]);
+  ], [totals, entries, usage, inHand]);
 
   const activeAccounts = useMemo(() => accounts.filter((a) => a.status !== "ARCHIVED"), [accounts]);
 
@@ -184,10 +229,11 @@ export function AmanatSheetView() {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "1.6px", textTransform: "uppercase", opacity: 0.76 }}>Trust & Safekeeping</div>
               <div style={{ fontSize: isMobile ? 26 : 32, fontWeight: 800, letterSpacing: "-1.2px", marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
-                {formatMoney(totals.trustBalance)}
+                {formatMoney(inHand)}
               </div>
               <div style={{ fontSize: 12.5, fontWeight: 500, opacity: 0.86, marginTop: 2 }}>
-                Amanat in hand · {formatMoney(totals.totalReceived)} received · {formatMoney(totals.totalPaid)} disbursed
+                Amanat in hand · {formatMoney(totals.totalReceived)} received · {formatMoney(totals.totalPaid)} returned
+                {usage.used !== 0 && ` · ${formatMoney(usage.used)} used for payments`}
               </div>
             </div>
           </div>
@@ -230,6 +276,42 @@ export function AmanatSheetView() {
       {/* 4 Stat Cards */}
       <StatCards cards={statCards} isMobile={isMobile} />
 
+      {/* The Amanat accounts — the pots every "Pay from…" in the CRM offers. */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch", gap: 10, marginTop: 14 }}>
+        {amanatAccounts.map((account) => {
+          const balance = balances.get(account.id)?.balance ?? 0;
+          return (
+            <Link
+              key={account.id}
+              href={`/admin/accounts/ledger/${account.id}`}
+              className="acc-lift"
+              style={{
+                display: "flex", alignItems: "center", gap: 12, flex: isMobile ? "1 1 100%" : "0 1 auto", minWidth: 0,
+                padding: "11px 16px", borderRadius: 14, background: "#fff", border: `1px solid ${X.line}`, textDecoration: "none",
+              }}
+            >
+              <span style={{ width: 34, height: 34, borderRadius: 11, background: "#e8f5f3", color: X.deep, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Wallet size={16} />
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 13.5, fontWeight: 700, color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {account.name}{account.status === "ARCHIVED" ? " · archived" : ""}
+                </span>
+                <span style={{ display: "block", fontSize: 11.5, fontWeight: 600, color: X.muted }}>Account · open statement</span>
+              </span>
+              <span style={{ marginLeft: "auto", paddingLeft: 10, fontSize: 15, fontWeight: 800, color: balance < 0 ? "#b4524a" : X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                {formatMoney(balance)}
+              </span>
+            </Link>
+          );
+        })}
+        <p style={{ flex: "1 1 260px", margin: 0, alignSelf: "center", fontSize: 12.5, fontWeight: 500, lineHeight: 1.5, color: X.muted }}>
+          {amanatAccounts.length === 0
+            ? "The Amanat account is made with the first Amanat received. From then on it is offered wherever the CRM asks which account to pay from."
+            : "Amanat is offered wherever the CRM asks which account to pay from — office and personal expenses, salaries, investments. Whatever is paid from it shows under Paid from Amanat."}
+        </p>
+      </div>
+
       {/* Main Panel */}
       <div style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 18, overflow: "hidden", marginTop: 16 }}>
         {/* Navigation Tabs */}
@@ -238,6 +320,7 @@ export function AmanatSheetView() {
             ["ALL", `All Movements (${entries.length})`],
             ["EXPENSES", `Amanat Expenses (${entries.filter((e) => e.type === "EXPENSE").length})`],
             ["RECEIVED", `Amanat Received (${entries.filter((e) => e.type === "RECEIVED").length})`],
+            ["USED", `Paid from Amanat (${usage.lines.length})`],
           ] as const).map(([key, label]) => {
             const active = tab === key;
             return (
@@ -272,7 +355,7 @@ export function AmanatSheetView() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by party, title, or purpose..."
+              placeholder={tab === "USED" ? "Search what was paid..." : "Search by party, title, or purpose..."}
               style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 13.5, fontWeight: 500, color: "#22302f", fontFamily: "inherit" }}
             />
           </div>
@@ -304,11 +387,56 @@ export function AmanatSheetView() {
 
         {/* Entries Table / List */}
         <div style={{ borderTop: `1px solid ${X.line}` }}>
-          {filteredEntries.map((e) => {
+          {tab === "USED" && usedLines.map((t) => {
+            const out = t.direction === "OUT";
+            return (
+              <Link
+                key={t.id}
+                href={`/admin/accounts/ledger/${t.accountId}`}
+                className="cmt-row"
+                style={{
+                  display: "grid", gridTemplateColumns: "42px minmax(0, 1fr) auto", alignItems: "center", gap: 14,
+                  padding: "14px 20px", borderBottom: `1px solid ${X.rowLine}`, textDecoration: "none",
+                }}
+              >
+                <div style={{ width: 40, height: 40, borderRadius: 13, display: "flex", alignItems: "center", justifyContent: "center", background: out ? "#eff6fb" : "#e8f5f3", color: out ? "#3f7ea3" : X.deep }}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d={out ? OUT_ICON : IN_ICON} />
+                  </svg>
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {t.sourceLabel || (out ? "Paid from Amanat" : "Put back into Amanat")}
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: X.muted, marginTop: 2, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {t.dayKey} · {TRANSACTION_TYPE_LABELS[t.type] ?? t.type} · {accountNames.get(t.accountId) ?? "Amanat"}
+                    {t.note ? ` · ${t.note}` : ""}
+                  </div>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.4px", color: out ? "#b4524a" : X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                  {out ? "−" : "+"}{formatMoney(t.amount)}
+                </div>
+              </Link>
+            );
+          })}
+          {tab === "USED" && usedLines.length === 0 && (
+            <div style={{ padding: "50px 20px", textAlign: "center", fontSize: 13.5, fontWeight: 500, color: X.faint }}>
+              {search
+                ? "Nothing paid from Amanat matches your search."
+                : "Nothing has been paid from Amanat yet. Choose the Amanat account under “Pay from…” on an expense, a salary or an investment and it appears here."}
+            </div>
+          )}
+
+          {tab !== "USED" && filteredEntries.map((e) => {
             const isReceived = e.type === "RECEIVED";
             const state = amanatPaymentState(e);
             const pending = pendingOfAmanat(e);
             const pct = e.amount > 0 ? Math.min(100, Math.round((e.paidAmount / e.amount) * 100)) : 0;
+            const heldIn = isReceived ? heldInAccountId(e, transactions) : null;
+            // What is owed back stays the same; this is where that money is right now.
+            const outNow = isReceived ? outInRounds.get(e.id) ?? 0 : 0;
+            const inHandNow = Math.max(0, pending - outNow);
+            const heldInName = heldIn ? accountNames.get(heldIn) ?? e.depositAccountName ?? "an account" : null;
 
             return (
               <div
@@ -368,7 +496,7 @@ export function AmanatSheetView() {
                   <div style={{ fontSize: 12, fontWeight: 500, color: X.muted, marginTop: 2, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {e.dayKey} · {e.title}
                     {e.purpose && ` · ${e.purpose}`}
-                    {isReceived && e.depositAccountName && ` · Banked in ${e.depositAccountName}`}
+                    {isReceived && (heldInName ? ` · Held in ${heldInName}` : " · Not in an account")}
                   </div>
                 </div>
 
@@ -401,6 +529,11 @@ export function AmanatSheetView() {
                   }}>
                     {isReceived ? `+${formatMoney(e.amount)}` : formatMoney(e.amount)}
                   </div>
+                  {isReceived && outNow > 0 && (
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#3f7ea3", fontVariantNumeric: "tabular-nums", marginTop: 2, whiteSpace: "nowrap" }}>
+                      {formatMoney(outNow)} out in rounds · {formatMoney(inHandNow)} in hand
+                    </div>
+                  )}
                   {!isReceived && (
                     <div style={{ fontSize: 11, fontWeight: 600, color: state === "PAID" ? X.deep : "#b45309", fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
                       {state === "PAID" ? "Paid in full" : `${formatMoney(pending)} to pay`}
@@ -457,7 +590,7 @@ export function AmanatSheetView() {
             );
           })}
 
-          {filteredEntries.length === 0 && (
+          {tab !== "USED" && filteredEntries.length === 0 && (
             <div style={{ padding: "50px 20px", textAlign: "center", fontSize: 13.5, fontWeight: 500, color: X.faint }}>
               {search ? "No Amanat entries match your search." : "No entries recorded yet. Click '+ Amanat Received' or '+ Amanat Expense' to add."}
             </div>
@@ -513,6 +646,7 @@ export function AmanatSheetView() {
         <AmanatFormModal
           type={formOpen.type}
           entry={formOpen.entry ?? null}
+          heldIn={formOpen.entry ? heldInAccountId(formOpen.entry, transactions) : null}
           accounts={activeAccounts}
           getIdToken={getIdToken}
           onClose={() => setFormOpen({ open: false, type: "RECEIVED", entry: null })}
@@ -567,7 +701,11 @@ export function AmanatSheetView() {
             try {
               const res = await deleteAmanatEntry(await getIdToken(), deleting.id);
               if (res.ok) {
-                setBanner(`Deleted ${deleting.party} Amanat entry.`);
+                setBanner(
+                  res.data.removed > 0
+                    ? `Deleted ${deleting.party} Amanat entry and took it back off the account${res.data.removed === 1 ? "" : "s"}.`
+                    : `Deleted ${deleting.party} Amanat entry.`
+                );
                 setDeleting(null);
               } else {
                 alert(res.error);
@@ -577,8 +715,12 @@ export function AmanatSheetView() {
             }
           }}
         >
-          {formatMoney(deleting.amount)} · {deleting.dayKey}. This will remove this Amanat entry.
-          {deleting.paidAmount > 0 && " Note: Transactions that already moved through accounts will stay in your ledger."}
+          {formatMoney(deleting.amount)} · {deleting.dayKey}. This removes the entry and its rows on the accounts.
+          {deleting.type === "RECEIVED"
+            ? " The money comes back out of the account holding it."
+            : deleting.paidAmount > 0
+              ? ` The ${formatMoney(deleting.paidAmount)} paid goes back into the accounts it came from.`
+              : ""}
         </ConfirmPanel>
       )}
     </div>
@@ -590,6 +732,7 @@ export function AmanatSheetView() {
 function AmanatFormModal({
   type: initialType,
   entry,
+  heldIn,
   accounts,
   getIdToken,
   onClose,
@@ -597,6 +740,8 @@ function AmanatFormModal({
 }: {
   type: AmanatType;
   entry: AmanatEntry | null;
+  /** Where an existing receipt's money actually sits, by the ledger. */
+  heldIn: string | null;
   accounts: AccountDoc[];
   getIdToken: () => Promise<string>;
   onClose: () => void;
@@ -612,7 +757,11 @@ function AmanatFormModal({
   const [dayKey, setDayKey] = useState(entry?.dayKey ?? karachiDayKey());
   const [purpose, setPurpose] = useState(entry?.purpose ?? "");
   const [notes, setNotes] = useState(entry?.notes ?? "");
-  const [depositAccountId, setDepositAccountId] = useState(entry?.depositAccountId ?? "");
+  // A new receipt goes into the Amanat account; an existing one stays where it is.
+  const [depositAccountId, setDepositAccountId] = useState(entry ? heldIn ?? "" : AMANAT_ACCOUNT_ID);
+  const amanatAccounts = accounts.filter((a) => a.kind === "AMANAT");
+  const otherAccounts = accounts.filter((a) => a.kind !== "AMANAT");
+  const hasMainAccount = amanatAccounts.some((a) => a.id === AMANAT_ACCOUNT_ID);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -745,18 +894,26 @@ function AmanatFormModal({
           </Field>
 
           {isReceived && (
-            <Field label="Deposit into Account (Optional)" hint="Select an account if deposited, or leave empty for offline/cash holding" wide>
+            <Field label="Held in" hint="Money in the Amanat account can be paid from anywhere in the CRM, and this screen shows what it was used for." wide>
               <select
                 value={depositAccountId}
                 onChange={(e) => setDepositAccountId(e.target.value)}
                 style={field}
               >
-                <option value="">Hold Offline / Cash in Hand (No ledger entry)</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name} ({a.kind})
-                  </option>
-                ))}
+                <optgroup label="Amanat">
+                  {!hasMainAccount && <option value={AMANAT_ACCOUNT_ID}>{AMANAT_ACCOUNT_NAME} account</option>}
+                  {amanatAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}{a.id === AMANAT_ACCOUNT_ID ? " account" : ""}</option>
+                  ))}
+                </optgroup>
+                {otherAccounts.length > 0 && (
+                  <optgroup label="Bank it in another account">
+                    {otherAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value="">Not in any account (cannot be paid from)</option>
               </select>
             </Field>
           )}

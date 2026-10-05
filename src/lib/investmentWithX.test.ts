@@ -4,6 +4,7 @@ import {
   DEFAULT_SHARE_COLUMNS,
   bookTotals,
   calculateRound,
+  amanatOutInRounds,
   checkRoundFunding,
   fundingDeltas,
   fundingLegs,
@@ -260,4 +261,50 @@ test('the taken-from filter finds a round by any account it came out of', () => 
   assert.deepEqual(from('a'), ['out', 'again']);
   assert.deepEqual(from('b'), ['late', 'again']);
   assert.deepEqual(from(NO_FUNDING), ['home']);
+});
+
+test("two people's Amanat from one account are two lines with their own legs", () => {
+  const check = checkRoundFunding(500_000, [
+    { accountId: 'amanat_main', amount: 300_000, amanatEntryId: 'ali' },
+    { accountId: 'amanat_main', amount: 200_000, amanatEntryId: 'usman' },
+  ]);
+  assert.equal(check.valid, true);
+  const legs = fundingLegs('r1', check.lines, '2026-10-01', null);
+  assert.deepEqual(legs.map((leg) => leg.id), ['invx_r1_out_amanat_main_ali', 'invx_r1_out_amanat_main_usman']);
+  assert.deepEqual(legs.map((leg) => leg.amanatEntryId), ['ali', 'usman']);
+  assert.equal(fundingDeltas([], legs).get('amanat_main'), -500_000);
+});
+
+test('the same person twice is refused, and a lone person keeps their name', () => {
+  const twice = checkRoundFunding(100, [
+    { accountId: 'amanat_main', amount: 50, amanatEntryId: 'ali' },
+    { accountId: 'amanat_main', amount: 50, amanatEntryId: 'ali' },
+  ]);
+  assert.equal(twice.valid, false);
+  const lone = checkRoundFunding(100, [{ accountId: 'amanat_main', amount: '', amanatEntryId: 'ali' }]);
+  assert.deepEqual(lone.lines, [{ accountId: 'amanat_main', amount: 100, amanatEntryId: 'ali' }]);
+});
+
+test('a line with no person keeps the leg id it always had, and reading keeps the person', () => {
+  assert.deepEqual(possibleFundingLegIds('r1', [{ accountId: 'a', amount: 1 }]), ['invx_r1_out_a', 'invx_r1_back_a']);
+  assert.deepEqual(readFunding([{ accountId: 'amanat_main', amount: 5, amanatEntryId: 'ali', amanatParty: 'Ali' }]), [
+    { accountId: 'amanat_main', amount: 5, amanatEntryId: 'ali' },
+  ]);
+});
+
+test("a person's Amanat is out while the round is open, and home once it is received", () => {
+  const rounds = [
+    { id: 'open', received: false, funding: [{ accountId: 'amanat_main', amount: 50_000, amanatEntryId: 'ali' }] },
+    { id: 'split', received: false, funding: [
+      { accountId: 'amanat_main', amount: 20_000, amanatEntryId: 'ali' },
+      { accountId: 'amanat_main', amount: 30_000, amanatEntryId: 'usman' },
+    ] },
+    { id: 'home', received: true, funding: [{ accountId: 'amanat_main', amount: 99_000, amanatEntryId: 'ali' }] },
+    { id: 'whole', received: false, funding: [{ accountId: 'amanat_main', amount: 10_000 }] },
+  ];
+  const out = amanatOutInRounds(rounds);
+  assert.equal(out.get('ali'), 70_000);
+  assert.equal(out.get('usman'), 30_000);
+  assert.equal(out.size, 2);
+  assert.equal(amanatOutInRounds(rounds, 'open').get('ali'), 20_000);
 });

@@ -27,7 +27,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useLedger, type AccountDoc } from "@/hooks/useLedger";
 import { usePagination } from "@/hooks/usePagination";
-import { useInvestmentBooks, useInvestmentRounds, type InvestmentBook } from "@/hooks/useAccountSheets";
+import { useAmanatEntries, useInvestmentBooks, useInvestmentRounds, type InvestmentBook } from "@/hooks/useAccountSheets";
+import { AMANAT_ACCOUNT_ID, pendingOfAmanat, type AmanatEntry } from "@/lib/amanatSheet";
 import { InvestedNowSummaryView } from "./InvestedNowSummaryView";
 import { Pager } from "@/components/employees/DossierControls";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
@@ -43,6 +44,7 @@ import {
   matchesRoundCut,
   type RoundCut,
   calculateRound,
+  amanatOutInRounds,
   checkRoundFunding,
   isRoundOverdue,
   isRoundReceived,
@@ -103,10 +105,22 @@ interface Round extends RoundFigures {
   reinvestedFrom: string | null;
 }
 
+/** A "Taken from" row as the form holds it; `amanatEntryId` names whose Amanat it is. */
+type FormLine = { accountId: string; amount: string; amanatEntryId?: string };
+
+/** A person's Amanat as the "Taken from" list offers it. */
+interface AmanatChoice {
+  entryId: string;
+  party: string;
+  accountId: string;
+  /** Received, less returned, less what open rounds still have out of it. */
+  left: number;
+}
+
 /** What a reinvestment starts the round form with. */
 interface RoundPrefill {
   amount: number;
-  funding: Array<{ accountId: string; amount: string }>;
+  funding: FormLine[];
   description: string;
   reinvestedFrom: string;
 }
@@ -135,7 +149,7 @@ function fundingNames(round: Pick<Round, "funding">, accounts: readonly AccountD
 }
 
 /** Capital Investment accounts first — that is where a round's money usually comes from. */
-const KIND_ORDER: AccountKind[] = ["INVESTMENT", "BANK", "CASH", "WALLET", "COMMITTEE", "INCOME", "OTHER"];
+const KIND_ORDER: AccountKind[] = ["INVESTMENT", "BANK", "CASH", "WALLET", "COMMITTEE", "INCOME", "AMANAT", "OTHER"];
 
 export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | "INVESTED_SUMMARY" } = {}) {
   const router = useRouter();
@@ -145,6 +159,8 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
   const { books, loading: booksLoading, error } = useInvestmentBooks(ready);
   const { rounds: rawRounds, loading: roundsLoading } = useInvestmentRounds(ready);
   const ledger = useLedger(ready);
+  // Same read rule as the rounds: whoever can see this screen can see whose Amanat it is.
+  const { entries: amanatEntries } = useAmanatEntries(ready);
 
   const [pickedBook, setPickedBook] = useState<string | null>(null);
   const [from, setFrom] = useState("");
@@ -685,10 +701,10 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
             // The capital went back into the account(s) it came from; the net
             // was banked into this book's own account. Reinvesting takes it out
             // of the same places. Unfunded capital leaves the choice to the form.
-            const capital = source.funding.map((line) => ({ accountId: line.accountId, amount: String(line.amount) }));
+            const capital: FormLine[] = source.funding.map((line) => ({ accountId: line.accountId, amount: String(line.amount), ...(line.amanatEntryId ? { amanatEntryId: line.amanatEntryId } : {}) }));
             const funding = withProfit && source.netProfit > 0
               ? capital.length ? [...capital, { accountId: book.accountId, amount: String(source.netProfit) }] : []
-              : capital.length === 1 ? [{ accountId: capital[0].accountId, amount: "" }] : capital;
+              : capital.length === 1 ? [{ ...capital[0], amount: "" }] : capital;
             setRoundForm({
               round: null,
               bookId: targetId,
@@ -710,6 +726,8 @@ export function InvestmentWithXView({ initialView }: { initialView?: "ROUNDS" | 
           round={roundForm.round}
           accounts={ledger.accounts}
           balances={ledger.balances}
+          amanatEntries={amanatEntries}
+          rawRounds={rawRounds}
           getIdToken={getIdToken}
           onClose={() => setRoundForm(null)}
           onSaved={(text) => {
@@ -931,13 +949,16 @@ function ReinvestChooser({ round, fromBook, books, onClose, onContinue }: {
 /* A round                                                                     */
 /* -------------------------------------------------------------------------- */
 
-function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClose, onSaved, onDelete }: {
+function RoundForm({ book, round, prefill, accounts, balances, amanatEntries, rawRounds, getIdToken, onClose, onSaved, onDelete }: {
   book: InvestmentBook;
   round: Round | null;
   /** A reinvestment: the new round starts with the money it comes from. */
   prefill?: RoundPrefill;
   accounts: AccountDoc[];
   balances: Map<string, { balance: number }>;
+  amanatEntries: AmanatEntry[];
+  /** Every book's rounds, for what is still out of each person's Amanat. */
+  rawRounds: Array<Record<string, unknown>>;
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
@@ -961,9 +982,13 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
   // Gross follows profit until somebody types a different gross.
   const [grossTouched, setGrossTouched] = useState(Boolean(round && round.grossProfit !== round.profit));
   // Amounts are only typed once the money is split; one account takes it all.
-  const [lines, setLines] = useState<Array<{ accountId: string; amount: string }>>(
+  const [lines, setLines] = useState<FormLine[]>(
     round && round.funding.length
-      ? round.funding.map((line) => ({ accountId: line.accountId, amount: round.funding.length > 1 ? String(line.amount) : "" }))
+      ? round.funding.map((line) => ({
+          accountId: line.accountId,
+          amount: round.funding.length > 1 ? String(line.amount) : "",
+          ...(line.amanatEntryId ? { amanatEntryId: line.amanatEntryId } : {}),
+        }))
       : prefill && prefill.funding.length
         ? prefill.funding
         : [{ accountId: "", amount: "" }]
@@ -975,16 +1000,45 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
   const fundingError = parseAmount(form.amount) > 0 ? funding.errors[0] ?? null : null;
   const split = lines.length > 1;
 
+  /**
+   * Each person's Amanat held in an Amanat account, with what is left of it.
+   * Open rounds that took from them count against it; this round does not, so
+   * editing it offers back what it already holds.
+   */
+  const amanatChoices = useMemo<AmanatChoice[]>(() => {
+    const isAmanatAccount = (id: string) =>
+      id === AMANAT_ACCOUNT_ID || accounts.some((account) => account.id === id && account.kind === "AMANAT");
+    const out = amanatOutInRounds(rawRounds, round?.id);
+    return amanatEntries
+      .filter((entry) => entry.type === "RECEIVED" && entry.depositAccountId && isAmanatAccount(entry.depositAccountId))
+      .map((entry) => ({
+        entryId: entry.id,
+        party: entry.party,
+        accountId: entry.depositAccountId!,
+        left: Math.max(0, pendingOfAmanat(entry) - (out.get(entry.id) ?? 0)),
+      }))
+      .filter((choice) => choice.left > 0 || lines.some((line) => line.amanatEntryId === choice.entryId))
+      .sort((a, b) => a.party.localeCompare(b.party));
+  }, [amanatEntries, rawRounds, accounts, round, lines]);
+
   /** Open accounts, plus any already on this round, grouped by kind. */
   const groups = useMemo(() => {
     const onRound = new Set(round?.funding.map((line) => line.accountId) ?? []);
-    const usable = accounts.filter((account) => account.status !== "ARCHIVED" || onRound.has(account.id));
+    // An Amanat account is offered person by person instead of as one sum,
+    // unless a line already takes from it as a whole, which must stay choosable.
+    const byPerson = new Set(amanatChoices.map((choice) => choice.accountId));
+    const wholeOnRound = new Set(lines.filter((line) => !line.amanatEntryId).map((line) => line.accountId));
+    const usable = accounts.filter(
+      (account) =>
+        (account.status !== "ARCHIVED" || onRound.has(account.id)) &&
+        (!byPerson.has(account.id) || wholeOnRound.has(account.id))
+    );
     return KIND_ORDER.map((kind) => ({
       kind,
       // A kind this list does not know is shown under Other rather than dropped.
       accounts: usable.filter((account) => (KIND_ORDER.includes(account.kind) ? account.kind : "OTHER") === kind),
-    })).filter((group) => group.accounts.length > 0);
-  }, [accounts, round]);
+    })).filter((group) => group.accounts.length > 0 || (group.kind === "AMANAT" && amanatChoices.length > 0));
+  }, [accounts, round, amanatChoices, lines]);
   const missing = (round?.funding ?? []).filter((line) => !accounts.some((account) => account.id === line.accountId));
 
   const nameOf = (accountId: string) =>
@@ -992,8 +1046,29 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
     ?? round?.funding.find((line) => line.accountId === accountId)?.accountName
     ?? "A deleted account";
 
-  const setLine = (index: number, patch: Partial<{ accountId: string; amount: string }>) =>
+  const setLine = (index: number, patch: Partial<FormLine>) =>
     setLines((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  /** A person's Amanat is an option of its own; picking it still takes from their account. */
+  const AMANAT_PREFIX = "amanat:";
+  const pick = (index: number, value: string) => {
+    const choice = value.startsWith(AMANAT_PREFIX)
+      ? amanatChoices.find((c) => c.entryId === value.slice(AMANAT_PREFIX.length))
+      : undefined;
+    setLines((rows) =>
+      rows.map((row, i) =>
+        i !== index
+          ? row
+          : choice
+            ? { amount: row.amount, accountId: choice.accountId, amanatEntryId: choice.entryId }
+            : { amount: row.amount, accountId: value }
+      )
+    );
+  };
+  const lineLabel = (line: Pick<FormLine, "accountId" | "amanatEntryId">) => {
+    const choice = line.amanatEntryId ? amanatChoices.find((c) => c.entryId === line.amanatEntryId) : undefined;
+    return choice ? `${choice.party}'s Amanat` : nameOf(line.accountId);
+  };
 
   const gross = grossTouched ? form.grossProfit : form.profit;
   const preview = calculateRound(
@@ -1025,7 +1100,7 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
         round?.id
       );
       if (result.ok) {
-        const from = funding.lines.map((line) => nameOf(line.accountId)).join(", ");
+        const from = funding.lines.map((line) => lineLabel(line)).join(", ");
         const net = formatMoney(result.data.netProfit);
         onSaved(
           result.data.received
@@ -1108,8 +1183,8 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
             <div key={index} style={{ display: "grid", gap: 8, alignItems: "center", gridTemplateColumns: split ? `minmax(0, 1fr) ${isMobile ? 112 : 140}px 38px` : "minmax(0, 1fr)" }}>
               <select
                 aria-label={split ? `Account ${index + 1}` : "Account"}
-                value={line.accountId}
-                onChange={(e) => { const v = e.target.value; setLine(index, { accountId: v }); }}
+                value={line.amanatEntryId ? `${AMANAT_PREFIX}${line.amanatEntryId}` : line.accountId}
+                onChange={(e) => pick(index, e.target.value)}
                 style={{ ...field, cursor: "pointer" }}
               >
                 <option value="">{split ? "Choose an account…" : "Not taken from an account"}</option>
@@ -1118,6 +1193,11 @@ function RoundForm({ book, round, prefill, accounts, balances, getIdToken, onClo
                     {group.accounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {account.name} · {formatMoney(balances.get(account.id)?.balance ?? 0)}
+                      </option>
+                    ))}
+                    {group.kind === "AMANAT" && amanatChoices.map((choice) => (
+                      <option key={choice.entryId} value={`${AMANAT_PREFIX}${choice.entryId}`}>
+                        {choice.party} · {formatMoney(choice.left)}
                       </option>
                     ))}
                   </optgroup>

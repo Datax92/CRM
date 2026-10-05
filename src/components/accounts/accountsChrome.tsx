@@ -17,7 +17,7 @@ import type { CSSProperties, ReactNode } from "react";
 import {
   PiggyBank,
   ArrowDownRight, ArrowUpRight, Minus, Landmark, Banknote, Wallet,
-  Users2, TrendingUp, CircleDollarSign,
+  Users2, TrendingUp, CircleDollarSign, ShieldCheck,
 } from "lucide-react";
 import { E } from "@/components/employees/directoryChrome";
 import { formatMoney } from "@/lib/money";
@@ -59,6 +59,7 @@ export const ACCOUNT_ICONS: Record<AccountKind, typeof Landmark> = {
   INVESTMENT: TrendingUp,
   COMMITTEE: Users2,
   INCOME: PiggyBank,
+  AMANAT: ShieldCheck,
   OTHER: CircleDollarSign,
 };
 

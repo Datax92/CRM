@@ -419,6 +419,15 @@ service cloud.firestore {
     }
 
     /*
+      Amanat (Trust & Safekeeping) entries.
+      Read by admin and HR; write operations go strictly through Server Actions.
+    */
+    match /amanatEntries/{entryId} {
+      allow read: if isAdmin() || isHr();
+      allow write: if false;
+    }
+
+    /*
       Leads that arrived but could not be filed — a form with no phone
       question, or a field under a name the intake did not recognise. Read by
       the Meta Ads screen so nothing is lost in silence; written only by the

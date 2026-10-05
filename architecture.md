@@ -105,6 +105,7 @@ investments/{recordId}           title, amount, date, description, addedByUid, c
 capitalInvestments/{recordId}    title, amount, date, description, addedByUid, createdAt
 personalExpenses/{recordId}      title, amount, date, description, addedByUid, createdAt
 receivables/{recordId}           title, size, amount, date, addedByUid, createdAt
+amanatEntries/{entryId}         party, title, amount, paidAmount, dayKey, purpose, notes, depositAccountId, history, type
 
 notifications/{notificationId}   type, leadId, targetRole, payload, createdAt, readAt
 
@@ -307,6 +308,7 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/app/admin/accounts/investment/page.tsx` | `InvestmentPage` | External and internal investment management ledger |
 | `src/app/admin/accounts/capital-investments/page.tsx` | `CapitalInvestmentsPage` | Asset and capital expenditure accounting |
 | `src/app/admin/accounts/receivable/page.tsx` | `ReceivablesPage` | Outstanding customer receivables, sizes, and collection status |
+| `src/app/admin/accounts/amanat/page.tsx` | `AmanatPage` | Trust and safekeeping ledger for money-in deposits and multi-account disbursements |
 | `src/app/admin/search/page.tsx` | `AdminSearchPage` | Universal multi-criteria search engine across all leads and records |
 | `src/app/admin/settings/page.tsx` | `AdminSettingsPage` | Integrations panel (Meta Lead Ads webhook token, WhatsApp config) |
 | `src/app/admin/SelectPill.tsx` | `SelectPill`, `SelectOption` | Branded floating-label dropdown select pill |
@@ -346,6 +348,7 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `expenses.ts` | `addExpense`, `getExpenses` | Company expense entry and historical querying |
 | `accounts.ts` | `createAccountRecord`, `getAccountRecords` | Multi-category accounting entries (Committee, Investments, Capital, Personal) |
 | `receivables.ts` | `createReceivableRecord`, `getReceivableRecords` | Customer receivables and pending debt entries |
+| `amanatSheet.ts` | `saveAmanatEntry`, `payAmanatExpenseThroughAccounts`, `deleteAmanatEntry` | Trust money intake, multi-account disbursement posting to ledger, and record deletion |
 | `followUps.ts` | `addFollowUp` | Append-only immutable customer follow-up recording |
 | `notifications.ts` | `markNotificationRead`, `markAllNotificationsRead` | Admin and employee alert acknowledgment |
 | `whatsapp.ts` | `sendWhatsAppMessage` | Placeholder for future WhatsApp Business API integration |
@@ -377,6 +380,7 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/components/attendance/LateAbsenceView.tsx` | `LateAbsenceView` | Dedicated ledger of tardiness, unexcused absences, and administrative overrides |
 | `src/components/attendance/NetworkNameField.tsx` | `NetworkNameField` | Local device Wi-Fi SSID configuration and sync interface |
 | `src/components/attendance/attendanceChrome.tsx` | `AttendanceChrome`, `formatClock` | Reusable attendance status badges, punch buttons, and network verdict indicators |
+| `src/components/accounts/AmanatSheetView.tsx` | `AmanatSheetView` | Trust & Safekeeping ledger UI: Money In deposits, disbursements, multi-account payments |
 
 #### UI Components
 | File | Component / Functions | Purpose |
@@ -420,6 +424,7 @@ since a task could in principle be delivered more than once (Cloud Tasks is at-l
 | `src/lib/attendance.ts` | `distanceMeters`, `classifyLocation`, `classifyWifi`, `resolveNetwork`, `workedMinutes`, `deriveStatus`, `attendanceRate`, `normalizeIp`, `formatWorkedHours` | Geolocation haversine math, network classification, and attendance status derivation |
 | `src/lib/attendanceCalendar.ts` | `monthLabel`, `shiftMonth`, `daysInMonth`, `leadingBlanks`, `monthRange`, `dayNumber`, `monthDayKeys` | Calendar grid arithmetic, month offsets, and day formatting |
 | `src/lib/attendancePolicy.ts` | `parseClock`, `formatClockValue`, `formatClockLabel`, `karachiMinutesOfDay`, `classifyCheckIn`, `pastAbsentCutoff`, `lateDeduction`, `monthDeductions`, `leaveBalances`, `normalizePolicy` | Working hours policy parsing, tardiness determination, Karachi timezone conversion, and deduction formulas |
+| `src/lib/amanatSheet.ts` | `readAmanatEntry`, `calculateAmanatTotals`, `amanatPaymentState`, `pendingOfAmanat` | Trust entry parsing, payment states, pending calculations, and summary rollups |
 
 ---
 

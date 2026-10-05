@@ -234,7 +234,19 @@ export function investmentAccountId(bookId: string): string {
 export interface FundingLine {
   accountId: string;
   amount: number;
+  /**
+   * Whose Amanat this is, when the account is an Amanat account: the money
+   * still leaves that account, and the line says which person's trust it was.
+   */
+  amanatEntryId?: string;
 }
+
+/** One line per account — or, from an Amanat account, one line per person. */
+export const fundingLineKey = (line: Pick<FundingLine, 'accountId' | 'amanatEntryId'>): string =>
+  line.amanatEntryId ? `${line.accountId}~${line.amanatEntryId}` : line.accountId;
+
+const withAmanat = (amanatEntryId: unknown): { amanatEntryId?: string } =>
+  typeof amanatEntryId === 'string' && amanatEntryId.trim() ? { amanatEntryId: amanatEntryId.trim() } : {};
 
 export interface FundingCheck {
   /** The lines as they will be saved: blanks dropped, a lone line's amount filled in. */
@@ -258,25 +270,29 @@ const rupees = new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PK
  */
 export function checkRoundFunding(
   amount: number,
-  raw: ReadonlyArray<{ accountId?: string | null; amount?: unknown }>
+  raw: ReadonlyArray<{ accountId?: string | null; amount?: unknown; amanatEntryId?: string | null }>
 ): FundingCheck {
   const total = parseAmount(amount);
-  const picked = raw
-    .map((line) => ({ accountId: (line.accountId ?? '').trim(), amount: parseAmount(line.amount) }))
+  const picked: FundingLine[] = raw
+    .map((line) => ({ accountId: (line.accountId ?? '').trim(), amount: parseAmount(line.amount), ...withAmanat(line.amanatEntryId) }))
     .filter((line) => line.accountId);
 
   if (picked.length === 0) return { lines: [], allocated: 0, errors: [], valid: true };
 
-  const lines = picked.length === 1 ? [{ accountId: picked[0].accountId, amount: total }] : picked;
+  const lines = picked.length === 1 ? [{ ...picked[0], amount: total }] : picked;
   const errors: string[] = [];
 
   const seen = new Set<string>();
   for (const line of lines) {
-    if (seen.has(line.accountId)) {
-      errors.push('The same account is listed twice. Put its whole share on one line.');
+    if (seen.has(fundingLineKey(line))) {
+      errors.push(
+        line.amanatEntryId
+          ? "The same person's Amanat is listed twice. Put their whole share on one line."
+          : 'The same account is listed twice. Put its whole share on one line.'
+      );
       break;
     }
-    seen.add(line.accountId);
+    seen.add(fundingLineKey(line));
   }
   if (lines.some((line) => line.amount <= 0)) {
     errors.push('Enter how much came out of each account.');
@@ -301,10 +317,11 @@ export function readFunding(raw: unknown): FundingLine[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .map((line) => {
-      const entry = (line ?? {}) as { accountId?: unknown; amount?: unknown };
+      const entry = (line ?? {}) as { accountId?: unknown; amount?: unknown; amanatEntryId?: unknown };
       return {
         accountId: typeof entry.accountId === 'string' ? entry.accountId : '',
         amount: parseAmount(entry.amount),
+        ...withAmanat(entry.amanatEntryId),
       };
     })
     .filter((line) => line.accountId && line.amount > 0);
@@ -320,15 +337,45 @@ export interface FundingLeg {
   direction: 'IN' | 'OUT';
   amount: number;
   dayKey: string;
+  /** Whose Amanat the money was, when it came out of an Amanat account. */
+  amanatEntryId?: string;
 }
 
-export function fundingLegId(roundId: string, accountId: string, kind: FundingLegKind): string {
-  return `invx_${roundId}_${kind === 'OUT' ? 'out' : 'back'}_${accountId}`;
+/**
+ * A line with no Amanat person keeps the id it always had, so rounds saved
+ * before people were listed still rewrite the rows they posted.
+ */
+export function fundingLegId(roundId: string, accountId: string, kind: FundingLegKind, amanatEntryId?: string): string {
+  const id = `invx_${roundId}_${kind === 'OUT' ? 'out' : 'back'}_${accountId}`;
+  return amanatEntryId ? `${id}_${amanatEntryId}` : id;
+}
+
+/**
+ * How much of each person's Amanat is out in rounds right now: every line that
+ * names them, on a round not yet received. A received round's money is back in
+ * the account, so it no longer counts. `exceptRoundId` leaves one round out —
+ * the one being edited, which offers back what it already holds.
+ */
+export function amanatOutInRounds(
+  rounds: ReadonlyArray<{ id?: unknown; received?: unknown; funding?: unknown }>,
+  exceptRoundId?: string | null
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const round of rounds) {
+    if ((exceptRoundId && round.id === exceptRoundId) || isRoundReceived({ received: round.received })) continue;
+    for (const line of readFunding(round.funding)) {
+      if (line.amanatEntryId) out.set(line.amanatEntryId, roundMoney((out.get(line.amanatEntryId) ?? 0) + line.amount));
+    }
+  }
+  return out;
 }
 
 /** Every leg id a set of lines could have posted, returned or not — what an edit must clear. */
 export function possibleFundingLegIds(roundId: string, lines: readonly FundingLine[]): string[] {
-  return lines.flatMap((line) => [fundingLegId(roundId, line.accountId, 'OUT'), fundingLegId(roundId, line.accountId, 'BACK')]);
+  return lines.flatMap((line) => [
+    fundingLegId(roundId, line.accountId, 'OUT', line.amanatEntryId),
+    fundingLegId(roundId, line.accountId, 'BACK', line.amanatEntryId),
+  ]);
 }
 
 /**
@@ -343,9 +390,10 @@ export function fundingLegs(
 ): FundingLeg[] {
   const legs: FundingLeg[] = [];
   for (const line of lines) {
-    legs.push({ id: fundingLegId(roundId, line.accountId, 'OUT'), kind: 'OUT', accountId: line.accountId, direction: 'OUT', amount: line.amount, dayKey });
+    const person = withAmanat(line.amanatEntryId);
+    legs.push({ id: fundingLegId(roundId, line.accountId, 'OUT', line.amanatEntryId), kind: 'OUT', accountId: line.accountId, direction: 'OUT', amount: line.amount, dayKey, ...person });
     if (returnDayKey) {
-      legs.push({ id: fundingLegId(roundId, line.accountId, 'BACK'), kind: 'BACK', accountId: line.accountId, direction: 'IN', amount: line.amount, dayKey: returnDayKey });
+      legs.push({ id: fundingLegId(roundId, line.accountId, 'BACK', line.amanatEntryId), kind: 'BACK', accountId: line.accountId, direction: 'IN', amount: line.amount, dayKey: returnDayKey, ...person });
     }
   }
   return legs;

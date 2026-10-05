@@ -86,6 +86,17 @@ export const ACCOUNT_KINDS = [
    * no module knowing StateLife exists.
    */
   'INCOME',
+  /**
+   * Money held **on trust** for somebody else (`lib/amanatSheet`).
+   *
+   * An ordinary account, exactly as a committee is: what is received on trust
+   * comes in, and because it is an account, an office expense, a salary or an
+   * investment round can be paid out of it through the same split control as
+   * any other — with no module knowing Amanat exists. What the kind adds is
+   * only on the Amanat screen, which reads these accounts' statements to say
+   * how much of the trust money has been used and how much is still in hand.
+   */
+  'AMANAT',
   'OTHER',
 ] as const;
 
@@ -98,6 +109,7 @@ export const ACCOUNT_KIND_LABELS: Record<AccountKind, string> = {
   INVESTMENT: 'Investment',
   COMMITTEE: 'Committee',
   INCOME: 'Income',
+  AMANAT: 'Amanat',
   OTHER: 'Other',
 };
 

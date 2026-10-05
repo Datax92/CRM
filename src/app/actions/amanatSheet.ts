@@ -1,10 +1,19 @@
 "use server";
 
 /**
- * Amanat (Trust & Safekeeping Sheet) — Server Actions.
+ * Amanat (Trust & Safekeeping) — Server Actions.
  *
- * Supports recording Amanat received (Money In) and Amanat expenses/disbursements
- * (Money Out), with multi-account payments posted directly to the double-entry ledger.
+ * **Amanat is an account** (`lib/amanatSheet`). Money received on trust is held
+ * in one — the Amanat account unless another is chosen — so every "Pay from…"
+ * in the CRM can spend out of it, and this file's own job is only the two
+ * things that are Amanat's: recording a receipt, and returning or disbursing
+ * money against it.
+ *
+ * Every write here keeps the entry and the ledger in step **in one Firestore
+ * transaction**, and moves balances by what is actually posted. It used to
+ * write the entry and its ledger row separately, and to delete the entry
+ * alone: an entry deleted on 2026-10-03 left its money sitting in the account
+ * it had been banked in.
  */
 
 import { adminDb } from "@/lib/firebase/server";
@@ -13,9 +22,17 @@ import { runAction, UserFacingError, type ActionResult } from "@/lib/actionResul
 import { karachiDayKey } from "@/lib/dates";
 import { allocationsToTransactions, checkAllocations, money } from "@/lib/ledger";
 import { FieldValue } from "firebase-admin/firestore";
-import type { AmanatType } from "@/lib/amanatSheet";
+import {
+  AMANAT_ACCOUNT_ID,
+  AMANAT_ACCOUNT_NAME,
+  planReceiptLeg,
+  type AmanatLedgerRow,
+  type AmanatType,
+} from "@/lib/amanatSheet";
 
 const ENTRIES = "amanatEntries";
+const ACCOUNTS = "accounts";
+const TRANSACTIONS = "transactions";
 
 async function requireFinance(token: string): Promise<DecodedAuth> {
   const auth = await verifyAuth(token);
@@ -25,15 +42,44 @@ async function requireFinance(token: string): Promise<DecodedAuth> {
 
 const dayOrNull = (raw?: string | null) => (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null);
 
+/** Every ledger row an entry has caused. Two equality filters — no index to deploy. */
+const legsOf = (entryId: string) =>
+  adminDb.collection(TRANSACTIONS).where("sourceModule", "==", "AMANAT").where("sourceId", "==", entryId);
+
+/**
+ * Moves the cached balances after a write has committed.
+ *
+ * Outside the transaction and never allowed to fail it, as in `actions/ledger`:
+ * a stale cache is a display problem (`useLedger` derives the real figure from
+ * the transactions), a refused save is a real one.
+ */
+async function bumpBalances(deltas: Map<string, number>): Promise<void> {
+  await Promise.all(
+    [...deltas].map(([accountId, delta]) =>
+      !Number.isFinite(delta) || delta === 0
+        ? Promise.resolve()
+        : adminDb
+            .collection(ACCOUNTS)
+            .doc(accountId)
+            .update({ cachedBalance: FieldValue.increment(Math.round(delta * 100) / 100) })
+            .catch(() => undefined)
+    )
+  );
+}
+
 export interface AmanatEntryInput {
   type: AmanatType;
   party: string;
   title?: string | null;
   amount: number;
-  paidAmount?: number;
   dayKey?: string | null;
   purpose?: string | null;
   notes?: string | null;
+  /**
+   * For a receipt: the account holding the money. `AMANAT_ACCOUNT_ID` is the
+   * Amanat account, made here if it does not exist yet. Empty means it is held
+   * outside the accounts, and so cannot be paid from.
+   */
   depositAccountId?: string | null;
 }
 
@@ -50,70 +96,124 @@ export async function saveAmanatEntry(
     const amount = money(input.amount);
     if (amount <= 0) throw new UserFacingError("Amount must be greater than zero.");
 
-    const type: AmanatType = input.type === "EXPENSE" ? "EXPENSE" : "RECEIVED";
-    const title = (input.title ?? "").trim() || (type === "RECEIVED" ? "Amanat Received" : "Amanat Expense");
     const dayKey = dayOrNull(input.dayKey) ?? karachiDayKey();
     const purpose = (input.purpose ?? "").trim() || null;
     const notes = (input.notes ?? "").trim() || null;
-    const depositAccountId = (input.depositAccountId ?? "").trim() || null;
-
-    let depositAccountName: string | null = null;
-    if (depositAccountId) {
-      const accSnap = await adminDb.collection("accounts").doc(depositAccountId).get();
-      if (accSnap.exists) {
-        depositAccountName = String(accSnap.data()?.name ?? "").trim() || null;
-      }
-    }
+    const wantedAccountId = (input.depositAccountId ?? "").trim() || null;
+    const byName = auth.name ?? auth.email ?? null;
 
     const ref = entryId ? adminDb.collection(ENTRIES).doc(entryId) : adminDb.collection(ENTRIES).doc();
 
-    const existingSnap = entryId ? await ref.get() : null;
-    const existing = existingSnap?.exists ? existingSnap.data() : null;
+    const deltas = await adminDb.runTransaction(async (t) => {
+      const existingSnap = entryId ? await t.get(ref) : null;
+      const existing = existingSnap?.exists ? existingSnap.data()! : null;
+      if (entryId && !existing) throw new UserFacingError("That Amanat entry no longer exists.");
 
-    const payload: Record<string, unknown> = {
-      type,
-      party,
-      title,
-      amount,
-      paidAmount: type === "RECEIVED" ? 0 : money(input.paidAmount ?? existing?.paidAmount ?? 0),
-      dayKey,
-      purpose,
-      notes,
-      depositAccountId,
-      depositAccountName,
-      updatedAt: FieldValue.serverTimestamp(),
-      updatedByUid: auth.uid,
-    };
-
-    if (!existingSnap?.exists) {
-      payload.history = [];
-      payload.createdAt = FieldValue.serverTimestamp();
-      payload.createdByUid = auth.uid;
-      payload.createdByName = auth.name ?? auth.email ?? null;
-
-      // If new RECEIVED entry and depositAccountId is chosen, post an IN ledger transaction
-      if (type === "RECEIVED" && depositAccountId) {
-        const txnRef = adminDb.collection("transactions").doc();
-        await txnRef.set({
-          accountId: depositAccountId,
-          direction: "IN",
-          amount,
-          type: "LOAN",
-          dayKey,
-          sourceModule: "AMANAT",
-          sourceId: ref.id,
-          sourceLabel: `Amanat Received — ${party}`,
-          status: "POSTED",
-          createdByUid: auth.uid,
-          createdByName: auth.name ?? auth.email ?? null,
-          createdAt: FieldValue.serverTimestamp(),
-          note: purpose ?? notes ?? "Trust money deposited",
-        });
+      // What an entry *is* does not change on edit: a receipt turned into an
+      // expense would leave its money in an account with nothing to explain it.
+      const type: AmanatType = existing
+        ? existing.type === "EXPENSE" ? "EXPENSE" : "RECEIVED"
+        : input.type === "EXPENSE" ? "EXPENSE" : "RECEIVED";
+      const title = (input.title ?? "").trim() || (type === "RECEIVED" ? "Amanat Received" : "Amanat Expense");
+      const paidAmount = type === "EXPENSE" ? money(existing?.paidAmount) : 0;
+      if (type === "EXPENSE" && amount < paidAmount) {
+        throw new UserFacingError(
+          `Rs ${paidAmount.toLocaleString("en-PK")} has already been paid on this. The amount cannot go below it.`
+        );
       }
-    }
 
-    await ref.set(payload, { merge: true });
-    return { id: ref.id, name: `${party} (${title})` };
+      const payload: Record<string, unknown> = {
+        type,
+        party,
+        title,
+        amount,
+        paidAmount,
+        dayKey,
+        purpose,
+        notes,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedByUid: auth.uid,
+      };
+      if (!existing) {
+        payload.history = [];
+        payload.createdAt = FieldValue.serverTimestamp();
+        payload.createdByUid = auth.uid;
+        payload.createdByName = byName;
+      }
+
+      let moved = new Map<string, number>();
+
+      if (type === "RECEIVED") {
+        const accountId = wantedAccountId;
+        const legsSnap = existing ? await t.get(legsOf(ref.id)) : null;
+        const accountSnap = accountId ? await t.get(adminDb.collection(ACCOUNTS).doc(accountId)) : null;
+
+        let accountName: string | null = null;
+        if (accountId && accountSnap) {
+          if (accountSnap.exists) {
+            if (accountSnap.data()?.status === "ARCHIVED") {
+              throw new UserFacingError(`${accountSnap.data()?.name ?? "That account"} is archived and cannot hold new money.`);
+            }
+            accountName = String(accountSnap.data()?.name ?? "").trim() || null;
+          } else if (accountId === AMANAT_ACCOUNT_ID) {
+            // The Amanat account, on the first receipt. Nothing opens it with:
+            // every rupee in it is a receipt on the statement.
+            accountName = AMANAT_ACCOUNT_NAME;
+            t.create(accountSnap.ref, {
+              name: AMANAT_ACCOUNT_NAME,
+              kind: "AMANAT",
+              openingBalance: 0,
+              startedOn: dayKey,
+              note: "Money held on trust. Anything paid from it shows on the Amanat screen.",
+              status: "ACTIVE",
+              cachedBalance: 0,
+              createdByUid: auth.uid,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+          } else {
+            throw new UserFacingError("That account no longer exists.");
+          }
+        }
+
+        const posted = (legsSnap?.docs ?? []).map((doc) => ({ id: doc.id, ...doc.data() }) as AmanatLedgerRow);
+        const plan = planReceiptLeg(ref.id, posted, { accountId, amount });
+        moved = plan.deltas;
+
+        for (const id of plan.removeIds) t.delete(adminDb.collection(TRANSACTIONS).doc(id));
+        if (plan.write) {
+          const current = legsSnap?.docs.find((doc) => doc.id === plan.write!.id)?.data();
+          t.set(adminDb.collection(TRANSACTIONS).doc(plan.write.id), {
+            accountId: plan.write.accountId,
+            direction: "IN",
+            amount: plan.write.amount,
+            // Held on trust: neither income nor spending, so no rollup counts it.
+            type: "LOAN",
+            dayKey,
+            sourceModule: "AMANAT",
+            sourceId: ref.id,
+            sourceLabel: `Amanat received — ${party}`,
+            groupId: null,
+            status: "POSTED",
+            note: purpose ?? notes ?? null,
+            createdByUid: current?.createdByUid ?? auth.uid,
+            createdByName: current?.createdByName ?? byName,
+            createdAt: current?.createdAt ?? FieldValue.serverTimestamp(),
+          });
+        }
+
+        payload.depositAccountId = accountId;
+        payload.depositAccountName = accountName;
+      } else {
+        payload.depositAccountId = null;
+        payload.depositAccountName = null;
+      }
+
+      t.set(ref, payload, { merge: true });
+      return moved;
+    });
+
+    await bumpBalances(deltas);
+    return { id: ref.id, name: `${party}` };
   });
 }
 
@@ -135,7 +235,7 @@ export async function payAmanatExpenseThroughAccounts(
 
     const dayKey = dayOrNull(input.dayKey) ?? karachiDayKey();
     const note = (input.note ?? "").trim() || null;
-    const groupId = adminDb.collection("transactions").doc().id;
+    const groupId = adminDb.collection(TRANSACTIONS).doc().id;
     const ref = adminDb.collection(ENTRIES).doc(entryId);
 
     const result = await adminDb.runTransaction(async (t) => {
@@ -151,7 +251,7 @@ export async function payAmanatExpenseThroughAccounts(
       if (!check.valid) throw new UserFacingError(check.errors[0]);
 
       const accountSnaps = await Promise.all(
-        allocations.map((a) => t.get(adminDb.collection("accounts").doc(a.accountId)))
+        allocations.map((a) => t.get(adminDb.collection(ACCOUNTS).doc(a.accountId)))
       );
       const accountNameMap = new Map<string, string>();
       for (const account of accountSnaps) {
@@ -179,7 +279,7 @@ export async function payAmanatExpenseThroughAccounts(
 
       for (const leg of legs) {
         const { idempotencyKey, ...row } = leg;
-        t.create(adminDb.collection("transactions").doc(), {
+        t.create(adminDb.collection(TRANSACTIONS).doc(), {
           ...row,
           idempotencyKey,
           createdByName: auth.name ?? auth.email ?? null,
@@ -213,17 +313,50 @@ export async function payAmanatExpenseThroughAccounts(
       };
     });
 
+    // These rows were posted without moving the balances before; the screen's
+    // own figure was right (it is derived), the cached one drifted.
+    await bumpBalances(new Map(allocations.map((line) => [line.accountId, -line.amount])));
     return result;
   });
 }
 
-export async function deleteAmanatEntry(token: string, entryId: string): Promise<ActionResult> {
+/**
+ * Deletes an entry **and the ledger rows it caused**, putting each account's
+ * balance back.
+ *
+ * Deleting a receipt takes its money out of the account that held it; if that
+ * money has since been spent the account goes negative, which is the true
+ * state — it paid for things with money that is no longer recorded as received.
+ */
+export async function deleteAmanatEntry(
+  token: string,
+  entryId: string
+): Promise<ActionResult<{ removed: number }>> {
   return runAction("deleteAmanatEntry", async () => {
     await requireFinance(token);
     const ref = adminDb.collection(ENTRIES).doc(entryId);
-    const snap = await ref.get();
-    if (!snap.exists) return;
 
-    await ref.delete();
+    const { deltas, removed } = await adminDb.runTransaction(async (t) => {
+      const snap = await t.get(ref);
+      const legs = await t.get(legsOf(entryId));
+      const moved = new Map<string, number>();
+
+      for (const doc of legs.docs) {
+        const leg = doc.data();
+        if (leg.status === "POSTED") {
+          // The opposite of what the row contributed. A reversed row and its
+          // reversal are both here and cancel, as they did on the statement.
+          const effect = leg.direction === "IN" ? money(leg.amount) : -money(leg.amount);
+          const accountId = String(leg.accountId);
+          moved.set(accountId, Math.round(((moved.get(accountId) ?? 0) - effect) * 100) / 100);
+        }
+        t.delete(doc.ref);
+      }
+      if (snap.exists) t.delete(ref);
+      return { deltas: moved, removed: legs.size };
+    });
+
+    await bumpBalances(deltas);
+    return { removed };
   });
 }
