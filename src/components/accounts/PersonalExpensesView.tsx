@@ -41,6 +41,7 @@ import { usePagination } from "@/hooks/usePagination";
 import { Pager } from "@/components/employees/DossierControls";
 import { PayFromAccounts } from "./PayFromAccounts";
 import { PayPeriodTotal } from "./PayPeriodTotal";
+import { PaymentsPanel, type PaymentLine } from "./PaymentsPanel";
 import { monthLabel } from "@/lib/groupFinance";
 
 const monthName = (dayKey: string) => monthLabel(dayKey.slice(0, 7));
@@ -183,6 +184,7 @@ export function PersonalExpensesView() {
   const [paying, setPaying] = useState<Expense | null>(null);
   const [deleting, setDeleting] = useState<{ expense: Expense; payments: number; total: number } | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
+  const [showingPayments, setShowingPayments] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -256,9 +258,43 @@ export function PersonalExpensesView() {
       { label: "This Month", value: formatMoney(summary.month), note: "your own spending", pill: null, pct: pct(summary.month), color: "#141f1e", accent: "#4fa39c", icon: ICON.calendar },
       // **The figure this screen exists for**: money still out of pocket.
       { label: "Not Paid Back", value: formatMoney(summary.unpaid), note: summary.unpaid > 0 ? `${summary.unpaidCount} still owed to you` : "everything is paid back", pill: summary.unpaid > 0 ? "Owed" : "Clear", tone: summary.unpaid > 0 ? "warn" : "good", pct: pct(summary.unpaid), color: summary.unpaid > 0 ? "#a5762a" : "#2f7d78", accent: "#c99a2e", icon: ICON.clock },
-      { label: "Paid Back", value: formatMoney(summary.paid), note: `${pct(summary.paid)}% of what you spent`, pill: `${pct(summary.paid)}%`, tone: "good", pct: pct(summary.paid), color: "#2f7d78", accent: "#2f7d78", icon: ICON.check },
+      {
+        label: "Paid Back", value: formatMoney(summary.paid),
+        note: canPay ? "open to see which account paid, or reverse" : `${pct(summary.paid)}% of what you spent`,
+        pill: `${pct(summary.paid)}%`, tone: "good", pct: pct(summary.paid), color: "#2f7d78", accent: "#2f7d78", icon: ICON.check,
+        onClick: canPay ? () => setShowingPayments(true) : undefined,
+      },
     ];
-  }, [summary]);
+  }, [summary, canPay]);
+
+  /**
+   * Every payment against an expense in the period, reversed ones included —
+   * the Paid Back card opens this list.
+   */
+  const paymentLines = useMemo<PaymentLine[]>(() => {
+    const byId = new Map(inRange.map((expense) => [expense.id, expense]));
+    const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
+    const lines: PaymentLine[] = [];
+    for (const txn of ledger.transactions) {
+      if (txn.sourceModule !== "PERSONAL_EXPENSE" || !txn.sourceId || txn.direction !== "OUT" || txn.reversalOf) continue;
+      const expense = byId.get(txn.sourceId);
+      if (!expense) continue;
+      lines.push({
+        id: txn.id,
+        accountId: txn.accountId,
+        accountName: names.get(txn.accountId) ?? "A deleted account",
+        amount: txn.amount,
+        dayKey: txn.dayKey,
+        expenseTitle: expense.title,
+        expenseDayKey: expense.dayKey,
+        note: txn.note ?? null,
+        by: txn.createdByName ?? null,
+        reversed: Boolean(txn.reversedBy),
+        reversedByName: txn.reversedByName ?? null,
+      });
+    }
+    return lines;
+  }, [inRange, ledger.transactions, ledger.accounts]);
 
   /** The payments made against each expense, by the expense they paid. */
   const legsByExpense = useMemo(() => {
@@ -266,6 +302,8 @@ export function PersonalExpensesView() {
     const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
     for (const txn of ledger.transactions) {
       if (txn.sourceModule !== "PERSONAL_EXPENSE" || !txn.sourceId) continue;
+      // A reversed payment and its reversal cancel; neither funds the expense now.
+      if (txn.reversedBy || txn.reversalOf) continue;
       const list = map.get(txn.sourceId) ?? [];
       list.push({
         id: txn.id,
@@ -516,6 +554,18 @@ export function PersonalExpensesView() {
       />
 
       {isMobile && <FloatingAdd onClick={() => setAdding(true)} label="Add expense" />}
+
+      {showingPayments && (
+        <PaymentsPanel
+          title="Paid back"
+          subtitle={`Personal expenses · ${from} → ${to}`}
+          payments={paymentLines}
+          isMobile={isMobile}
+          getIdToken={getIdToken}
+          onClose={() => setShowingPayments(false)}
+          onDone={(text) => { setBanner({ ok: true, text }); setShowingPayments(false); }}
+        />
+      )}
 
       {openedExpense && (
         <OverlayPanel

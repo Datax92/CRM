@@ -158,6 +158,7 @@ export const HISTORY_LABELS: Record<string, string> = {
   EDITED: 'Edited',
   PAID: 'Paid',
   PAYMENT_REMOVED: 'Payment removed',
+  PAYMENT_REVERSED: 'Payment reversed',
   STATUS_APPROVED: 'Approved',
   STATUS_REJECTED: 'Rejected',
   STATUS_PENDING: 'Moved back to pending',

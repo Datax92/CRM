@@ -360,6 +360,8 @@ export function OfficeExpensesView({ isAdmin: routeIsAdmin }: { isAdmin: boolean
     const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
     for (const txn of ledger.transactions) {
       if (txn.sourceModule !== "OFFICE_EXPENSE" || !txn.sourceId) continue;
+      // A reversed payment and its reversal cancel; neither funds the expense now.
+      if (txn.reversedBy || txn.reversalOf) continue;
       const list = map.get(txn.sourceId) ?? [];
       list.push({
         id: txn.id,

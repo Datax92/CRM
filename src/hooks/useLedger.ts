@@ -44,6 +44,9 @@ export interface TransactionDoc extends Omit<LedgerTransaction, 'id'> {
   createdByName?: string | null;
   createdAt?: FirestoreTimestamp;
   voidedByName?: string | null;
+  reversedByName?: string | null;
+  /** Previous values, appended by every edit (`updateTransaction`). */
+  history?: { at: string; action: string; byName?: string | null; previous?: Record<string, unknown> }[];
 }
 
 /** Guards against an unbounded read once the ledger has years in it. */

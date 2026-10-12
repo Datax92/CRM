@@ -44,7 +44,9 @@ import {
   saveCapitalSpending,
   deleteCapitalSpending,
   countCapitalSpendingPayments,
+  listDeletedForAccount,
 } from "@/lib/clientActions";
+import type { DeletedLedgerRow } from "@/app/actions/ledger";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { readHistoryEntry, readPaid, HISTORY_LABELS } from "@/lib/officeExpenses";
 import {
@@ -362,6 +364,31 @@ function PotList({ pots, byPot, loading, ready, getIdToken, isMobile }: {
 
 type Ledger = ReturnType<typeof useLedger>;
 
+/** A row's edit trail, in words: what each field was before the change. */
+function txnHistory(txn: TransactionDoc): { at: string; action: string; by: string | null; detail: string | null; amount: number | null }[] {
+  const created = { at: stamp(txnCreatedIso(txn)), action: "Recorded", by: txn.createdByName ?? null, detail: null, amount: null };
+  const edits = (txn.history ?? []).map((entry) => {
+    const prev = entry.previous ?? {};
+    const parts: string[] = [];
+    if (prev.amount !== undefined) parts.push(`amount was ${formatMoney(Number(prev.amount) || 0)}`);
+    if (prev.sourceLabel !== undefined) parts.push(`description was "${String(prev.sourceLabel ?? "")}"`);
+    if (prev.dayKey !== undefined) parts.push(`date was ${String(prev.dayKey)}`);
+    if (prev.note !== undefined) parts.push(prev.note ? `note was "${String(prev.note)}"` : "had no note");
+    return { at: stamp(entry.at), action: entry.action === "EDITED" ? "Edited" : entry.action, by: entry.byName ?? null, detail: parts.join(" · ") || null, amount: null };
+  });
+  return [created, ...edits];
+}
+
+function txnCreatedIso(txn: TransactionDoc): string {
+  const raw = txn.createdAt as unknown;
+  if (raw && typeof raw === "object") {
+    const value = raw as { toDate?: () => Date; seconds?: number };
+    if (typeof value.toDate === "function") return value.toDate().toISOString();
+    if (typeof value.seconds === "number") return new Date(value.seconds * 1000).toISOString();
+  }
+  return typeof raw === "string" ? raw : "";
+}
+
 function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, onBack }: {
   pot: Ledger["accounts"][number];
   ledger: Ledger;
@@ -371,7 +398,11 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   isMobile: boolean;
   onBack: () => void;
 }) {
-  const [tab, setTab] = useState<"SPENDINGS" | "RECEIVED">("SPENDINGS");
+  const [tab, setTab] = useState<"SPENDINGS" | "RECEIVED" | "REMOVED">("SPENDINGS");
+  const [removed, setRemoved] = useState<DeletedLedgerRow[] | null>(null);
+  const [removedError, setRemovedError] = useState<string | null>(null);
+  const [editingContribution, setEditingContribution] = useState<TransactionDoc | null>(null);
+  const [openedContribution, setOpenedContribution] = useState<TransactionDoc | null>(null);
   const [addingSpending, setAddingSpending] = useState(false);
   const [editingSpending, setEditingSpending] = useState<Spending | null>(null);
   const [editingDirectTxn, setEditingDirectTxn] = useState<TransactionDoc | null>(null);
@@ -471,6 +502,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     setBusyId(null);
     setDeleting(null);
     setOpened(null);
+    setRemoved(null);
     setBanner(result.ok
       ? { ok: true, text: result.data.removedPayments > 0
           ? `"${deleting.spending.title}" deleted, and ${formatMoney(result.data.restored)} put back into ${result.data.removedPayments} account${result.data.removedPayments === 1 ? "" : "s"}.`
@@ -485,6 +517,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     setBusyId(null);
     setDeletingDirectTxn(null);
     setOpenedDirectTxn(null);
+    setRemoved(null);
     setBanner(
       result.ok
         ? { ok: true, text: `"${deletingDirectTxn.sourceLabel ?? "Spending"}" deleted, and ${formatMoney(deletingDirectTxn.amount)} put back into ${pot.name}.` }
@@ -492,12 +525,22 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     );
   };
 
+  /** Every row removed from this pot, read on demand from the archive. */
+  const loadRemoved = useCallback(async () => {
+    setRemovedError(null);
+    const result = await listDeletedForAccount(await getIdToken(), pot.id);
+    if (result.ok) setRemoved(result.data);
+    else setRemovedError(result.error);
+  }, [getIdToken, pot.id]);
+
   const removeContribution = async () => {
     if (!removingContribution) return;
     setBusyId(removingContribution.id);
     const result = await deleteTransaction(await getIdToken(), removingContribution.id);
     setBusyId(null);
     setRemovingContribution(null);
+    setOpenedContribution(null);
+    setRemoved(null);
     setBanner(result.ok
       ? { ok: true, text: `${formatMoney(removingContribution.amount)} removed from ${pot.name}.` }
       : { ok: false, text: result.error });
@@ -618,6 +661,20 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     };
   });
 
+  /*
+    **Only a manual contribution may be edited or removed here.** A money-in row
+    that came from another module — a StateLife slab received into this pot —
+    belongs to that module's record, and changing it from this side would leave
+    the two disagreeing.
+  */
+  function contributionActions(txn: TransactionDoc): RowAction[] {
+    if (txn.sourceModule !== "MANUAL") return [];
+    return [
+      { key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setEditingContribution(txn) },
+      { key: "remove", label: "Remove", d: ICON.trash, tone: "bad", onClick: () => setRemovingContribution({ id: txn.id, label: txn.sourceLabel ?? "Money in", amount: txn.amount }), disabled: busyId === txn.id },
+    ];
+  }
+
   const contributionRows: ExpenseRowModel[] = contributions
     .slice()
     .sort((a, b) => b.dayKey.localeCompare(a.dayKey))
@@ -630,20 +687,30 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       status: { label: "Received", tone: TONE.good },
       payment: null,
       notes: txn.note ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{txn.note}</span></div> : null,
-      /*
-        **Only a manual contribution may be removed here.** A money-in row that
-        came from another module — a StateLife slab received into this pot —
-        belongs to that module's record, and deleting it from this side would
-        leave the policy insisting it had been paid.
-      */
-      actions: txn.sourceModule === "MANUAL"
-        ? [{ key: "remove", label: "Remove", d: ICON.trash, tone: "bad" as const, onClick: () => setRemovingContribution({ id: txn.id, label: txn.sourceLabel ?? "Money in", amount: txn.amount }), disabled: busyId === txn.id }]
-        : [],
-      onOpen: () => { /* A contribution is one line; there is nothing more to open. */ },
+      actions: contributionActions(txn),
+      onOpen: () => setOpenedContribution(txn),
     }));
 
+  const removedRows: ExpenseRowModel[] = (removed ?? []).map((row) => ({
+    id: row.id,
+    title: row.label ?? "Removed entry",
+    meta: [
+      row.dayKey,
+      row.direction === "IN" ? "Money in" : row.direction === "OUT" ? "Spending" : null,
+      row.deletedAt ? `removed ${stamp(row.deletedAt)}` : "removed",
+      row.deletedByName ? `by ${row.deletedByName}` : null,
+    ].filter(Boolean).join(" · "),
+    amount: row.amount,
+    category: "Salaries",
+    status: { label: "Removed", tone: TONE.bad },
+    payment: null,
+    notes: row.note ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{row.note}</span></div> : null,
+    actions: [],
+    onOpen: () => { /* A removed row is kept for the record; nothing to act on. */ },
+  }));
+
   const openedSpending = opened ? spendings.find((spending) => spending.id === opened) ?? null : null;
-  const rows = tab === "SPENDINGS" ? spendingRows : contributionRows;
+  const rows = tab === "SPENDINGS" ? spendingRows : tab === "RECEIVED" ? contributionRows : removedRows;
   const page = usePagination(rows, 12);
 
   const statCards: StatCard[] = [
@@ -720,24 +787,37 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         chips={[
           { label: `Spendings (${spendingRows.length})`, active: tab === "SPENDINGS", pick: () => setTab("SPENDINGS") },
           { label: `Money in (${contributions.length})`, active: tab === "RECEIVED", pick: () => setTab("RECEIVED") },
+          {
+            label: removed ? `Removed (${removed.length})` : "Removed",
+            active: tab === "REMOVED",
+            pick: () => { setTab("REMOVED"); if (!removed) void loadRemoved(); },
+          },
         ]}
       />
 
+      {tab === "REMOVED" && (
+        <p style={{ fontSize: 12, color: removedError ? "#a33a29" : X.faint, fontWeight: 600, lineHeight: 1.6 }}>
+          {removedError ?? "Everything removed from this pot is kept here with who removed it and when. It no longer counts in the figures above."}
+        </p>
+      )}
+
       <ExpenseList
-        heading={tab === "SPENDINGS" ? "Spendings" : "Money in"}
+        heading={tab === "SPENDINGS" ? "Spendings" : tab === "RECEIVED" ? "Money in" : "Removed"}
         count={`${rows.length}`}
-        total={tab === "SPENDINGS" ? figures.cost : figures.received}
+        total={tab === "SPENDINGS" ? figures.cost : tab === "RECEIVED" ? figures.received : removedRows.reduce((sum, row) => sum + row.amount, 0)}
         rows={page.items}
         isMobile={isMobile}
-        loading={loading || ledger.loading}
+        loading={loading || ledger.loading || (tab === "REMOVED" && !removed && !removedError)}
         empty={tab === "SPENDINGS"
           ? "Nothing spent on this yet. Add a spending, then choose which account pays it."
-          : "Nothing put in yet. Add money in to start the pot."}
+          : tab === "RECEIVED"
+            ? "Nothing put in yet. Add money in to start the pot."
+            : "Nothing has been removed from this pot."}
         formatMoney={formatMoney}
         pager={<Pager pagination={page} variant={isMobile ? "mobile" : "web"} noun={tab === "SPENDINGS" ? "spendings" : "entries"} />}
       />
 
-      {isMobile && (
+      {isMobile && tab !== "REMOVED" && (
         <FloatingAdd
           onClick={() => (tab === "SPENDINGS" ? setAddingSpending(true) : setAddingContribution(true))}
           label={tab === "SPENDINGS" ? "Add spending" : "Add money in"}
@@ -824,7 +904,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
                 },
               ]}
               notFunded=""
-              history={[]}
+              history={txnHistory(openedDirectTxn)}
               actions={buildDirectActions(openedDirectTxn).map((action) => (
                 <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
                   disabled={action.disabled}
@@ -855,6 +935,48 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
           getIdToken={getIdToken}
           onClose={() => setEditingDirectTxn(null)}
           onSaved={(text) => { setBanner({ ok: true, text }); setEditingDirectTxn(null); }}
+        />
+      )}
+
+      {openedContribution && (
+        <OverlayPanel
+          title={openedContribution.sourceLabel ?? "Money in"}
+          subtitle={`${pot.name} · ${openedContribution.dayKey}`}
+          maxWidth={620}
+          onClose={() => setOpenedContribution(null)}
+        >
+          <ExpenseDetail
+            title={openedContribution.sourceLabel ?? "Money in"}
+            amountLabel={formatMoney(openedContribution.amount)}
+            formatMoney={formatMoney}
+            status={{ label: "Received", tone: TONE.good }}
+            payment={null}
+            fields={[
+              { label: "Investment", value: pot.name },
+              { label: "Date", value: openedContribution.dayKey },
+              { label: "Amount", value: formatMoney(openedContribution.amount) },
+              { label: "Note", value: openedContribution.note ?? "—", wide: true },
+              ...(openedContribution.createdByName ? [{ label: "Recorded by", value: openedContribution.createdByName }] : []),
+            ]}
+            legs={[]}
+            notFunded=""
+            history={txnHistory(openedContribution)}
+            actions={contributionActions(openedContribution).map((action) => (
+              <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
+                disabled={action.disabled}
+                onClick={() => { setOpenedContribution(null); action.onClick(); }} />
+            ))}
+          />
+        </OverlayPanel>
+      )}
+
+      {editingContribution && (
+        <ContributionForm
+          existing={editingContribution}
+          pot={pot}
+          getIdToken={getIdToken}
+          onClose={() => setEditingContribution(null)}
+          onSaved={(text) => { setBanner({ ok: true, text }); setEditingContribution(null); }}
         />
       )}
 
@@ -921,7 +1043,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
             <strong style={{ color: X.ink }}>{deletingDirectTxn.sourceLabel ?? "Spending"}</strong> · {formatMoney(deletingDirectTxn.amount)} · {deletingDirectTxn.dayKey}
           </p>
           <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
-            Deleting this removes the entry and restores {formatMoney(deletingDirectTxn.amount)} back into {pot.name}. This cannot be undone.
+            Deleting this removes the entry and restores {formatMoney(deletingDirectTxn.amount)} back into {pot.name}. A copy is kept under Removed, with who removed it and when.
           </p>
         </OverlayPanel>
       )}
@@ -942,7 +1064,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
             <strong style={{ color: X.ink }}>{removingContribution.label}</strong> · {formatMoney(removingContribution.amount)}
           </p>
           <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
-            {pot.name} goes down by {formatMoney(removingContribution.amount)}. This cannot be undone.
+            {pot.name} goes down by {formatMoney(removingContribution.amount)}. A copy is kept under Removed, with who removed it and when.
           </p>
         </OverlayPanel>
       )}
@@ -1047,16 +1169,19 @@ function PotForm({ pot, getIdToken, onClose, onSaved }: {
   );
 }
 
-function ContributionForm({ pot, getIdToken, onClose, onSaved }: {
+function ContributionForm({ existing, pot, getIdToken, onClose, onSaved }: {
+  /** Present: edits this row in place (`updateTransaction`, previous values kept). */
+  existing?: TransactionDoc;
   pot: Ledger["accounts"][number];
   getIdToken: () => Promise<string>;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
   const isMobile = useIsMobile();
-  const [amount, setAmount] = useState("");
-  const [label, setLabel] = useState("");
-  const [dayKey, setDayKey] = useState(karachiDayKey());
+  const [amount, setAmount] = useState(existing ? String(existing.amount) : "");
+  const [label, setLabel] = useState(existing?.sourceLabel ?? "");
+  const [dayKey, setDayKey] = useState(existing?.dayKey ?? karachiDayKey());
+  const [note, setNote] = useState(existing?.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const field = { ...designField, fontSize: isMobile ? 16 : 13.5 };
@@ -1064,24 +1189,33 @@ function ContributionForm({ pot, getIdToken, onClose, onSaved }: {
   const save = async () => {
     setBusy(true);
     setError(null);
-    const result = await addManualTransaction(await getIdToken(), {
-      accountId: pot.id, direction: "IN", amount: Number(amount) || 0,
-      type: "INVESTMENT", dayKey, label,
-    });
+    const token = await getIdToken();
+    const result = existing
+      ? await updateTransaction(token, existing.id, {
+          amount: Number(amount) || 0, label: label.trim(), dayKey, note: note.trim() || null,
+        })
+      : await addManualTransaction(token, {
+          accountId: pot.id, direction: "IN", amount: Number(amount) || 0,
+          type: "INVESTMENT", dayKey, label, note: note.trim() || null,
+        });
     setBusy(false);
-    if (result.ok) onSaved(`${formatMoney(Number(amount) || 0)} added to ${pot.name}.`);
-    else setError(result.error);
+    if (!result.ok) { setError(result.error); return; }
+    if (!existing) { onSaved(`${formatMoney(Number(amount) || 0)} added to ${pot.name}.`); return; }
+    const diff = (Number(amount) || 0) - existing.amount;
+    onSaved(diff === 0
+      ? `"${label.trim()}" updated. The previous values are kept in its history.`
+      : `"${label.trim()}" updated — ${pot.name} ${diff > 0 ? "up" : "down"} by ${formatMoney(Math.abs(diff))}. The previous values are kept in its history.`);
   };
 
   return (
-    <OverlayPanel title="Add money in" subtitle={pot.name} icon={<Wallet2 size={18} />} maxWidth={480} onClose={onClose}
+    <OverlayPanel title={existing ? "Edit money in" : "Add money in"} subtitle={pot.name} icon={<Wallet2 size={18} />} maxWidth={480} onClose={onClose}
       footer={
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
           <button type="button" onClick={onClose}
             style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
           <button type="button" disabled={busy || !label.trim() || !(Number(amount) > 0)} onClick={() => void save()}
             style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy ? 0.5 : 1 }}>
-            {busy ? "Adding…" : "Add"}
+            {busy ? (existing ? "Saving…" : "Adding…") : existing ? "Save changes" : "Add"}
           </button>
         </div>
       }>
@@ -1099,8 +1233,17 @@ function ContributionForm({ pot, getIdToken, onClose, onSaved }: {
             <span>Date</span>
             <input type="date" value={dayKey} max={karachiDayKey()} onChange={(event) => setDayKey(event.target.value)} style={field} />
           </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1", ...designLabel }}>
+            <span>Note</span>
+            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Details or notes…" style={field} />
+          </label>
         </div>
       </OverlayCard>
+      {existing && (
+        <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+          {pot.name} moves by the difference. The old amount, description, date and note are kept in this entry&apos;s history.
+        </p>
+      )}
       {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
     </OverlayPanel>
   );

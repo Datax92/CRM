@@ -39,6 +39,7 @@ import {
   type TransactionType,
 } from "@/lib/ledger";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
+import { archiveInBatch, DELETED_RECORDS } from "@/lib/server/deletedArchive";
 
 const ACCOUNTS = "accounts";
 const TRANSACTIONS = "transactions";
@@ -656,6 +657,94 @@ export async function reverseTransaction(
   });
 }
 
+/**
+ * Reverses payments made against expenses, and makes the expenses payable again.
+ *
+ * The owner's case: an expense was paid from a temporary account, and now the
+ * income has arrived to pay it properly. **Nothing is deleted.** Each payment
+ * stays posted on the account that made it, marked reversed, and an equal
+ * opposite leg puts the money back into that same account on today's date — so
+ * the account's statement still shows both, and its balance is restored. The
+ * expense's `paidAmount` comes down by the amount and its history says which
+ * account's payment was reversed, so it can be paid again from anywhere.
+ *
+ * Only an outgoing payment against a record (office or personal expense,
+ * capital spending, payroll) or a hand-typed spending is accepted; a reversal
+ * leg, or a payment already reversed, is refused rather than undone twice.
+ */
+export async function reversePayments(
+  token: string,
+  transactionIds: string[],
+  note?: string | null
+): Promise<ActionResult<{ reversed: number; amount: number; skipped: number }>> {
+  return runAction("reversePayments", async () => {
+    const auth = await requireFinance(token);
+    const ids = [...new Set((transactionIds ?? []).filter(Boolean))];
+    if (ids.length === 0) throw new UserFacingError("Choose at least one payment to reverse.");
+    if (ids.length > 200) throw new UserFacingError("Reverse at most 200 payments at once.");
+
+    const names = new Map<string, string>();
+    let reversed = 0;
+    let amount = 0;
+    let skipped = 0;
+    const dayKey = karachiDayKey();
+    const why = (note ?? "").trim() || null;
+
+    for (const id of ids) {
+      const ref = adminDb.collection(TRANSACTIONS).doc(id);
+      const reversalRef = adminDb.collection(TRANSACTIONS).doc();
+
+      // In a transaction, so two people pressing Reverse at once reverse it once.
+      const done = await adminDb.runTransaction(async (t: Transaction) => {
+        const snap = await t.get(ref);
+        if (!snap.exists) return null;
+        const original = { id: snap.id, ...snap.data() } as LedgerTransaction;
+        if ((original.status ?? "POSTED") !== "POSTED" || original.reversedBy || original.reversalOf) return null;
+        if (original.direction !== "OUT") return null;
+        const fromModule = original.sourceModule as SourceModule;
+        if (fromModule !== "MANUAL" && !SOURCE_COLLECTIONS[fromModule]) return null;
+
+        const reversal = reversalOf(original, { dayKey, createdByUid: auth.uid, note: why });
+        t.update(ref, {
+          reversedBy: reversalRef.id,
+          reversedAt: FieldValue.serverTimestamp(),
+          reversedByUid: auth.uid,
+          reversedByName: auth.name ?? auth.email ?? null,
+        });
+        t.create(reversalRef, {
+          ...reversal,
+          createdByName: auth.name ?? auth.email ?? null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return original;
+      });
+
+      if (!done) { skipped += 1; continue; }
+      const value = money(done.amount);
+      await bumpBalance(done.accountId, value);
+
+      if (!names.has(done.accountId)) {
+        const account = await adminDb.collection(ACCOUNTS).doc(done.accountId).get();
+        names.set(done.accountId, (account.data()?.name as string) ?? "an account");
+      }
+      await unpaySource(done.sourceModule as SourceModule, done.sourceId ?? null, value, {
+        accountId: done.accountId,
+        direction: "OUT",
+      }, {
+        action: "PAYMENT_REVERSED",
+        note: `Payment from ${names.get(done.accountId)} reversed — the money went back into that account.${why ? ` ${why}` : ""}`,
+        byUid: auth.uid,
+        byName: auth.name ?? auth.email ?? null,
+      });
+      reversed += 1;
+      amount += value;
+    }
+
+    if (reversed === 0) throw new UserFacingError("Those payments were already reversed, or cannot be reversed here.");
+    return { reversed, amount: Math.round(amount * 100) / 100, skipped };
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Editing and deleting                                                        */
 /* -------------------------------------------------------------------------- */
@@ -730,7 +819,13 @@ export async function updateTransaction(
       previous.dayKey = current.dayKey;
       patch.dayKey = input.dayKey;
     }
-    if (input.note !== undefined) patch.note = (input.note ?? "").trim() || null;
+    if (input.note !== undefined) {
+      const note = (input.note ?? "").trim() || null;
+      if (note !== (current.note ?? null)) {
+        previous.note = current.note ?? null;
+        patch.note = note;
+      }
+    }
 
     if (Object.keys(previous).length > 0) {
       patch.history = FieldValue.arrayUnion({
@@ -763,7 +858,7 @@ export async function updateTransaction(
  */
 export async function deleteTransaction(token: string, transactionId: string): Promise<ActionResult> {
   return runAction("deleteTransaction", async () => {
-    await requireFinance(token);
+    const auth = await requireFinance(token);
 
     const ref = adminDb.collection(TRANSACTIONS).doc(transactionId);
     const snap = await ref.get();
@@ -771,8 +866,17 @@ export async function deleteTransaction(token: string, transactionId: string): P
 
     const txn = snap.data()!;
     const amount = money(txn.amount);
+    if (txn.reversedBy || txn.reversalOf) {
+      // Deleting either half of a reversal would move the balance and the
+      // expense a second time. The pair is the record of what happened.
+      throw new UserFacingError("This payment was reversed. Both rows are kept as the record of it and cannot be deleted.");
+    }
 
-    await ref.delete();
+    // The row leaves the statement; a whole copy of it is kept (deletedArchive).
+    const batch = adminDb.batch();
+    archiveInBatch(batch, snap, auth, "TRANSACTION_DELETED");
+    batch.delete(ref);
+    await batch.commit();
 
     if (txn.status === "POSTED") {
       // Undo its effect on the balance: the opposite of what it contributed.
@@ -818,7 +922,9 @@ async function unpaySource(
   sourceId: string | null,
   amount: number,
   /** The row being removed, for the modules that need to know which one it was. */
-  leg?: { accountId: string; direction: "IN" | "OUT" }
+  leg?: { accountId: string; direction: "IN" | "OUT" },
+  /** How the history line reads; a deletion when absent. */
+  line?: { action: string; note: string; byUid?: string; byName?: string | null }
 ): Promise<void> {
   // Amanat: a payment row removed makes the expense payable again; the row
   // holding a receipt removed leaves the receipt held in no account. Either
@@ -868,9 +974,10 @@ async function unpaySource(
       accountSettled: Math.max(0, money(data.accountSettled) - amount),
       history: FieldValue.arrayUnion({
         at: new Date().toISOString(),
-        action: "PAYMENT_REMOVED",
+        action: line?.action ?? "PAYMENT_REMOVED",
         amount,
-        note: "A movement was deleted from its account.",
+        note: line?.note ?? "A movement was deleted from its account.",
+        ...(line?.byUid ? { byUid: line.byUid, byName: line.byName ?? null } : {}),
       }),
     });
     return;
@@ -893,9 +1000,10 @@ async function unpaySource(
     paidAt: paid >= payable ? (record.paidAt ?? null) : null,
     history: FieldValue.arrayUnion({
       at: new Date().toISOString(),
-      action: "PAYMENT_REMOVED",
+      action: line?.action ?? "PAYMENT_REMOVED",
       amount,
-      note: "A funding movement was deleted from its account.",
+      note: line?.note ?? "A funding movement was deleted from its account.",
+      ...(line?.byUid ? { byUid: line.byUid, byName: line.byName ?? null } : {}),
     }),
   });
 }
@@ -915,10 +1023,11 @@ async function unpaySource(
  */
 export async function deleteAccount(token: string, accountId: string): Promise<ActionResult<{ deleted: number }>> {
   return runAction("deleteAccount", async () => {
-    await requireAdmin(token);
+    const admin = await requireAdmin(token);
 
     const ref = adminDb.collection(ACCOUNTS).doc(accountId);
-    if (!(await ref.get()).exists) throw new UserFacingError("That account no longer exists.");
+    const accountSnap = await ref.get();
+    if (!accountSnap.exists) throw new UserFacingError("That account no longer exists.");
 
     /**
      * **Deleting the account deletes its statement, and un-pays what those
@@ -950,12 +1059,18 @@ export async function deleteAccount(token: string, accountId: string): Promise<A
       }
 
       const batch = adminDb.batch();
-      for (const doc of page.docs) batch.delete(doc.ref);
+      for (const doc of page.docs) {
+        archiveInBatch(batch, doc, admin, "ACCOUNT_DELETED");
+        batch.delete(doc.ref);
+      }
       await batch.commit();
       deleted += page.size;
     }
 
-    await ref.delete();
+    const last = adminDb.batch();
+    archiveInBatch(last, accountSnap, admin, "ACCOUNT_DELETED");
+    last.delete(ref);
+    await last.commit();
     return { deleted };
   });
 }
@@ -991,4 +1106,59 @@ async function countsFor(accountId: string): Promise<{ total: number; linked: nu
   ]);
   const total = all.data().count;
   return { total, linked: Math.max(0, total - manual.data().count) };
+}
+
+/* -------------------------------------------------------------------------- */
+/* What was removed                                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface DeletedLedgerRow {
+  id: string;
+  docId: string;
+  reason: string;
+  deletedAt: string | null;
+  deletedByName: string | null;
+  direction: "IN" | "OUT" | null;
+  amount: number;
+  dayKey: string | null;
+  label: string | null;
+  note: string | null;
+  sourceModule: string | null;
+  createdByName: string | null;
+}
+
+/**
+ * Every row ever removed from an account's statement, newest first — so a
+ * delete is never the end of the trail. One equality filter, sorted here, so no
+ * index is needed.
+ */
+export async function listDeletedForAccount(
+  token: string,
+  accountId: string
+): Promise<ActionResult<DeletedLedgerRow[]>> {
+  return runAction("listDeletedForAccount", async () => {
+    await requireFinance(token);
+    const snap = await adminDb.collection(DELETED_RECORDS).where("accountId", "==", accountId).limit(500).get();
+    return snap.docs
+      .filter((doc) => doc.data().collection === TRANSACTIONS)
+      .map((doc): DeletedLedgerRow => {
+        const row = doc.data();
+        const data = (row.data ?? {}) as Record<string, unknown>;
+        return {
+          id: doc.id,
+          docId: String(row.docId ?? ""),
+          reason: String(row.reason ?? ""),
+          deletedAt: typeof row.deletedAtIso === "string" ? row.deletedAtIso : null,
+          deletedByName: (row.deletedByName as string | null) ?? null,
+          direction: data.direction === "IN" || data.direction === "OUT" ? data.direction : null,
+          amount: money(Number(data.amount) || 0),
+          dayKey: typeof data.dayKey === "string" ? data.dayKey : null,
+          label: typeof data.sourceLabel === "string" ? data.sourceLabel : null,
+          note: typeof data.note === "string" ? data.note : null,
+          sourceModule: typeof data.sourceModule === "string" ? data.sourceModule : null,
+          createdByName: typeof data.createdByName === "string" ? data.createdByName : null,
+        };
+      })
+      .sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? ""));
+  });
 }

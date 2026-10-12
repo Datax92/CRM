@@ -141,6 +141,8 @@ import {
   updateTransaction as _updateTransaction,
   deleteTransaction as _deleteTransaction,
   deleteAccount as _deleteAccount,
+  listDeletedForAccount as _listDeletedForAccount,
+  reversePayments as _reversePayments,
   countAccountContents as _countAccountContents,
   type AccountInput,
   type PayInput,
@@ -1301,6 +1303,14 @@ export async function updateTransaction(
 
 export async function deleteTransaction(token: string, transactionId: string) {
   return _deleteTransaction(token, transactionId);
+}
+
+export async function reversePayments(token: string, transactionIds: string[], note?: string | null) {
+  return _reversePayments(token, transactionIds, note);
+}
+
+export async function listDeletedForAccount(token: string, accountId: string) {
+  return _listDeletedForAccount(token, accountId);
 }
 
 export async function deleteAccount(token: string, accountId: string) {

@@ -716,19 +716,22 @@ export function summarize(transactions: LedgerTransaction[]): LedgerSummary {
   for (const txn of transactions) {
     if (!isPosted(txn)) continue;
     totals.netMovement += signedAmount(txn);
+    // A reversal leg carries its original's type; it takes the amount back out
+    // of that category rather than counting it a second time.
+    const counted = txn.reversalOf ? -txn.amount : txn.amount;
 
     switch (txn.type) {
       case 'INCOME':
-        totals.income += txn.amount;
+        totals.income += counted;
         break;
       case 'EXPENSE':
-        totals.expenses += txn.amount;
+        totals.expenses += counted;
         break;
       case 'INVESTMENT':
-        totals.investments += txn.amount;
+        totals.investments += counted;
         break;
       case 'REIMBURSEMENT':
-        totals.reimbursements += txn.amount;
+        totals.reimbursements += counted;
         break;
       case 'TRANSFER':
         if (txn.direction === 'IN') totals.transfersIn += txn.amount;
@@ -738,7 +741,7 @@ export function summarize(transactions: LedgerTransaction[]): LedgerSummary {
         // A debt settling: in net movement, and in nothing else.
         break;
       default:
-        totals.adjustments += txn.amount;
+        totals.adjustments += counted;
     }
   }
 

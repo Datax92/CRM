@@ -572,3 +572,14 @@ describe('paying a period total across many expenses', () => {
     assert.equal(distributeAcrossObligations(expenses, [{ accountId: 'bank', amount: 0 }]).valid, false);
   });
 });
+
+describe('a reversed payment', () => {
+  test('cancels in its category, not only in net movement', () => {
+    const paid = txn({ id: 'p', direction: 'OUT', amount: 4300, type: 'REIMBURSEMENT', sourceModule: 'PERSONAL_EXPENSE', sourceId: 'e1', reversedBy: 'r' });
+    const back = { ...reversalOf(paid, { dayKey: '2026-10-12', createdByUid: 'admin' }), id: 'r' } as LedgerTransaction;
+    assert.equal(back.direction, 'IN');
+    const totals = summarize([paid, back]);
+    assert.equal(totals.reimbursements, 0);
+    assert.equal(totals.netMovement, 0);
+  });
+});

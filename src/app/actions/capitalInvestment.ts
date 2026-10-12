@@ -42,6 +42,7 @@ import { karachiDayKey } from "@/lib/dates";
 import { money } from "@/lib/ledger";
 import { formatMoney } from "@/lib/money";
 import { FieldValue } from "firebase-admin/firestore";
+import { archiveInBatch } from "@/lib/server/deletedArchive";
 
 const SPENDINGS = "capitalSpendings";
 const ACCOUNTS = "accounts";
@@ -161,10 +162,11 @@ export async function deleteCapitalSpending(
   spendingId: string
 ): Promise<ActionResult<{ removedPayments: number; restored: number }>> {
   return runAction("deleteCapitalSpending", async () => {
-    await requireAdmin(token);
+    const admin = await requireAdmin(token);
 
     const ref = adminDb.collection(SPENDINGS).doc(spendingId);
-    if (!(await ref.get()).exists) throw new UserFacingError("That spending no longer exists.");
+    const spendingSnap = await ref.get();
+    if (!spendingSnap.exists) throw new UserFacingError("That spending no longer exists.");
 
     const legs = await adminDb
       .collection(TRANSACTIONS)
@@ -180,8 +182,10 @@ export async function deleteCapitalSpending(
       // An OUT leg took money away, so undoing it puts money back.
       const delta = row.direction === "OUT" ? money(row.amount) : -money(row.amount);
       restore.set(accountId, (restore.get(accountId) ?? 0) + delta);
+      archiveInBatch(batch, leg, admin, "CAPITAL_SPENDING_DELETED");
       batch.delete(leg.ref);
     }
+    archiveInBatch(batch, spendingSnap, admin, "CAPITAL_SPENDING_DELETED");
     batch.delete(ref);
     await batch.commit();
 
