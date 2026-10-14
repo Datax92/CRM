@@ -165,19 +165,21 @@ export default function LoginPage() {
           {/* Email Input */}
           <div className="space-y-1.5">
             <label htmlFor="email" className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
-              Email <span dir="rtl" className="text-xs font-normal text-slate-400">(ای میل)</span>
+              {IS_DEMO ? "Email or username" : "Email"} <span dir="rtl" className="text-xs font-normal text-slate-400">(ای میل)</span>
             </label>
             <div className="relative flex items-center group">
               <Mail className="absolute left-3.5 text-slate-400 group-focus-within:text-emerald-500 transition-colors" size={18} />
               <input
                 id="email"
-                type="email"
+                // The demo admin signs in as `demo`, which an email box refuses.
+                type={IS_DEMO ? "text" : "email"}
+                autoCapitalize="none"
                 required
                 autoComplete="username"
                 className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition-all focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email address"
+                placeholder={IS_DEMO ? "demo" : "Email address"}
               />
             </div>
           </div>
@@ -236,11 +238,25 @@ export default function LoginPage() {
           <p className="mt-1 opacity-70">(verified by an emailed code)</p>
         </div>
 
-        {/* Demo Accounts Helper - kept for development convenience */}
+        {/* Demo accounts — the admin first, as the client is told to use it. */}
         {IS_DEMO && (
           <div className="mt-8 space-y-2 border-t border-slate-100 pt-6">
-            <p className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-600">
-              <Info size={12} /> Demo accounts
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("demo");
+                setPassword(DEMO_PASSWORD);
+                setSelectedRole("admin");
+              }}
+              className="w-full rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-left transition-colors hover:bg-emerald-100"
+            >
+              <span className="block text-[11px] font-bold uppercase tracking-wider text-emerald-700">Demo admin</span>
+              <span className="block text-sm text-slate-700">
+                Username <b>demo</b> · Password <b>{DEMO_PASSWORD}</b>
+              </span>
+            </button>
+            <p className="flex items-center justify-center gap-1.5 pt-2 text-[11px] font-bold uppercase tracking-wider text-amber-600">
+              <Info size={12} /> Or see another role · password {DEMO_PASSWORD}
             </p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-2">
               {DEMO_ACCOUNTS.map((account) => (

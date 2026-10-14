@@ -73,6 +73,24 @@ import {
 } from "@/components/finance/expensesChrome";
 import { stamp } from "@/components/finance/OfficeExpensesView";
 
+/**
+ * Modules whose payments merely pass through the pot — they have their own
+ * screen and are not investment costs.  A reversal of any of them coming back
+ * IN is not a contribution either.
+ */
+const PASS_THROUGH_MODULES: ReadonlySet<string> = new Set([
+  'OFFICE_EXPENSE',
+  'PERSONAL_EXPENSE',
+  'PAYROLL',
+  'TRANSFER',
+  'RECEIVABLE',
+  'AMANAT',
+]);
+
+function isPassThrough(txn: { sourceModule: string; reversalOf?: string | null }): boolean {
+  return PASS_THROUGH_MODULES.has(txn.sourceModule) || Boolean(txn.reversalOf);
+}
+
 interface Spending {
   id: string;
   investmentId: string;
@@ -148,7 +166,7 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
       const entry = map.get(txn.accountId);
       if (!entry) continue;
       if (txn.direction === "IN") {
-        if (txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_")) {
+        if (txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_") && !isPassThrough(txn)) {
           entry.received += txn.amount;
         }
       } else {
@@ -164,7 +182,7 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
       entry.count += 1;
     }
     for (const txn of ledger.transactions) {
-      if (txn.direction !== "OUT" || txn.sourceModule === "CAPITAL_INVESTMENT") continue;
+      if (txn.direction !== "OUT" || txn.sourceModule === "CAPITAL_INVESTMENT" || isPassThrough(txn)) continue;
       const entry = map.get(txn.accountId);
       if (!entry) continue;
       entry.cost += txn.amount;
@@ -446,11 +464,11 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   }, [returns]);
 
   const contributions = useMemo(
-    () => movements.filter((txn) => txn.direction === "IN" && txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_")),
+    () => movements.filter((txn) => txn.direction === "IN" && txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_") && !isPassThrough(txn)),
     [movements]
   );
   const directSpendings = useMemo(
-    () => movements.filter((txn) => txn.direction === "OUT" && txn.sourceModule !== "CAPITAL_INVESTMENT"),
+    () => movements.filter((txn) => txn.direction === "OUT" && txn.sourceModule !== "CAPITAL_INVESTMENT" && !isPassThrough(txn)),
     [movements]
   );
 
@@ -564,7 +582,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
 
   const buildDirectActions = useCallback((txn: TransactionDoc): RowAction[] => {
     const actions: RowAction[] = [];
-    if (txn.sourceModule === "MANUAL") {
+    if (txn.sourceModule === "MANUAL" && !txn.reversedBy && !txn.reversalOf) {
       actions.push({
         key: "edit",
         label: "Edit",
@@ -668,7 +686,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     the two disagreeing.
   */
   function contributionActions(txn: TransactionDoc): RowAction[] {
-    if (txn.sourceModule !== "MANUAL") return [];
+    if (txn.sourceModule !== "MANUAL" || txn.reversedBy || txn.reversalOf) return [];
     return [
       { key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setEditingContribution(txn) },
       { key: "remove", label: "Remove", d: ICON.trash, tone: "bad", onClick: () => setRemovingContribution({ id: txn.id, label: txn.sourceLabel ?? "Money in", amount: txn.amount }), disabled: busyId === txn.id },
@@ -973,6 +991,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       {editingContribution && (
         <ContributionForm
           existing={editingContribution}
+          inHand={figures.inHand}
           pot={pot}
           getIdToken={getIdToken}
           onClose={() => setEditingContribution(null)}
@@ -1169,9 +1188,11 @@ function PotForm({ pot, getIdToken, onClose, onSaved }: {
   );
 }
 
-function ContributionForm({ existing, pot, getIdToken, onClose, onSaved }: {
+function ContributionForm({ existing, inHand = 0, pot, getIdToken, onClose, onSaved }: {
   /** Present: edits this row in place (`updateTransaction`, previous values kept). */
   existing?: TransactionDoc;
+  /** What the pot holds now, so an edit can say what it will hold after. */
+  inHand?: number;
   pot: Ledger["accounts"][number];
   getIdToken: () => Promise<string>;
   onClose: () => void;
@@ -1239,6 +1260,17 @@ function ContributionForm({ existing, pot, getIdToken, onClose, onSaved }: {
           </label>
         </div>
       </OverlayCard>
+      {existing && (() => {
+        const after = Math.round((inHand + (Number(amount) || 0) - existing.amount) * 100) / 100;
+        if ((Number(amount) || 0) === existing.amount) return null;
+        return (
+          <p style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.6, borderRadius: 10, padding: "9px 12px",
+            background: after < 0 ? "#fdf4e6" : "#e8f5f3", color: after < 0 ? "#8a6321" : X.deep }}>
+            Still in hand after this: {formatMoney(after)}
+            {after < 0 && ` — more has already been spent from ${pot.name} than this would leave put in. It will show as overdrawn.`}
+          </p>
+        );
+      })()}
       {existing && (
         <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
           {pot.name} moves by the difference. The old amount, description, date and note are kept in this entry&apos;s history.

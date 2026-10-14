@@ -53,6 +53,14 @@ export async function runAction<T>(
 ): Promise<ActionResult<T>> {
   const startedAt = Date.now();
 
+  // A demo build has no database behind it, and must never reach one even if a
+  // service account were configured. The screens that work in demo mode do so
+  // through `lib/demo/store`; anything that reaches here is a save that the
+  // demo cannot keep, and the visitor is told that rather than about env vars.
+  if (process.env.NEXT_PUBLIC_DEMO_MODE === 'true') {
+    return { ok: false, error: 'This is a demo — changes in this section are not saved.' };
+  }
+
   // Already established that the server has no credentials. Discovering it
   // again costs ~3s of metadata probing per call and cannot produce a
   // different answer — the fix is an env change and a restart.

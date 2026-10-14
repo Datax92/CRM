@@ -96,11 +96,14 @@ import {
 
 export const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
-export const DEMO_PASSWORD = 'Demo12345';
+/** One password for every demo account, so a client can try each role. */
+export const DEMO_PASSWORD = 'demo123';
 
 export interface DemoAccount {
   uid: string;
   email: string;
+  /** A short sign-in name typed in place of the email (`demo` for the admin). */
+  username?: string;
   name: string;
   role: 'admin' | 'subadmin' | 'employee';
   /** Sales or HR, for the manager accounts (§13). */
@@ -108,7 +111,7 @@ export interface DemoAccount {
 }
 
 export const DEMO_ACCOUNTS: DemoAccount[] = [
-  { uid: 'demo-admin', email: 'admin@crm.com', name: 'Usman Sheikh', role: 'admin' },
+  { uid: 'demo-admin', email: 'admin@crm.com', username: 'demo', name: 'Usman Sheikh', role: 'admin' },
   // A sub admin, so the hierarchy can actually be walked in demo mode rather
   // than only described. Ayesha and Bilal report to her; Sana does not, which
   // is what makes "a sub admin sees only their own team" visible on screen.
@@ -140,10 +143,14 @@ export function getDemoSession(): DemoAccount | null {
   return demoSession;
 }
 
+/** The account an email or a username names, case-insensitively. */
+export function findDemoAccount(identifier: string): DemoAccount | null {
+  const key = identifier.trim().toLowerCase();
+  return DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === key || a.username === key) ?? null;
+}
+
 export function signInDemo(email: string, password: string): DemoAccount | null {
-  const account = DEMO_ACCOUNTS.find(
-    (a) => a.email.toLowerCase() === email.trim().toLowerCase()
-  );
+  const account = findDemoAccount(email);
   if (!account || password !== DEMO_PASSWORD) return null;
 
   demoSession = account;
@@ -438,11 +445,11 @@ export interface DemoPayout {
 
 function seed(): DemoState {
   const employees: EmployeeData[] = [
-    { uid: 'demo-sub-1', name: 'Hina Raza', email: 'hina@crm.com', priority: 1, status: 'ACTIVE', jobTitle: 'Team Lead', accessRole: 'subadmin', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, createdAt: daysAgo(150) },
-    { uid: 'demo-emp-1', name: 'Ayesha Khan', email: 'ayesha@crm.com', priority: 1, status: 'ACTIVE', jobTitle: 'Senior Sales Executive', subAdminUid: 'demo-sub-1', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, createdAt: daysAgo(120) },
-    { uid: 'demo-emp-2', name: 'Bilal Ahmed', email: 'bilal@crm.com', priority: 2, status: 'ACTIVE', jobTitle: 'Sales Executive', subAdminUid: 'demo-sub-1', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, createdAt: daysAgo(80) },
-    { uid: 'demo-emp-3', name: 'Sana Malik', email: 'sana@crm.com', priority: 3, status: 'ACTIVE', jobTitle: 'Account Manager', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, createdAt: daysAgo(45), joinedAt: daysAgo(45), phone: '923004455661', autoAssign: false, notes: 'Handles walk-ins only — kept out of the automatic lane.' },
-    { uid: 'demo-emp-4', name: 'Faisal Siddiqui', email: 'faisal@crm.com', priority: 4, status: 'DISABLED', jobTitle: 'Intern', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, createdAt: daysAgo(20) },
+    { uid: 'demo-sub-1', name: 'Hina Raza', email: 'hina@crm.com', priority: 1, status: 'ACTIVE', jobTitle: 'Team Lead', accessRole: 'subadmin', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, monthlySalary: 120000, createdAt: daysAgo(150) },
+    { uid: 'demo-emp-1', name: 'Ayesha Khan', email: 'ayesha@crm.com', priority: 1, status: 'ACTIVE', jobTitle: 'Senior Sales Executive', subAdminUid: 'demo-sub-1', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, monthlySalary: 85000, createdAt: daysAgo(120) },
+    { uid: 'demo-emp-2', name: 'Bilal Ahmed', email: 'bilal@crm.com', priority: 2, status: 'ACTIVE', jobTitle: 'Sales Executive', subAdminUid: 'demo-sub-1', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, monthlySalary: 65000, createdAt: daysAgo(80) },
+    { uid: 'demo-emp-3', name: 'Sana Malik', email: 'sana@crm.com', priority: 3, status: 'ACTIVE', jobTitle: 'Account Manager', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, monthlySalary: 60000, createdAt: daysAgo(45), joinedAt: daysAgo(45), phone: '923004455661', autoAssign: false, notes: 'Handles walk-ins only — kept out of the automatic lane.' },
+    { uid: 'demo-emp-4', name: 'Faisal Siddiqui', email: 'faisal@crm.com', priority: 4, status: 'DISABLED', jobTitle: 'Intern', targets: { ...DEFAULT_KPI_TARGETS }, autoPriority: true, monthlySalary: 30000, createdAt: daysAgo(20) },
   ];
 
   // A year of KPI history, so the dashboard's YTD chart has something to draw.
@@ -574,6 +581,9 @@ function seed(): DemoState {
     status, source: 'META_ADS',
     campaignId: CAMPAIGNS[campaign].id,
     campaignName: CAMPAIGNS[campaign].name,
+    // Filed under the campaign's Meta folder, as the real intake does, so the
+    // Meta Ads cards and the folder's Assigned list have something to count.
+    dataBankFolderId: `meta_campaign_${CAMPAIGNS[campaign].id}`,
     assignedUserId: assigned,
     attemptedAssignees: assigned ? [assigned] : [],
     // Whose team holds it, derived from the assignee rather than repeated on
@@ -627,9 +637,47 @@ function seed(): DemoState {
       createdAt: daysAgo(11), assignedAt: daysAgo(11), acceptedAt: daysAgo(11),
       followUpCount: 2, callCount: 3, distributionMethod: 'AUTO',
     }),
+    // Further along the pipeline, so P2 and P1 have open leads in them.
+    mk('lead_1011', 'Omer Farooq', '923214443322', 'omer.farooq@gmail.com', 'Lahore', 'MEETING_DONE', 0, 'demo-emp-1', {
+      createdAt: daysAgo(6), assignedAt: daysAgo(6), acceptedAt: daysAgo(6),
+      followUpCount: 1, callCount: 3, meetingHeld: true, distributionMethod: 'AUTO',
+    }),
+    mk('lead_1012', 'Rabia Saleem', '923007771100', 'rabia.saleem@yahoo.com', 'Islamabad', 'SITE_VISIT_DONE', 1, 'demo-emp-2', {
+      createdAt: daysAgo(8), assignedAt: daysAgo(8), acceptedAt: daysAgo(8),
+      followUpCount: 1, callCount: 4, meetingHeld: true, distributionMethod: 'AUTO',
+    }),
+    mk('lead_1013', 'Shahzad Akram', '923335559911', 'shahzad.akram@gmail.com', 'Karachi', 'TOKEN_RECEIVED', 2, 'demo-emp-3', {
+      createdAt: daysAgo(12), assignedAt: daysAgo(12), acceptedAt: daysAgo(12), tokenReceivedAt: daysAgo(1),
+      followUpCount: 1, callCount: 6, meetingHeld: true, distributionMethod: 'AUTO',
+    }),
+    mk('lead_1014', 'Maryam Hassan', '923458882200', 'maryam.h@gmail.com', 'Lahore', 'DETAILS_SENT', 0, 'demo-emp-1', {
+      createdAt: daysAgo(1), assignedAt: daysAgo(1), acceptedAt: daysAgo(1),
+      followUpCount: 1, callCount: 1, distributionMethod: 'AUTO',
+    }),
+    // The admin's own, which is what their Client folder shows.
+    mk('lead_1015', 'Adeel Chaudhry', '923006661188', 'adeel.ch@gmail.com', 'Lahore', 'INTERESTED', 2, 'demo-admin', {
+      createdAt: daysAgo(5), assignedAt: daysAgo(5), acceptedAt: daysAgo(5),
+      followUpCount: 1, callCount: 2, distributionMethod: 'MANUAL',
+    }),
+    mk('lead_1016', 'Sobia Nadeem', '923219990077', 'sobia.nadeem@gmail.com', 'Lahore', 'DOCUMENT_RECEIVED', 0, 'demo-admin', {
+      createdAt: daysAgo(10), assignedAt: daysAgo(10), acceptedAt: daysAgo(10),
+      followUpCount: 1, callCount: 5, meetingHeld: true, distributionMethod: 'MANUAL',
+    }),
   ];
 
+  /** The first entry on a lead, for the seeds below that carry one. */
+  const remark = (id: string, message: string, author: string, email: string, hours: number): FollowUpRecord => ({
+    id, message, callMade: true, callCount: 1, whatsappNote: null,
+    occurredAt: hoursAgo(hours), createdAt: hoursAgo(hours), authorUid: author, authorEmail: email,
+  });
+
   const followUps: Record<string, FollowUpRecord[]> = {
+    lead_1011: [remark('fu_1011', 'Met at the office. Interested in a 1-kanal plot in Phase 6; wants the payment schedule.', 'demo-emp-1', 'ayesha@crm.com', 20)],
+    lead_1012: [remark('fu_1012', 'Site visit done with her husband. Liked the corner unit on the 4th floor.', 'demo-emp-2', 'bilal@crm.com', 40)],
+    lead_1013: [remark('fu_1013', 'Token of Rs 500,000 received. Documents to follow next week.', 'demo-emp-3', 'sana@crm.com', 26)],
+    lead_1014: [remark('fu_1014', 'Sent the brochure and price list on WhatsApp. Call back on Monday.', 'demo-emp-1', 'ayesha@crm.com', 18)],
+    lead_1015: [remark('fu_1015', 'Old contact from the expo. Wants a commercial floor for his clinic.', 'demo-admin', 'admin@crm.com', 90)],
+    lead_1016: [remark('fu_1016', 'CNIC copies and the signed booking form received.', 'demo-admin', 'admin@crm.com', 30)],
     lead_1004: [
       { id: 'fu1', message: 'Client visited the Gulberg site. Wants a corner floor and asked for a payment plan over 18 months.', callMade: true, callCount: 2, whatsappNote: 'Sent floor plan PDF', occurredAt: hoursAgo(6), createdAt: hoursAgo(6), authorUid: 'demo-emp-1', authorEmail: 'ayesha@crm.com' },
       { id: 'fu2', message: 'Sent the revised quote. He is comparing against one other option and will confirm this week.', callMade: true, callCount: 2, whatsappNote: 'Shared revised quote', occurredAt: hoursAgo(30), createdAt: hoursAgo(30), authorUid: 'demo-emp-1', authorEmail: 'ayesha@crm.com' },
@@ -837,6 +885,26 @@ function seed(): DemoState {
       promotedCount: 0,
       createdAt: daysAgo(0),
     },
+    // One folder per Meta campaign, the shape the intake creates: these are
+    // what the Meta Ads screen lists, and they stay out of the Data Bank grid.
+    ...CAMPAIGNS.map((campaign, index): DataBankFolder => ({
+      id: `meta_campaign_${campaign.id}`,
+      name: campaign.name,
+      code: 'META',
+      description: 'Facebook lead-form and click-to-WhatsApp ads in this campaign.',
+      fields: [
+        { key: 'full_name', label: 'Full Name' },
+        { key: 'phone_number', label: 'Phone Number' },
+        { key: 'city', label: 'City' },
+      ],
+      roles: { name: 'full_name', phone: 'phone_number' },
+      columnMap: {},
+      recordCount: index === 0 ? 2 : index === 1 ? 1 : 0,
+      promotedCount: leads.filter((lead) => lead.campaignId === campaign.id).length,
+      metaSource: { key: `campaign:${campaign.id}`, basis: 'CAMPAIGN', campaignId: campaign.id },
+      lastLeadAt: hoursAgo(index + 0.1),
+      createdAt: daysAgo(30),
+    })),
   ];
 
   const dataBankRecords: DataBankRecord[] = [
@@ -875,6 +943,22 @@ function seed(): DemoState {
       phoneKey: '3124455667', status: 'CONTACTED', notes: null, createdAt: daysAgo(0),
       values: { full_name: 'Kashif Raza', mobile: '0312 4455667', city: 'Karachi', interest: '10 Marla' },
     },
+    // Meta leads waiting in their campaign folders to be handed out.
+    {
+      id: 'dbr_m1', folderId: `meta_campaign_${CAMPAIGNS[0].id}`, name: 'Usama Khalid', phone: '0302 6677889',
+      phoneKey: '3026677889', status: 'NEW', notes: null, createdAt: hoursAgo(0.1),
+      values: { full_name: 'Usama Khalid', phone_number: '0302 6677889', city: 'Lahore' },
+    },
+    {
+      id: 'dbr_m2', folderId: `meta_campaign_${CAMPAIGNS[0].id}`, name: 'Mehwish Ali', phone: '0331 2299884',
+      phoneKey: '3312299884', status: 'NEW', notes: null, createdAt: hoursAgo(2),
+      values: { full_name: 'Mehwish Ali', phone_number: '0331 2299884', city: 'Lahore' },
+    },
+    {
+      id: 'dbr_m3', folderId: `meta_campaign_${CAMPAIGNS[1].id}`, name: 'Farhan Qureshi', phone: '0315 7744221',
+      phoneKey: '3157744221', status: 'NEW', notes: null, createdAt: hoursAgo(1.1),
+      values: { full_name: 'Farhan Qureshi', phone_number: '0315 7744221', city: 'Rawalpindi' },
+    },
   ];
 
   // One seeded folder, so the Clients screen demonstrates the reference model
@@ -895,8 +979,9 @@ function seed(): DemoState {
   ];
 
   const clientFolderLeads: ClientFolderMember[] = [
-    { id: 'cf_1__lead_1004', folderId: 'cf_1', leadId: 'lead_1004', leadName: 'Zainab Rashid', addedByUid: 'demo-admin', addedAt: daysAgo(6) },
-    { id: 'cf_1__lead_1005', folderId: 'cf_1', leadId: 'lead_1005', leadName: 'Ahmed Raza', addedByUid: 'demo-admin', addedAt: daysAgo(5) },
+    // The admin's own leads: a Client folder shows only what its owner holds.
+    { id: 'cf_1__lead_1015', folderId: 'cf_1', leadId: 'lead_1015', leadName: 'Adeel Chaudhry', addedByUid: 'demo-admin', addedAt: daysAgo(5) },
+    { id: 'cf_1__lead_1016', folderId: 'cf_1', leadId: 'lead_1016', leadName: 'Sobia Nadeem', addedByUid: 'demo-admin', addedAt: daysAgo(4) },
   ];
 
   return { employees, kpiMonths, attendance, attendancePolicy: { ...DEFAULT_ATTENDANCE_POLICY },

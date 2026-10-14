@@ -22,7 +22,7 @@ follow-ups, attendance, payroll and financial reporting.
 - **Backend:** Firebase (Auth, Firestore, Storage) — privileged writes via Server Actions (`src/app/actions/`)
 - **Timers:** deadline timestamps + `/api/cron/process-deadlines` (never in-memory `setTimeout`)
 - **Meta intake:** `/api/webhooks/meta`
-- **Demo mode:** `src/lib/demo/store.ts` — in-memory mirror of every action. Keep it in step with the real path or the two surfaces drift.
+- **Demo mode:** `src/lib/demo/store.ts` — in-memory mirror of every action. Keep it in step with the real path or the two surfaces drift. Built with `NEXT_PUBLIC_DEMO_MODE=true` (the value must be exactly `true`) for showing clients: admin signs in as **demo / demo123**, every demo account's password is `demo123`. The Accounts section reads `lib/demo/accountsFixture.ts` through `useLive` and is view-only; `runAction` refuses every Server Action in a demo build, so a demo deployment cannot reach a database even if credentials are set. Deploy it as a **separate** Vercel project with no Firebase variables.
 
 ---
 

@@ -31,6 +31,7 @@ import {
 // Metered: counts the reads Google bills, into the server log only.
 import { onSnapshot } from "@/lib/firebase/meteredFirestore";
 import { db } from "@/lib/firebase/client";
+import { IS_DEMO } from "@/lib/demo/store";
 import { useAuth } from "@/context/AuthContext";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -119,7 +120,8 @@ export function MetaAdsView() {
   */
   const [issues, setIssues] = useState<Array<{ id: string; reason: string; detail: string; source: string | null }>>([]);
   useEffect(() => {
-    if (!isManager) return;
+    // Demo mode has no database to report intake failures from.
+    if (!isManager || IS_DEMO) return;
     const unsubscribe = onSnapshot(
       query(collection(db, "metaIntakeIssues"), where("resolved", "==", false), limit(50)),
       (snap) =>

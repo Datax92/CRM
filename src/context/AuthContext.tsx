@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useSyncExternalStore } from "react";
 import type { User } from "firebase/auth";
-import { IS_DEMO, useDemoSession, signInDemo, signOutDemo, DEMO_ACCOUNTS, DEMO_PASSWORD } from "@/lib/demo/store";
+import { IS_DEMO, useDemoSession, signInDemo, signOutDemo, findDemoAccount, DEMO_PASSWORD } from "@/lib/demo/store";
 import { setQuietHoursExempt } from "@/lib/firebase/meteredFirestore";
 import { startOutboxFlusher } from "@/lib/outbox";
 
@@ -22,6 +22,8 @@ type Role = "admin" | "subadmin" | "employee";
  * grants nothing extra, so the fallback cannot widen anybody's reach.
  */
 type ManagerKind = "SALES" | "HR";
+
+const noSubscription = () => () => {};
 
 interface AuthContextType {
   user: { uid: string; email: string | null } | null;
@@ -80,6 +82,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   const demoSession = useDemoSession();
+  const hydrated = useSyncExternalStore(noSubscription, () => true, () => false);
 
   // --- real Firebase auth ---------------------------------------------------
   useEffect(() => {
@@ -146,7 +149,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signIn = useCallback(async (email: string, password: string, expectedRole?: Role) => {
     if (IS_DEMO) {
-      const account = DEMO_ACCOUNTS.find((a) => a.email === email.trim());
+      const account = findDemoAccount(email);
       if (account && password === DEMO_PASSWORD) {
         if (expectedRole && account.role !== expectedRole) {
           const error = new Error("Role mismatch") as Error & { code?: string };
@@ -213,7 +216,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         role: demoSession?.role ?? null,
         managerKind: demoManagerKind,
         isHr: demoSession?.role === "admin" || demoManagerKind === "HR",
-        loading: false,
+        // The session is read from sessionStorage, which the server snapshot
+        // cannot see: until hydration ends every visitor reads as signed out,
+        // and a route guard would send a shared link or a refresh to `/`.
+        loading: !hydrated,
         roleError: null,
         signIn,
         logout,

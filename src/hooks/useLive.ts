@@ -26,6 +26,19 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import type { Query, DocumentData } from 'firebase/firestore';
 import { subscribeLive, liveState, SERVER_STATE, type LiveState } from '@/lib/liveCollection';
+import { IS_DEMO } from '@/lib/demo/store';
+import { demoLiveRows } from '@/lib/demo/accountsFixture';
+
+/** One state object per key, so a demo screen's memoised work stays stable. */
+const demoStates = new Map<string, LiveState>();
+function demoState(key: string): LiveState {
+  let state = demoStates.get(key);
+  if (!state) {
+    state = { rows: demoLiveRows(key) as LiveState['rows'], loading: false, error: null };
+    demoStates.set(key, state);
+  }
+  return state;
+}
 
 export function useLive(
   key: string,
@@ -35,12 +48,16 @@ export function useLive(
 ): LiveState {
   const subscribe = useCallback(
     (notify: () => void) => {
-      if (!enabled) return () => {};
+      // Demo mode has no database: the rows come from `lib/demo/accountsFixture`.
+      if (!enabled || IS_DEMO) return () => {};
       return subscribeLive(key, build, describeError, notify);
     },
     [key, enabled, build, describeError]
   );
 
-  const read = useCallback(() => (enabled ? liveState(key) : SERVER_STATE), [key, enabled]);
+  const read = useCallback(
+    () => (!enabled ? SERVER_STATE : IS_DEMO ? demoState(key) : liveState(key)),
+    [key, enabled]
+  );
   return useSyncExternalStore(subscribe, read, () => SERVER_STATE);
 }

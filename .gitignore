@@ -75,3 +75,6 @@ serviceAccountKey.json
 Thumbs.db
 .aider*
 .readmeter/
+
+# Demo video build (/brag): frames, node_modules, renders
+brag-output*/

@@ -774,71 +774,82 @@ export async function updateTransaction(
     const auth = await requireFinance(token);
 
     const ref = adminDb.collection(TRANSACTIONS).doc(transactionId);
-    const snap = await ref.get();
-    if (!snap.exists) throw new UserFacingError("That transaction no longer exists.");
 
-    const current = snap.data()!;
-    if (current.status === "VOIDED") throw new UserFacingError("That transaction was reversed and cannot be edited.");
-    if (current.sourceModule !== "MANUAL") {
-      // Still refused, and this one is worth keeping: the amount belongs to the
-      // expense that created it, and editing it here would leave the two
-      // disagreeing with nothing to say which is right. Deleting is offered
-      // instead, which takes the money back off that record properly.
-      throw new UserFacingError(
-        "This came from an expense. Delete it to take the money back off that expense, or edit the expense itself."
-      );
-    }
+    // Read and write in one transaction, so two edits at once each move the
+    // balance by the difference from what the other actually left.
+    const outcome = await adminDb.runTransaction(async (t: Transaction) => {
+      const snap = await t.get(ref);
+      if (!snap.exists) throw new UserFacingError("That transaction no longer exists.");
 
-    const patch: Record<string, unknown> = {
-      updatedAt: FieldValue.serverTimestamp(),
-      updatedByUid: auth.uid,
-    };
-    const previous: Record<string, unknown> = {};
-    let delta = 0;
-
-    if (input.amount !== undefined) {
-      const next = money(input.amount);
-      if (next <= 0) throw new UserFacingError("Enter an amount greater than zero.");
-      const was = money(current.amount);
-      if (next !== was) {
-        previous.amount = was;
-        patch.amount = next;
-        // Only the difference, so nothing has to be summed again.
-        delta = deltaOf(current.direction as "IN" | "OUT", next) - deltaOf(current.direction as "IN" | "OUT", was);
+      const current = snap.data()!;
+      if (current.status === "VOIDED") throw new UserFacingError("That transaction was reversed and cannot be edited.");
+      if (current.reversedBy || current.reversalOf) {
+        // The pair cancels only while both halves carry the same amount.
+        throw new UserFacingError("This entry was reversed. Both rows are kept as the record of it and cannot be edited.");
       }
-    }
-    if (input.label !== undefined) {
-      const label = input.label.trim();
-      if (!label) throw new UserFacingError("Say what this was for.");
-      if (label !== current.sourceLabel) {
-        previous.sourceLabel = current.sourceLabel ?? null;
-        patch.sourceLabel = label;
+      if (current.sourceModule !== "MANUAL") {
+        // Still refused, and this one is worth keeping: the amount belongs to the
+        // expense that created it, and editing it here would leave the two
+        // disagreeing with nothing to say which is right. Deleting is offered
+        // instead, which takes the money back off that record properly.
+        throw new UserFacingError(
+          "This came from an expense. Delete it to take the money back off that expense, or edit the expense itself."
+        );
       }
-    }
-    if (input.dayKey !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(input.dayKey) && input.dayKey !== current.dayKey) {
-      previous.dayKey = current.dayKey;
-      patch.dayKey = input.dayKey;
-    }
-    if (input.note !== undefined) {
-      const note = (input.note ?? "").trim() || null;
-      if (note !== (current.note ?? null)) {
-        previous.note = current.note ?? null;
-        patch.note = note;
+
+      const patch: Record<string, unknown> = {
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedByUid: auth.uid,
+      };
+      const previous: Record<string, unknown> = {};
+      let delta = 0;
+
+      if (input.amount !== undefined) {
+        const next = money(input.amount);
+        if (next <= 0) throw new UserFacingError("Enter an amount greater than zero.");
+        const was = money(current.amount);
+        if (next !== was) {
+          previous.amount = was;
+          patch.amount = next;
+          // Only the difference, so nothing has to be summed again.
+          delta = deltaOf(current.direction as "IN" | "OUT", next) - deltaOf(current.direction as "IN" | "OUT", was);
+        }
       }
-    }
+      if (input.label !== undefined) {
+        const label = input.label.trim();
+        if (!label) throw new UserFacingError("Say what this was for.");
+        if (label !== current.sourceLabel) {
+          previous.sourceLabel = current.sourceLabel ?? null;
+          patch.sourceLabel = label;
+        }
+      }
+      if (input.dayKey !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(input.dayKey) && input.dayKey !== current.dayKey) {
+        previous.dayKey = current.dayKey;
+        patch.dayKey = input.dayKey;
+      }
+      if (input.note !== undefined) {
+        const note = (input.note ?? "").trim() || null;
+        if (note !== (current.note ?? null)) {
+          previous.note = current.note ?? null;
+          patch.note = note;
+        }
+      }
 
-    if (Object.keys(previous).length > 0) {
-      patch.history = FieldValue.arrayUnion({
-        at: new Date().toISOString(),
-        action: "EDITED",
-        byUid: auth.uid,
-        byName: auth.name ?? auth.email ?? null,
-        previous,
-      });
-    }
+      if (Object.keys(previous).length > 0) {
+        patch.history = FieldValue.arrayUnion({
+          at: new Date().toISOString(),
+          action: "EDITED",
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          previous,
+        });
+      }
 
-    await ref.update(patch);
-    await bumpBalance(current.accountId as string, delta);
+      t.update(ref, patch);
+      return { accountId: current.accountId as string, delta };
+    });
+
+    await bumpBalance(outcome.accountId, outcome.delta);
   });
 }
 
