@@ -18,7 +18,7 @@
  * | column | source |
  * |---|---|
  * | Total income | **every income account, automatically** — posted ledger movements from Marketing Income, Car Sale, StateLife and Investment with X, plus manual income put into an account |
- * | Deal profit | every closed deal dated in the month — after distribution, what the company kept (`companyRetained`); before distribution, the pot it will be split from (`readPayoutSource`) |
+ * | Deal profit | every closed deal dated in the month — after distribution, the company's own cut (`companyCutOf`); before distribution, the pot it will be split from (`readPayoutSource`) |
  * | Personal expense | Personal Expenses dated in the month |
  * | Office expense | approved Office Expenses dated in the month |
  * | Committee / Kist, Investor, Daddy Media, Misc… | **the accounts linked to the field**, plus lines added to the month by hand — fields can be added, renamed, removed and linked |
@@ -225,11 +225,25 @@ export function accountSpendOf(txn: LedgerRowInput): number | null {
 export interface DealRowInput {
   id: string;
   dayKey: string;
-  /** Post-cut when the split is finalised (`companyRetained`), pre-cut otherwise (`readPayoutSource`). */
+  /** The company's own cut once the split is finalised (`companyCutOf`), pre-cut otherwise (`readPayoutSource`). */
   amount: number;
   label: string;
-  /** True when `amount` is the post-cut figure from a finalised distribution. */
+  /** True when `amount` is the company's cut from a finalised distribution. */
   distributed?: boolean;
+}
+
+/**
+ * The company's own cut of a finalised split — its named percentage line, not
+ * `companyRetained`, which also holds everything nobody was given (on a deal
+ * split 0% to people, the whole down payment). Splits finalised before the
+ * company line existed carry `companyBaseAmount`; null means not readable.
+ */
+export function companyCutOf(dist: Record<string, unknown>): number | null {
+  for (const key of ['companyCutAmount', 'companyBaseAmount'] as const) {
+    const value = dist[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return roundMoney(value);
+  }
+  return null;
 }
 
 /**
@@ -244,7 +258,7 @@ export function readDealRow(raw: Record<string, unknown>, dayKey: string | null,
   return {
     id: String(raw.id ?? ''),
     dayKey,
-    // The caller passes `companyRetained` for a finalised deal, else
+    // The caller passes `companyCutOf` for a finalised deal, else
     // `readPayoutSource` (`lib/dealAmounts`). Both are resolved outside so
     // this file stays dependency-free for the raw test loader.
     amount: roundMoney(num(amount)),
@@ -535,7 +549,7 @@ export function computeGroupMonth(input: {
       columnKey: 'deals',
       ...figures,
     });
-    lines.push({ id, kind: 'DEAL', columnKey: 'deals', label: deal.label, sub: deal.distributed ? 'Closed deal · company retained' : 'Closed deal · money in, before the cut', dayKey: deal.dayKey, ...figures });
+    lines.push({ id, kind: 'DEAL', columnKey: 'deals', label: deal.label, sub: deal.distributed ? 'Closed deal · company cut' : 'Closed deal · money in, before the cut', dayKey: deal.dayKey, ...figures });
   }
 
   let officeCount = 0;

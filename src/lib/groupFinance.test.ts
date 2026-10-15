@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  companyCutOf,
   DEFAULT_GROUP_FIELDS,
   EMPTY_MONTH,
   closingFrom,
@@ -283,18 +284,22 @@ test('deal profit is its own income column and can be corrected like any line', 
   assert.equal(line.edited, true);
 });
 
-test('deal profit shows company retained when distribution is finalised', () => {
-  // Payout source is 770k, but after distributing cuts the company keeps 166k.
-  // The caller (useGroupFigures / closeGroupMonth) passes companyRetained.
-  const deals = [
-    readDealRow({ id: 'd1', customer: { name: 'Basil' } }, '2026-09-15', 166_000)!,
-  ];
+test("a split deal counts the company's own cut, not the unallocated rest", () => {
+  // Basil UK: 770,000 down payment, company 2.09% of a 7,950,000 base, people 0%.
+  // companyRetained is the whole 770,000; the owner reads 166,155.
+  const dist = { companyCutAmount: 166_155, companyRetained: 770_000, current: true };
+  assert.equal(companyCutOf(dist), 166_155);
+  const deals = [readDealRow({ id: 'd1', customer: { name: 'Basil' } }, '2026-09-15', companyCutOf(dist)!, true)!];
   const month = computeGroupMonth({ ...base, month: null, deals });
-  const column = month.columns.find((c) => c.key === 'deals')!;
-  assert.equal(column.value, 166_000);
+  assert.equal(month.columns.find((c) => c.key === 'deals')!.value, 166_155);
   const line = month.lines.find((l) => l.id === 'deal_d1')!;
-  assert.equal(line.auto, 166_000);
-  assert.equal(line.label, 'Basil');
+  assert.equal(line.auto, 166_155);
+  assert.equal(line.sub, 'Closed deal · company cut');
+});
+
+test('an older split reads its company base amount; no figure means not split', () => {
+  assert.equal(companyCutOf({ companyBaseAmount: 40_000, companyRetained: 360_000 }), 40_000);
+  assert.equal(companyCutOf({ companyRetained: 360_000 }), null);
 });
 
 test("every column's figure is the sum of its lines, office and personal included", () => {

@@ -25,6 +25,7 @@ import { useAllDistributions } from './useDistributions';
 import { karachiDayKey, resolveRange, timestampMillis } from '@/lib/dates';
 import { readPayoutSource } from '@/lib/dealAmounts';
 import {
+  companyCutOf,
   computeGroupMonth,
   displayedTotals,
   monthsOfYear,
@@ -59,13 +60,12 @@ export function useGroupFigures(year: number, enabled: boolean) {
   const { allDeals, loading: dealsLoading } = useFinancials(ALL_TIME, enabled);
   const { distributions, loading: distLoading } = useAllDistributions(enabled);
 
-  const retainedByDeal = useMemo(
+  const companyCutByDeal = useMemo(
     () => {
       const map = new Map<string, number>();
       for (const dist of distributions) {
-        if (dist.current && dist.companyRetained != null) {
-          map.set(dist.dealId, dist.companyRetained);
-        }
+        const cut = dist.current ? companyCutOf(dist as unknown as Record<string, unknown>) : null;
+        if (cut != null) map.set(dist.dealId, cut);
       }
       return map;
     },
@@ -91,12 +91,12 @@ export function useGroupFigures(year: number, enabled: boolean) {
   const dealRows = useMemo(
     () => allDeals.map((deal) => {
         const raw = deal as unknown as Record<string, unknown>;
-        const retained = retainedByDeal.get(deal.id);
+        const retained = companyCutByDeal.get(deal.id);
         const distributed = retained != null;
         const amount = distributed ? retained : readPayoutSource(deal);
         return readDealRow(raw, dealDayKey(raw), amount, distributed);
       }).filter((row): row is DealRowInput => row !== null),
-    [allDeals, retainedByDeal]
+    [allDeals, companyCutByDeal]
   );
   const personalRows = useMemo(
     () =>

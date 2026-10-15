@@ -26,6 +26,7 @@ import { readPayoutSource } from "@/lib/dealAmounts";
 import {
   BUILTIN_COLUMNS,
   closingFrom,
+  companyCutOf,
   computeGroupMonth,
   isMonthKey,
   monthLabel,
@@ -310,7 +311,8 @@ export async function closeGroupMonth(
     const retainedByDeal = new Map<string, number>();
     for (const doc of distributions.docs) {
       const data = doc.data();
-      if (data.companyRetained != null) retainedByDeal.set(data.dealId as string, money(data.companyRetained));
+      const cut = companyCutOf(data);
+      if (cut != null) retainedByDeal.set(data.dealId as string, cut);
     }
 
     const closing = await adminDb.runTransaction(async (t) => {
