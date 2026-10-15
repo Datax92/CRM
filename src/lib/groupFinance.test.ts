@@ -267,7 +267,7 @@ test("an income field linked to an account takes that account's income out of To
   assert.equal(month.income, 145_000);
 });
 
-test('deal profit is its own income column, the pot before the cut, and can be corrected like any line', () => {
+test('deal profit is its own income column and can be corrected like any line', () => {
   const deals = [
     readDealRow({ id: 'd1', customer: { name: 'Imran' } }, '2026-09-12', 4_000_000)!,
     readDealRow({ id: 'd2' }, '2026-10-01', 400_000)!,
@@ -281,6 +281,20 @@ test('deal profit is its own income column, the pot before the cut, and can be c
   assert.equal(line.label, 'Imran');
   assert.equal(line.auto, 4_000_000);
   assert.equal(line.edited, true);
+});
+
+test('deal profit shows company retained when distribution is finalised', () => {
+  // Payout source is 770k, but after distributing cuts the company keeps 166k.
+  // The caller (useGroupFigures / closeGroupMonth) passes companyRetained.
+  const deals = [
+    readDealRow({ id: 'd1', customer: { name: 'Basil' } }, '2026-09-15', 166_000)!,
+  ];
+  const month = computeGroupMonth({ ...base, month: null, deals });
+  const column = month.columns.find((c) => c.key === 'deals')!;
+  assert.equal(column.value, 166_000);
+  const line = month.lines.find((l) => l.id === 'deal_d1')!;
+  assert.equal(line.auto, 166_000);
+  assert.equal(line.label, 'Basil');
 });
 
 test("every column's figure is the sum of its lines, office and personal included", () => {

@@ -18,7 +18,7 @@
  * | column | source |
  * |---|---|
  * | Total income | **every income account, automatically** — posted ledger movements from Marketing Income, Car Sale, StateLife and Investment with X, plus manual income put into an account |
- * | Deal profit | every closed deal dated in the month — the money it put in the company's hands, the pot Profit Distribution splits (`readPayoutSource`), owner 2026-09-26 |
+ * | Deal profit | every closed deal dated in the month — after distribution, what the company kept (`companyRetained`); before distribution, the pot it will be split from (`readPayoutSource`) |
  * | Personal expense | Personal Expenses dated in the month |
  * | Office expense | approved Office Expenses dated in the month |
  * | Committee / Kist, Investor, Daddy Media, Misc… | **the accounts linked to the field**, plus lines added to the month by hand — fields can be added, renamed, removed and linked |
@@ -225,9 +225,11 @@ export function accountSpendOf(txn: LedgerRowInput): number | null {
 export interface DealRowInput {
   id: string;
   dayKey: string;
-  /** The money the deal put in the company's hands — the pot the cut is paid out of. */
+  /** Post-cut when the split is finalised (`companyRetained`), pre-cut otherwise (`readPayoutSource`). */
   amount: number;
   label: string;
+  /** True when `amount` is the post-cut figure from a finalised distribution. */
+  distributed?: boolean;
 }
 
 /**
@@ -235,22 +237,22 @@ export interface DealRowInput {
  * when it was entered — the deals screen's rule). One reader for the screen and
  * the closing, so the two cannot count a deal differently.
  */
-export function readDealRow(raw: Record<string, unknown>, dayKey: string | null, amount: number): DealRowInput | null {
+export function readDealRow(raw: Record<string, unknown>, dayKey: string | null, amount: number, distributed?: boolean): DealRowInput | null {
   if (!dayKey) return null;
   const customer = (raw.customer as { name?: unknown } | undefined)?.name;
   const service = raw.serviceDescription;
   return {
     id: String(raw.id ?? ''),
     dayKey,
-    // The caller passes `readPayoutSource` (`lib/dealAmounts`, not imported
-    // here so the raw test loader can run this file): the down payment on a
-    // priced deal, the commission on a lump sum, the remaining on instalments.
-    // Not `received − payable`, which on a priced deal is the plot's price.
+    // The caller passes `companyRetained` for a finalised deal, else
+    // `readPayoutSource` (`lib/dealAmounts`). Both are resolved outside so
+    // this file stays dependency-free for the raw test loader.
     amount: roundMoney(num(amount)),
     label:
       (typeof customer === 'string' && customer.trim()) ||
       (typeof service === 'string' && service.trim()) ||
       'Closed deal',
+    ...(distributed ? { distributed: true } : {}),
   };
 }
 
@@ -533,7 +535,7 @@ export function computeGroupMonth(input: {
       columnKey: 'deals',
       ...figures,
     });
-    lines.push({ id, kind: 'DEAL', columnKey: 'deals', label: deal.label, sub: 'Closed deal · money in, before the cut', dayKey: deal.dayKey, ...figures });
+    lines.push({ id, kind: 'DEAL', columnKey: 'deals', label: deal.label, sub: deal.distributed ? 'Closed deal · company retained' : 'Closed deal · money in, before the cut', dayKey: deal.dayKey, ...figures });
   }
 
   let officeCount = 0;

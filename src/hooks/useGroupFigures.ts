@@ -21,6 +21,7 @@ import { useOfficeExpenses } from './useOfficeExpenses';
 import { usePersonalExpenses } from './useLedger';
 import { useGroupConfig, useGroupMonths } from './useAccountSheets';
 import { useFinancials } from './useFinancials';
+import { useAllDistributions } from './useDistributions';
 import { karachiDayKey, resolveRange, timestampMillis } from '@/lib/dates';
 import { readPayoutSource } from '@/lib/dealAmounts';
 import {
@@ -56,6 +57,20 @@ export function useGroupFigures(year: number, enabled: boolean) {
   const config = useGroupConfig(enabled);
   const { months: docs, loading: monthsLoading } = useGroupMonths(year, enabled);
   const { allDeals, loading: dealsLoading } = useFinancials(ALL_TIME, enabled);
+  const { distributions, loading: distLoading } = useAllDistributions(enabled);
+
+  const retainedByDeal = useMemo(
+    () => {
+      const map = new Map<string, number>();
+      for (const dist of distributions) {
+        if (dist.current && dist.companyRetained != null) {
+          map.set(dist.dealId, dist.companyRetained);
+        }
+      }
+      return map;
+    },
+    [distributions]
+  );
 
   const accountNames = useMemo(
     () => new Map(ledger.accounts.map((account) => [account.id, account.name])),
@@ -76,9 +91,12 @@ export function useGroupFigures(year: number, enabled: boolean) {
   const dealRows = useMemo(
     () => allDeals.map((deal) => {
         const raw = deal as unknown as Record<string, unknown>;
-        return readDealRow(raw, dealDayKey(raw), readPayoutSource(deal));
+        const retained = retainedByDeal.get(deal.id);
+        const distributed = retained != null;
+        const amount = distributed ? retained : readPayoutSource(deal);
+        return readDealRow(raw, dealDayKey(raw), amount, distributed);
       }).filter((row): row is DealRowInput => row !== null),
-    [allDeals]
+    [allDeals, retainedByDeal]
   );
   const personalRows = useMemo(
     () =>
@@ -120,7 +138,7 @@ export function useGroupFigures(year: number, enabled: boolean) {
     office,
     personal,
     accounts: ledger.accounts,
-    loading: enabled && (ledger.loading || officeLoading || personalLoading || monthsLoading || config.loading || dealsLoading),
+    loading: enabled && (ledger.loading || officeLoading || personalLoading || monthsLoading || config.loading || dealsLoading || distLoading),
     error: ledger.error ?? config.error ?? null,
   };
 }

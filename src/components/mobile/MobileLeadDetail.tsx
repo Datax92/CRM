@@ -80,6 +80,7 @@ import {
 import { STAGE_STATUSES, statusLabel } from "@/lib/leadStatus";
 import { M, MobileCard, MobileHeader, Segmented } from "./mobileChrome";
 import { EditDealModal } from "@/components/financials/EditDealModal";
+import { usePrintReceipt } from "@/components/financials/DealReceipt";
 
 type Tab = "notes" | "kyc" | "audit" | "deal";
 type Banner = { tone: "error" | "success"; text: string } | null;
@@ -1952,6 +1953,7 @@ function DealRecord({
   getIdToken?: () => Promise<string>;
 }) {
   const [editing, setEditing] = useState(false);
+  const printReceipt = usePrintReceipt();
   const [notice, setNotice] = useState<string | null>(null);
   return (
     <MobileCard style={{ padding: 16 }}>
@@ -1961,6 +1963,23 @@ function DealRecord({
           <path d="m8.5 12 2.5 2.5 4.5-5" />
         </svg>
         <div style={{ flex: 1, fontSize: 15.5, fontWeight: 700, color: M.ink }}>Confirmed deal</div>
+        <button
+          type="button"
+          className="mob-press"
+          onClick={() => printReceipt(deal)}
+          style={{
+            borderRadius: 999,
+            border: "1px solid #dceae8",
+            padding: "7px 13px",
+            fontSize: 13,
+            fontWeight: 700,
+            color: M.tealDeep,
+            background: "#fff",
+            cursor: "pointer",
+          }}
+        >
+          Print
+        </button>
         {getIdToken && (
           <button
             type="button"

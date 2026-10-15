@@ -295,7 +295,7 @@ export async function closeGroupMonth(
     const first = `${monthKey}-01`;
     const last = `${monthKey}-31`;
 
-    const [config, transactions, accounts, office, personal, deals] = await Promise.all([
+    const [config, transactions, accounts, office, personal, deals, distributions] = await Promise.all([
       loadConfig(),
       adminDb.collection("transactions").where("dayKey", ">=", first).where("dayKey", "<=", last).get(),
       adminDb.collection("accounts").get(),
@@ -304,7 +304,14 @@ export async function closeGroupMonth(
       // Every deal: a deal is dated by `dealDate` or `enteredAt`, whichever it
       // has, and there are a few dozen — cheaper than two range queries.
       adminDb.collection("closedDeals").get(),
+      adminDb.collection("dealDistributions").where("current", "==", true).get(),
     ]);
+
+    const retainedByDeal = new Map<string, number>();
+    for (const doc of distributions.docs) {
+      const data = doc.data();
+      if (data.companyRetained != null) retainedByDeal.set(data.dealId as string, money(data.companyRetained));
+    }
 
     const closing = await adminDb.runTransaction(async (t) => {
       const snap = await t.get(ref);
@@ -334,7 +341,10 @@ export async function closeGroupMonth(
         deals: deals.docs.flatMap((doc) => {
           const data = doc.data();
           const at = (data.dealDate ?? data.enteredAt)?.toDate?.() as Date | undefined;
-          const row = readDealRow({ id: doc.id, ...data }, at ? karachiDayKey(at) : null, readPayoutSource(data));
+          const retained = retainedByDeal.get(doc.id);
+          const distributed = retained != null;
+          const amount = distributed ? retained : readPayoutSource(data);
+          const row = readDealRow({ id: doc.id, ...data }, at ? karachiDayKey(at) : null, amount, distributed);
           return row ? [row] : [];
         }),
         month,

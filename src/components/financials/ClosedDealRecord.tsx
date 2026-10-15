@@ -67,6 +67,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { OverlayPanel, OverlayCard, OverlayFigures } from "@/components/ui/OverlayPanel";
 import { DistributionSummaryCard } from "./ProfitDistributionModal";
 import { EditDealModal } from "./EditDealModal";
+import { usePrintReceipt } from "./DealReceipt";
 import { useAuth } from "@/context/AuthContext";
 import type { DealRecord } from "@/hooks/useFinancials";
 
@@ -100,6 +101,7 @@ export function ClosedDealRecord({
   const isMobile = useIsMobile();
   const { getIdToken } = useAuth();
   const [editing, setEditing] = useState(false);
+  const printReceipt = usePrintReceipt();
   const [notice, setNotice] = useState<string | null>(null);
 
   // The deal id *is* the lead id, so no lookup table is needed.
@@ -131,6 +133,22 @@ export function ClosedDealRecord({
       onClose={onClose}
       headerAside={
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <button
+          type="button"
+          onClick={() => printReceipt(deal, employeeName ?? lead?.assigneeName ?? undefined)}
+          style={{
+            borderRadius: 999,
+            padding: "4px 12px",
+            fontSize: 11.5,
+            fontWeight: 700,
+            color: "#fff",
+            background: "rgba(255,255,255,0.18)",
+            border: "1px solid rgba(255,255,255,0.5)",
+            cursor: "pointer",
+          }}
+        >
+          Print receipt
+        </button>
         {isAdmin && (
           <button
             type="button"

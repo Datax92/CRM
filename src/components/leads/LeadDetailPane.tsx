@@ -70,9 +70,10 @@ import { CONNECT_MIN_SECONDS, formatDuration, isConnect } from "@/lib/kpi";
 import { DEAL_CATEGORIES, DEFAULT_DEAL_CATEGORY } from "@/lib/constants/deals";
 import { EditDealModal } from "@/components/financials/EditDealModal";
 import { initialsOf } from "@/lib/leadDisplay";
+import { usePrintReceipt } from "@/components/financials/DealReceipt";
 import {
   Phone, Mail, MapPin, UserCheck, Clock, X, Plus, MessageCircle,
-  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users, Lock, CalendarCheck,
+  PhoneCall, AlertTriangle, CheckCircle2, ArrowLeft, Users, Lock, CalendarCheck, Printer,
 } from "lucide-react";
 
 type Tab = "FOLLOW_UPS" | "KYC" | "AUDIT_TRAIL" | "DEAL_ENTRY";
@@ -1863,6 +1864,7 @@ function DealRecord({
 }) {
   const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const printReceipt = usePrintReceipt();
   return (
     <div className="max-w-[840px] overflow-hidden rounded-xl border border-[#bfe0dc] bg-white">
       <div className="flex items-center gap-2.5 border-b border-[#f0f6f5] px-6 py-5">
@@ -1873,15 +1875,25 @@ function DealRecord({
             Settled {formatBusinessDate(deal.dealDate ?? deal.enteredAt)}
           </p>
         </div>
-        {getIdToken && (
+        <div className="flex shrink-0 gap-2">
           <button
             type="button"
-            onClick={() => setEditing(true)}
-            className="shrink-0 rounded-full border border-[#dceae8] px-3.5 py-1.5 text-[12.5px] text-[#2f7d78] hover:bg-[#eef8f7]"
+            onClick={() => printReceipt(deal)}
+            className="flex items-center gap-1.5 rounded-full border border-[#dceae8] px-3.5 py-1.5 text-[12.5px] text-[#2f7d78] hover:bg-[#eef8f7]"
           >
-            Edit deal
+            <Printer size={14} />
+            Print
           </button>
-        )}
+          {getIdToken && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="shrink-0 rounded-full border border-[#dceae8] px-3.5 py-1.5 text-[12.5px] text-[#2f7d78] hover:bg-[#eef8f7]"
+            >
+              Edit deal
+            </button>
+          )}
+        </div>
       </div>
       {notice && (
         <p role="status" className="border-b border-[#f0f6f5] bg-[#eef8f7] px-6 py-2.5 text-[12.5px] text-[#2f7d78]">
