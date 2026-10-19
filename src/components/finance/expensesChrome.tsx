@@ -678,7 +678,7 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
   const tags = (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
       <Tag label={row.status.label} tone={row.status.tone} />
-      {row.payment && <Tag label={row.payment.label} tone={row.payment.tone} />}
+      {row.payment && row.payment.label !== row.status.label && <Tag label={row.payment.label} tone={row.payment.tone} />}
     </span>
   );
 
@@ -752,7 +752,7 @@ function ExpenseRow({ row, isMobile, formatMoney: fmt }: {
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
           <Tag label={row.status.label} tone={row.status.tone} />
-          {row.payment && <Tag label={row.payment.label} tone={row.payment.tone} />}
+          {row.payment && row.payment.label !== row.status.label && <Tag label={row.payment.label} tone={row.payment.tone} />}
         </div>
 
         {row.notes}
@@ -1020,7 +1020,7 @@ export function ExpenseDetail({
           <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-1.1px", marginTop: 3, fontVariantNumeric: "tabular-nums" }}>{amountLabel}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
             <Tag label={status.label} tone={status.tone} />
-            {payment && <Tag label={payment.label} tone={payment.tone} />}
+            {payment && payment.label !== status.label && <Tag label={payment.label} tone={payment.tone} />}
           </div>
         </div>
       </div>
