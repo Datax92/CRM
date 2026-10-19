@@ -1,5 +1,5 @@
 import { adminDb } from "@/lib/firebase/server";
-import { FieldValue, type DocumentSnapshot, type WriteBatch } from "firebase-admin/firestore";
+import { FieldValue, type DocumentSnapshot, type Transaction, type WriteBatch } from "firebase-admin/firestore";
 import type { DecodedAuth } from "@/lib/firebase/serverAuth";
 
 /**
@@ -24,8 +24,27 @@ export function archiveInBatch(
   reason: string
 ): void {
   if (!snap.exists) return;
+  batch.set(adminDb.collection(DELETED_RECORDS).doc(), archiveRecord(snap, auth, reason));
+}
+
+/** The same copy, written inside a Firestore transaction. */
+export function archiveInTransaction(
+  t: Transaction,
+  snap: DocumentSnapshot,
+  auth: Pick<DecodedAuth, "uid" | "name" | "email">,
+  reason: string
+): void {
+  if (!snap.exists) return;
+  t.set(adminDb.collection(DELETED_RECORDS).doc(), archiveRecord(snap, auth, reason));
+}
+
+function archiveRecord(
+  snap: DocumentSnapshot,
+  auth: Pick<DecodedAuth, "uid" | "name" | "email">,
+  reason: string
+): Record<string, unknown> {
   const data = snap.data() ?? {};
-  batch.set(adminDb.collection(DELETED_RECORDS).doc(), {
+  return {
     collection: snap.ref.parent.path,
     docId: snap.id,
     accountId: typeof data.accountId === "string" ? data.accountId : null,
@@ -35,5 +54,5 @@ export function archiveInBatch(
     deletedAtIso: new Date().toISOString(),
     deletedByUid: auth.uid,
     deletedByName: auth.name ?? auth.email ?? null,
-  });
+  };
 }

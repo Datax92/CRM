@@ -45,8 +45,34 @@ export interface TransactionDoc extends Omit<LedgerTransaction, 'id'> {
   createdAt?: FirestoreTimestamp;
   voidedByName?: string | null;
   reversedByName?: string | null;
-  /** Previous values, appended by every edit (`updateTransaction`). */
-  history?: { at: string; action: string; byName?: string | null; previous?: Record<string, unknown> }[];
+  /**
+   * What happened to the row, appended: every edit (`updateTransaction`, with
+   * the previous values) and every pay-back made or removed against it
+   * (`payBackSpending`, with the amount and the accounts).
+   */
+  history?: {
+    at: string;
+    action: string;
+    byName?: string | null;
+    previous?: Record<string, unknown>;
+    amount?: number;
+    detail?: string | null;
+    accountId?: string;
+    allocations?: { accountId: string; accountName?: string; amount: number }[];
+  }[];
+  /**
+   * On a hand-typed spending: how much has been put back into the account it
+   * came out of (`payBackSpending`). Read with `lib/ledger.readPaidBack`. The
+   * rows reach the screen as the snapshot's own data, so there is no mapper to
+   * forget this field in.
+   */
+  paidBack?: number;
+  paidBackStatus?: "PAID_BACK" | "PART_PAID_BACK" | null;
+  /** On money lent out of an account: who to, and how much has come back (`lib/spendingLoan`). */
+  loanTo?: string | null;
+  loanReturned?: number;
+  /** On a `LOAN_RETURN` row: whether the loan is a typed outflow or a spending record. */
+  loanKind?: "TXN" | "TICKET";
 }
 
 /** Guards against an unbounded read once the ledger has years in it. */

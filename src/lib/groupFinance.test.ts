@@ -79,6 +79,31 @@ test('income is the income modules plus manual income, signed, for the month onl
   assert.equal(isIncomeMovement(txn({ sourceModule: 'TRANSFER', type: 'TRANSFER' })), false);
 });
 
+test('paying a spending back is neither income nor spending, on either side', () => {
+  // The 249,000 was spent when UBL CC paid it; the profit was income when it
+  // arrived. Moving one into the other must not count either a second time.
+  for (const direction of ['OUT', 'IN'] as const) {
+    const leg = txn({ sourceModule: 'PAY_BACK', type: 'TRANSFER', direction, amount: 77_000 });
+    assert.equal(isIncomeMovement(leg), false);
+    assert.equal(accountSpendOf(leg), null);
+  }
+});
+
+test('a loan given out of an account, and its repayment, are neither spending nor income', () => {
+  // FAYSAL CC's 37,500 to Muhammad Hussain, once marked a loan: typed LOAN,
+  // whether typed straight out of the account or paid on a spending record.
+  for (const sourceModule of ['MANUAL', 'CAPITAL_INVESTMENT'] as const) {
+    const lent = txn({ sourceModule, type: 'LOAN', direction: 'OUT', amount: 37_500 });
+    assert.equal(accountSpendOf(lent), null);
+    assert.equal(isIncomeMovement(lent), false);
+  }
+  const back = txn({ sourceModule: 'LOAN_RETURN', type: 'LOAN', direction: 'IN', amount: 10_000 });
+  assert.equal(isIncomeMovement(back), false);
+  assert.equal(accountSpendOf(back), null);
+  // The same spending before it was marked still counts, which is what moved the Investor column.
+  assert.equal(accountSpendOf(txn({ sourceModule: 'MANUAL', type: 'EXPENSE', direction: 'OUT', amount: 14_879 })), 14_879);
+});
+
 test("an investment round's capital coming back is not income; its net profit is", () => {
   assert.equal(isIncomeMovement(txn({ sourceModule: 'INVESTMENT_WITH_X', type: 'INVESTMENT', direction: 'IN' })), false);
   assert.equal(isIncomeMovement(txn({ sourceModule: 'INVESTMENT_WITH_X', type: 'INCOME', direction: 'IN' })), true);

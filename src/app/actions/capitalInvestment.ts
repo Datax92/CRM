@@ -43,6 +43,7 @@ import { money } from "@/lib/ledger";
 import { formatMoney } from "@/lib/money";
 import { FieldValue } from "firebase-admin/firestore";
 import { archiveInBatch } from "@/lib/server/deletedArchive";
+import { normalizeBorrower } from "@/lib/spendingLoan";
 
 const SPENDINGS = "capitalSpendings";
 const ACCOUNTS = "accounts";
@@ -64,6 +65,8 @@ export interface CapitalSpendingInput {
   amount: number;
   dayKey?: string;
   description?: string | null;
+  /** On a new spending: money lent out rather than spent, and who to (`lib/spendingLoan`). */
+  loanTo?: string | null;
 }
 
 /**
@@ -130,9 +133,14 @@ export async function saveCapitalSpending(
       return { spendingId };
     }
 
+    const loanTo = normalizeBorrower(input.loanTo);
+    if (input.loanTo !== undefined && input.loanTo !== null && !loanTo) {
+      throw new UserFacingError("Say who the money was lent to.");
+    }
     const ref = adminDb.collection(SPENDINGS).doc();
     await ref.create({
       ...payload,
+      ...(loanTo ? { loanTo, loanReturned: 0 } : {}),
       paidAmount: 0,
       paymentStatus: "UNPAID",
       createdByUid: auth.uid,
@@ -167,6 +175,9 @@ export async function deleteCapitalSpending(
     const ref = adminDb.collection(SPENDINGS).doc(spendingId);
     const spendingSnap = await ref.get();
     if (!spendingSnap.exists) throw new UserFacingError("That spending no longer exists.");
+    if (money(spendingSnap.data()?.loanReturned) > 0) {
+      throw new UserFacingError("Money has already come back on this loan. Remove those returns before deleting it.");
+    }
 
     const legs = await adminDb
       .collection(TRANSACTIONS)

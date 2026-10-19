@@ -16,6 +16,10 @@ import {
   compareToPrevious,
   summarizeMonth,
   distributeAcrossObligations,
+  canPayBack,
+  readPaidBack,
+  checkPayBack,
+  payBackTransactions,
   type LedgerTransaction,
 } from './ledger.ts';
 
@@ -581,5 +585,99 @@ describe('a reversed payment', () => {
     const totals = summarize([paid, back]);
     assert.equal(totals.reimbursements, 0);
     assert.equal(totals.netMovement, 0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("paying a spending back: UBL CC's 249,000, part paid from Investment with X", () => {
+  const spending = txn({ id: 'neg', accountId: 'ubl', amount: 249_000, sourceLabel: 'NEGATIVE TILL 30 SEPTEMBER' });
+  const legs = (allocations: Array<{ accountId: string; accountName: string; amount: number }>) =>
+    payBackTransactions({
+      potAccountId: 'ubl',
+      potName: 'UBL CC',
+      spendingId: 'neg',
+      spendingLabel: 'NEGATIVE TILL 30 SEPTEMBER',
+      allocations,
+      dayKey: '2026-10-17',
+      groupId: 'g1',
+      createdByUid: 'admin',
+    }).map((leg, index) => ({ ...leg, id: `pb${index}` }) as LedgerTransaction);
+
+  test('77,000 leaves Investment with X and arrives in UBL CC, naming the spending', () => {
+    const rows = legs([{ accountId: 'invx', accountName: 'Investment with X', amount: 77_000 }]);
+    assert.equal(rows.length, 2);
+    const [out, back] = rows;
+    assert.deepEqual([out.accountId, out.direction, out.amount], ['invx', 'OUT', 77_000]);
+    assert.deepEqual([back.accountId, back.direction, back.amount], ['ubl', 'IN', 77_000]);
+    for (const leg of rows) {
+      assert.equal(leg.sourceModule, 'PAY_BACK');
+      assert.equal(leg.sourceId, 'neg');
+      assert.equal(leg.type, 'TRANSFER');
+    }
+    assert.equal(out.counterAccountId, 'ubl');
+    assert.equal(back.counterAccountId, 'invx');
+    assert.equal(back.sourceLabel, 'Paid back from Investment with X — NEGATIVE TILL 30 SEPTEMBER');
+  });
+
+  test('moves the two balances and leaves the company total and the books alone', () => {
+    const invx = { id: 'invx', openingBalance: 398_000 };
+    const ubl = { id: 'ubl', openingBalance: 950_000 };
+    const before = balancesFor([invx, ubl], [spending]);
+    const rows = legs([{ accountId: 'invx', accountName: 'Investment with X', amount: 77_000 }]);
+    const after = balancesFor([invx, ubl], [spending, ...rows]);
+    assert.equal(after.byAccount.get('invx')!.balance, 321_000);
+    assert.equal(after.byAccount.get('ubl')!.balance, 950_000 - 249_000 + 77_000);
+    assert.equal(after.total, before.total);
+    const totals = summarize(rows);
+    // Not a second expense, and not income: the spending was counted once.
+    assert.equal(totals.expenses, 0);
+    assert.equal(totals.income, 0);
+    assert.equal(totals.transfersIn, 77_000);
+    assert.equal(totals.transfersOut, 77_000);
+  });
+
+  test('a split pays back from each account as its own pair', () => {
+    const rows = legs([
+      { accountId: 'invx', accountName: 'Investment with X', amount: 50_000 },
+      { accountId: 'car', accountName: 'Car Sale', amount: 27_000 },
+    ]);
+    assert.equal(rows.length, 4);
+    assert.equal(rows.filter((r) => r.accountId === 'ubl').reduce((s, r) => s + r.amount, 0), 77_000);
+    assert.deepEqual(rows.filter((r) => r.accountId === 'ubl').map((r) => r.counterAccountId), ['invx', 'car']);
+  });
+
+  test('reads what is paid back and what is left', () => {
+    assert.deepEqual(readPaidBack({ amount: 249_000 }), { paidBack: 0, left: 249_000, settled: false });
+    assert.deepEqual(readPaidBack({ amount: 249_000, paidBack: 77_000 }), { paidBack: 77_000, left: 172_000, settled: false });
+    assert.deepEqual(readPaidBack({ amount: 249_000, paidBack: 249_000 }), { paidBack: 249_000, left: 0, settled: true });
+    // A spending edited below its pay-backs never reads as owing a negative amount.
+    assert.deepEqual(readPaidBack({ amount: 50_000, paidBack: 77_000 }), { paidBack: 50_000, left: 0, settled: true });
+  });
+
+  test('more than is left is refused, never trimmed', () => {
+    const base = { amount: 249_000, paidBack: 77_000, potAccountId: 'ubl', potName: 'UBL CC' };
+    assert.deepEqual(checkPayBack({ ...base, allocations: [{ accountId: 'invx', amount: 172_000 }] }), []);
+    assert.equal(checkPayBack({ ...base, allocations: [{ accountId: 'invx', amount: 172_001 }] }).length, 1);
+    assert.equal(checkPayBack({ ...base, allocations: [{ accountId: 'invx', amount: 0 }] }).length > 0, true);
+  });
+
+  test('the account it was spent from cannot pay itself back', () => {
+    const errors = checkPayBack({
+      amount: 249_000, paidBack: 0, potAccountId: 'ubl', potName: 'UBL CC',
+      allocations: [{ accountId: 'ubl', amount: 10_000 }],
+    });
+    assert.deepEqual(errors, ['UBL CC cannot pay itself back. Choose the account the money comes from.']);
+  });
+
+  test('only money typed straight out of an account can be paid back', () => {
+    assert.equal(canPayBack(spending), true);
+    assert.equal(canPayBack({ ...spending, direction: 'IN' }), false);
+    assert.equal(canPayBack({ ...spending, sourceModule: 'INVESTMENT_WITH_X' }), false);
+    assert.equal(canPayBack({ ...spending, sourceModule: 'PERSONAL_EXPENSE' }), false);
+    assert.equal(canPayBack({ ...spending, reversedBy: 'r1' }), false);
+    assert.equal(canPayBack({ ...spending, status: 'VOIDED' }), false);
+    // A loan is repaid by its borrower, not paid back from the company's own accounts.
+    assert.equal(canPayBack({ ...spending, type: 'LOAN' }), false);
   });
 });

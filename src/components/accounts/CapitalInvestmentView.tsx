@@ -45,7 +45,13 @@ import {
   deleteCapitalSpending,
   countCapitalSpendingPayments,
   listDeletedForAccount,
+  payBackSpending,
+  setSpendingLoan,
+  recordLoanReturn,
 } from "@/lib/clientActions";
+import { canPayBack, readPaidBack } from "@/lib/ledger";
+import { readLoan, normalizeBorrower, type LoanReading } from "@/lib/spendingLoan";
+import { isContribution, isDirectSpending, isLentOut, isRoundReturn, potCash } from "@/lib/capitalPot";
 import type { DeletedLedgerRow } from "@/app/actions/ledger";
 import { OverlayPanel, OverlayCard } from "@/components/ui/OverlayPanel";
 import { readHistoryEntry, readPaid, HISTORY_LABELS } from "@/lib/officeExpenses";
@@ -73,22 +79,52 @@ import {
 } from "@/components/finance/expensesChrome";
 import { stamp } from "@/components/finance/OfficeExpensesView";
 
-/**
- * Modules whose payments merely pass through the pot — they have their own
- * screen and are not investment costs.  A reversal of any of them coming back
- * IN is not a contribution either.
- */
-const PASS_THROUGH_MODULES: ReadonlySet<string> = new Set([
-  'OFFICE_EXPENSE',
-  'PERSONAL_EXPENSE',
-  'PAYROLL',
-  'TRANSFER',
-  'RECEIVABLE',
-  'AMANAT',
-]);
+/*
+  What each row on a pot's statement means — a contribution, a round coming
+  back, money only passing through, or a spending of the pot's own — lives in
+  `lib/capitalPot`, with the cash figures, so the list and the cards cannot
+  disagree and both are unit-tested.
+*/
 
-function isPassThrough(txn: { sourceModule: string; reversalOf?: string | null }): boolean {
-  return PASS_THROUGH_MODULES.has(txn.sourceModule) || Boolean(txn.reversalOf);
+/** One account's part of a pay-back, as the spending's panel lists it. */
+interface PayBackLine {
+  /** The leg that brought the money into this pot; Remove takes it and its pair. */
+  id: string;
+  fromName: string;
+  amount: number;
+  dayKey: string;
+  note: string | null;
+  by: string | null;
+}
+
+/** One repayment on a loan, as the loan's panel lists it. */
+interface LoanReturnLine {
+  id: string;
+  intoName: string;
+  amount: number;
+  dayKey: string;
+  note: string | null;
+  by: string | null;
+}
+
+/** A spending marked (or about to be marked) as a loan, as the loan forms need it. */
+interface LoanTarget {
+  kind: "TXN" | "TICKET";
+  id: string;
+  label: string;
+  loan: LoanReading;
+}
+
+const BACK_ARROW = "M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11";
+/** An open hand: money handed to somebody. */
+const HAND = "M7 11V6.5a1.5 1.5 0 0 1 3 0V11M10 10V4.5a1.5 1.5 0 0 1 3 0V10M13 10V5.5a1.5 1.5 0 0 1 3 0V12M16 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a6 6 0 0 1-5-2.7L3.6 14.6a1.5 1.5 0 0 1 2.4-1.8L7 14";
+
+/** The pill a loan's row carries: what is still owed, or that it is all back. */
+function loanPill(loan: LoanReading): { label: string; tone: (typeof TONE)[keyof typeof TONE] } | null {
+  if (!loan.isLoan || loan.lent <= 0) return null;
+  return loan.settled
+    ? { label: "Loan returned", tone: TONE.good }
+    : { label: `${formatMoney(loan.owed)} owed`, tone: TONE.warn };
 }
 
 interface Spending {
@@ -99,6 +135,9 @@ interface Spending {
   dayKey: string;
   description: string | null;
   paidAmount: number;
+  /** Money lent out rather than spent: who to, and how much is back (`lib/spendingLoan`). */
+  loanTo: string | null;
+  loanReturned: number;
   history: Array<{ at: string; action: string; byName: string | null; detail: string | null; amount: number | null }>;
 }
 
@@ -111,6 +150,8 @@ function readSpending(raw: Record<string, unknown>): Spending {
     dayKey: typeof raw.dayKey === "string" && raw.dayKey.length === 10 ? raw.dayKey : karachiDayKey(),
     description: typeof raw.description === "string" ? raw.description : null,
     paidAmount: typeof raw.paidAmount === "number" ? raw.paidAmount : 0,
+    loanTo: typeof raw.loanTo === "string" && raw.loanTo.trim() ? raw.loanTo : null,
+    loanReturned: typeof raw.loanReturned === "number" ? raw.loanReturned : 0,
     history: Array.isArray(raw.history)
       ? raw.history.map(readHistoryEntry).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       : [],
@@ -152,49 +193,29 @@ export function CapitalInvestmentView({ accountId }: { accountId?: string }) {
    * whoever funded it.
    */
   const byPot = useMemo(() => {
+    const rowsByPot = new Map<string, TransactionDoc[]>(pots.map((pot) => [pot.id, []]));
+    for (const txn of ledger.transactions) rowsByPot.get(txn.accountId)?.push(txn);
+
     const map = new Map<string, { received: number; paidFromPot: number; cost: number; funded: number; count: number }>();
     for (const pot of pots) {
-      map.set(pot.id, { received: pot.openingBalance ?? 0, paidFromPot: 0, cost: 0, funded: 0, count: 0 });
-    }
-    const returnsByPot = new Map<string, number>();
-    for (const txn of ledger.transactions) {
-      if (txn.direction === "IN" && (txn.sourceModule === "INVESTMENT_WITH_X" || txn.groupId?.startsWith("invx_"))) {
-        returnsByPot.set(txn.accountId, (returnsByPot.get(txn.accountId) ?? 0) + txn.amount);
-      }
-    }
-    for (const txn of ledger.transactions) {
-      const entry = map.get(txn.accountId);
-      if (!entry) continue;
-      if (txn.direction === "IN") {
-        if (txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_") && !isPassThrough(txn)) {
-          entry.received += txn.amount;
-        }
-      } else {
-        entry.paidFromPot += txn.amount;
-      }
+      const rows = rowsByPot.get(pot.id) ?? [];
+      const cash = potCash(pot.openingBalance ?? 0, rows);
+      // A round's capital coming back offsets the round going out, so it is
+      // not a cost — the same reading the venture's own screen makes.
+      const returned = rows.filter(isRoundReturn).reduce((sum, txn) => sum + txn.amount, 0);
+      const direct = rows.filter(isDirectSpending);
+      // Money lent out is owed back, not spent (`lib/spendingLoan`).
+      const directCost = Math.max(0, direct.filter((txn) => !isLentOut(txn)).reduce((sum, txn) => sum + txn.amount, 0) - returned);
+      map.set(pot.id, { received: cash.received, paidFromPot: cash.paidFromPot, cost: directCost, funded: directCost, count: direct.length });
     }
     for (const spending of spendings) {
       const entry = map.get(spending.investmentId);
       if (!entry) continue;
+      if (spending.loanTo) { entry.count += 1; continue; }
       const { paid } = readPaid(spending);
       entry.cost += spending.amount;
       entry.funded += paid;
       entry.count += 1;
-    }
-    for (const txn of ledger.transactions) {
-      if (txn.direction !== "OUT" || txn.sourceModule === "CAPITAL_INVESTMENT" || isPassThrough(txn)) continue;
-      const entry = map.get(txn.accountId);
-      if (!entry) continue;
-      entry.cost += txn.amount;
-      entry.funded += txn.amount;
-      entry.count += 1;
-    }
-    for (const [potId, returned] of returnsByPot.entries()) {
-      const entry = map.get(potId);
-      if (!entry) continue;
-      entry.paidFromPot = Math.max(0, entry.paidFromPot - returned);
-      entry.cost = Math.max(0, entry.cost - returned);
-      entry.funded = Math.max(0, entry.funded - returned);
     }
     return map;
   }, [pots, ledger.transactions, spendings]);
@@ -382,10 +403,35 @@ function PotList({ pots, byPot, loading, ready, getIdToken, isMobile }: {
 
 type Ledger = ReturnType<typeof useLedger>;
 
-/** A row's edit trail, in words: what each field was before the change. */
-function txnHistory(txn: TransactionDoc): { at: string; action: string; by: string | null; detail: string | null; amount: number | null }[] {
+/**
+ * A row's trail, in words: what each field was before an edit, and every
+ * pay-back made or taken off, with the account it came from.
+ */
+function txnHistory(
+  txn: TransactionDoc,
+  names: ReadonlyMap<string, string> = new Map()
+): { at: string; action: string; by: string | null; detail: string | null; amount: number | null }[] {
   const created = { at: stamp(txnCreatedIso(txn)), action: "Recorded", by: txn.createdByName ?? null, detail: null, amount: null };
   const edits = (txn.history ?? []).map((entry) => {
+    if (entry.action === "PAID_BACK") {
+      const from = (entry.allocations ?? [])
+        .map((line) => `${formatMoney(line.amount)} from ${line.accountName ?? names.get(line.accountId) ?? "another account"}`)
+        .join(", ");
+      return { at: stamp(entry.at), action: "Paid back", by: entry.byName ?? null, detail: from || null, amount: entry.amount ?? null };
+    }
+    if (entry.action === "PAY_BACK_REMOVED") {
+      const from = entry.accountId ? names.get(entry.accountId) : undefined;
+      return {
+        at: stamp(entry.at),
+        action: "Pay-back removed",
+        by: entry.byName ?? null,
+        detail: from ? `It went back into ${from}.` : null,
+        amount: entry.amount ?? null,
+      };
+    }
+    if (HISTORY_LABELS[entry.action] && entry.action !== "EDITED") {
+      return { at: stamp(entry.at), action: HISTORY_LABELS[entry.action], by: entry.byName ?? null, detail: entry.detail ?? null, amount: entry.amount ?? null };
+    }
     const prev = entry.previous ?? {};
     const parts: string[] = [];
     if (prev.amount !== undefined) parts.push(`amount was ${formatMoney(Number(prev.amount) || 0)}`);
@@ -429,6 +475,11 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
   const [addingContribution, setAddingContribution] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [paying, setPaying] = useState<Spending | null>(null);
+  const [payingBack, setPayingBack] = useState<TransactionDoc | null>(null);
+  const [removingPayBack, setRemovingPayBack] = useState<PayBackLine | null>(null);
+  const [markingLoan, setMarkingLoan] = useState<LoanTarget | null>(null);
+  const [returningLoan, setReturningLoan] = useState<LoanTarget | null>(null);
+  const [removingLoanReturn, setRemovingLoanReturn] = useState<LoanReturnLine | null>(null);
   const [deleting, setDeleting] = useState<{ spending: Spending; payments: number; total: number } | null>(null);
   const [removingContribution, setRemovingContribution] = useState<{ id: string; label: string; amount: number } | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
@@ -440,10 +491,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     () => ledger.transactions.filter((txn) => txn.accountId === pot.id),
     [ledger.transactions, pot.id]
   );
-  const returns = useMemo(
-    () => movements.filter((txn) => txn.direction === "IN" && (txn.sourceModule === "INVESTMENT_WITH_X" || txn.groupId?.startsWith("invx_"))),
-    [movements]
-  );
+  const returns = useMemo(() => movements.filter(isRoundReturn), [movements]);
   const returnedTotal = useMemo(
     () => returns.reduce((sum, txn) => sum + txn.amount, 0),
     [returns]
@@ -463,24 +511,83 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     return ids;
   }, [returns]);
 
-  const contributions = useMemo(
-    () => movements.filter((txn) => txn.direction === "IN" && txn.sourceModule !== "INVESTMENT_WITH_X" && !txn.groupId?.startsWith("invx_") && !isPassThrough(txn)),
-    [movements]
-  );
-  const directSpendings = useMemo(
-    () => movements.filter((txn) => txn.direction === "OUT" && txn.sourceModule !== "CAPITAL_INVESTMENT" && !isPassThrough(txn)),
-    [movements]
-  );
+  const contributions = useMemo(() => movements.filter(isContribution), [movements]);
+  const directSpendings = useMemo(() => movements.filter(isDirectSpending), [movements]);
 
   const figures = useMemo(() => {
-    const received = (pot.openingBalance ?? 0) + contributions.reduce((sum, txn) => sum + txn.amount, 0);
-    const paidFromPot = Math.max(0, movements.filter((txn) => txn.direction === "OUT").reduce((sum, txn) => sum + txn.amount, 0) - returnedTotal);
-    const directCost = Math.max(0, directSpendings.reduce((sum, txn) => sum + txn.amount, 0) - returnedTotal);
-    const ticketCost = spendings.reduce((sum, spending) => sum + spending.amount, 0);
+    // In hand is the pot's cash — what its account holds — so money that came
+    // back (a reversed payment, a pay-back) counts, not only round returns.
+    const { received, paidFromPot, inHand } = potCash(pot.openingBalance ?? 0, movements);
+    // A loan is owed back, not spent: it is counted under Lent Out instead.
+    const spent = directSpendings.filter((txn) => !isLentOut(txn));
+    const directCost = Math.max(0, spent.reduce((sum, txn) => sum + txn.amount, 0) - returnedTotal);
+    const tickets = spendings.filter((spending) => !spending.loanTo);
+    const ticketCost = tickets.reduce((sum, spending) => sum + spending.amount, 0);
     const cost = ticketCost + directCost;
-    const funded = spendings.reduce((sum, spending) => sum + readPaid(spending).paid, 0) + directCost;
-    return { received, paidFromPot, inHand: received - paidFromPot, cost, funded, unfunded: Math.max(0, cost - funded) };
-  }, [pot.openingBalance, contributions, movements, spendings, directSpendings, returnedTotal]);
+    const funded = tickets.reduce((sum, spending) => sum + readPaid(spending).paid, 0) + directCost;
+    const loans = [
+      ...directSpendings.filter(isLentOut).map((txn) => readLoan(txn, txn.amount)),
+      ...spendings.filter((spending) => spending.loanTo).map((spending) => readLoan(spending, readPaid(spending).paid)),
+    ];
+    const lentOut = loans.reduce((sum, loan) => sum + loan.owed, 0);
+    const lentTotal = loans.reduce((sum, loan) => sum + loan.lent, 0);
+    return { received, paidFromPot, inHand, cost, funded, unfunded: Math.max(0, cost - funded), lentOut, lentTotal, loanCount: loans.length };
+  }, [pot.openingBalance, movements, spendings, directSpendings, returnedTotal]);
+
+  /**
+   * Every repayment on a loan, by loan — read from all accounts, since the
+   * borrower may have paid it back into a different one.
+   */
+  const loanReturnsBy = useMemo(() => {
+    const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
+    const map = new Map<string, LoanReturnLine[]>();
+    for (const txn of ledger.transactions) {
+      if (txn.sourceModule !== "LOAN_RETURN" || !txn.sourceId) continue;
+      const list = map.get(txn.sourceId) ?? [];
+      list.push({
+        id: txn.id,
+        intoName: names.get(txn.accountId) ?? "A deleted account",
+        amount: txn.amount,
+        dayKey: txn.dayKey,
+        note: txn.note ?? null,
+        by: txn.createdByName ?? null,
+      });
+      map.set(txn.sourceId, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+    return map;
+  }, [ledger.transactions, ledger.accounts]);
+
+  /**
+   * Every pay-back made against a spending of this pot, by spending — read
+   * from the legs that brought the money **in** to this pot, one per account
+   * it came from. The spending's own `paidBack` is the figure; these are where
+   * that money came from, and what Remove takes off again.
+   */
+  const payBacksBySpending = useMemo(() => {
+    const names = new Map(ledger.accounts.map((account) => [account.id, account.name]));
+    const map = new Map<string, PayBackLine[]>();
+    for (const txn of movements) {
+      if (txn.sourceModule !== "PAY_BACK" || txn.direction !== "IN" || !txn.sourceId) continue;
+      const list = map.get(txn.sourceId) ?? [];
+      list.push({
+        id: txn.id,
+        fromName: names.get(txn.counterAccountId ?? "") ?? "A deleted account",
+        amount: txn.amount,
+        dayKey: txn.dayKey,
+        note: txn.note ?? null,
+        by: txn.createdByName ?? null,
+      });
+      map.set(txn.sourceId, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+    return map;
+  }, [movements, ledger.accounts]);
+
+  const accountNames = useMemo(
+    () => new Map(ledger.accounts.map((account) => [account.id, account.name])),
+    [ledger.accounts]
+  );
 
   /** The payments made against each spending, by the spending they funded. */
   const legsBySpending = useMemo(() => {
@@ -536,11 +643,44 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     setDeletingDirectTxn(null);
     setOpenedDirectTxn(null);
     setRemoved(null);
+    const { paidBack } = readPaidBack(deletingDirectTxn);
     setBanner(
       result.ok
-        ? { ok: true, text: `"${deletingDirectTxn.sourceLabel ?? "Spending"}" deleted, and ${formatMoney(deletingDirectTxn.amount)} put back into ${pot.name}.` }
+        ? {
+            ok: true,
+            text: `"${deletingDirectTxn.sourceLabel ?? "Spending"}" deleted, and ${formatMoney(deletingDirectTxn.amount)} put back into ${pot.name}.`
+              + (paidBack > 0 ? ` Its ${formatMoney(paidBack)} of pay-backs went back where they came from.` : ""),
+          }
         : { ok: false, text: result.error }
     );
+  };
+
+  /** Takes one account's pay-back off: out of this pot, back into that account. */
+  const confirmRemovePayBack = async () => {
+    if (!removingPayBack) return;
+    const line = removingPayBack;
+    setBusyId(line.id);
+    const result = await deleteTransaction(await getIdToken(), line.id);
+    setBusyId(null);
+    setRemovingPayBack(null);
+    setRemoved(null);
+    setBanner(result.ok
+      ? { ok: true, text: `${formatMoney(line.amount)} pay-back removed — it went back into ${line.fromName}.` }
+      : { ok: false, text: result.error });
+  };
+
+  /** Takes one repayment off: out of the account it came into, and the borrower owes it again. */
+  const confirmRemoveLoanReturn = async () => {
+    if (!removingLoanReturn) return;
+    const line = removingLoanReturn;
+    setBusyId(line.id);
+    const result = await deleteTransaction(await getIdToken(), line.id);
+    setBusyId(null);
+    setRemovingLoanReturn(null);
+    setRemoved(null);
+    setBanner(result.ok
+      ? { ok: true, text: `${formatMoney(line.amount)} return removed — it came out of ${line.intoName} and is owed again.` }
+      : { ok: false, text: result.error });
   };
 
   /** Every row removed from this pot, read on demand from the archive. */
@@ -575,13 +715,63 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         d: ICON.wallet, tone: "good", onClick: () => setPaying(spending),
       });
     }
+    const target: LoanTarget = { kind: "TICKET", id: spending.id, label: spending.title, loan: readLoan(spending, paid) };
+    if (target.loan.isLoan) {
+      if (target.loan.owed > 0) {
+        actions.push({ key: "loanback", label: compact ? "Returned" : "Loan returned", shortLabel: "Returned", d: BACK_ARROW, tone: "good", onClick: () => setReturningLoan(target) });
+      }
+      actions.push({ key: "loan", label: "Loan", d: HAND, tone: "quiet", onClick: () => setMarkingLoan(target) });
+    } else {
+      actions.push({ key: "loan", label: compact ? "Loan" : "Mark as loan", shortLabel: "Loan", d: HAND, tone: "quiet", onClick: () => setMarkingLoan(target) });
+    }
     actions.push({ key: "edit", label: "Edit", d: ICON.edit, tone: "quiet", onClick: () => setEditingSpending(spending) });
-    actions.push({ key: "delete", label: "Delete", d: ICON.trash, tone: "bad", onClick: () => void askDelete(spending), disabled: busyId === spending.id });
+    // A loan with money already back cannot be deleted; the server refuses it too.
+    if (target.loan.returned <= 0) {
+      actions.push({ key: "delete", label: "Delete", d: ICON.trash, tone: "bad", onClick: () => void askDelete(spending), disabled: busyId === spending.id });
+    }
     return actions;
   }, [busyId, askDelete]);
 
   const buildDirectActions = useCallback((txn: TransactionDoc): RowAction[] => {
     const actions: RowAction[] = [];
+    /*
+      **Pay back** — the owner's "UBL CC covered September's 249,000; pay part
+      of it back from the Investment with X profit". Offered on any spending
+      typed straight out of the pot, until it is paid back in full.
+    */
+    const loan = readLoan(txn, txn.amount);
+    if (txn.type === "LOAN" && loan.isLoan) {
+      /*
+        **A loan** — the owner's "the money went to Muhammad Hussain; when it
+        comes back I record it here". Repaid by the borrower, never paid back
+        from another of the company's own accounts.
+      */
+      const target: LoanTarget = { kind: "TXN", id: txn.id, label: txn.sourceLabel ?? "Spending", loan };
+      if (loan.owed > 0) {
+        actions.push({ key: "loanback", label: "Loan returned", shortLabel: "Returned", d: BACK_ARROW, tone: "good", onClick: () => setReturningLoan(target) });
+      }
+      actions.push({ key: "loan", label: "Loan", d: HAND, tone: "quiet", onClick: () => setMarkingLoan(target) });
+    } else if (canPayBack(txn) && !readPaidBack(txn).settled) {
+      const started = readPaidBack(txn).paidBack > 0;
+      actions.push({
+        key: "payback",
+        label: started ? "Pay back rest" : "Pay back",
+        shortLabel: "Pay back",
+        d: BACK_ARROW,
+        tone: "good",
+        onClick: () => setPayingBack(txn),
+      });
+      if (!started) {
+        actions.push({
+          key: "loan",
+          label: "Mark as loan",
+          shortLabel: "Loan",
+          d: HAND,
+          tone: "quiet",
+          onClick: () => setMarkingLoan({ kind: "TXN", id: txn.id, label: txn.sourceLabel ?? "Spending", loan }),
+        });
+      }
+    }
     if (txn.sourceModule === "MANUAL" && !txn.reversedBy && !txn.reversalOf) {
       actions.push({
         key: "edit",
@@ -590,14 +780,16 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         tone: "quiet",
         onClick: () => setEditingDirectTxn(txn),
       });
-      actions.push({
-        key: "delete",
-        label: "Delete",
-        d: ICON.trash,
-        tone: "bad",
-        onClick: () => setDeletingDirectTxn(txn),
-        disabled: busyId === txn.id,
-      });
+      if (loan.returned <= 0) {
+        actions.push({
+          key: "delete",
+          label: "Delete",
+          d: ICON.trash,
+          tone: "bad",
+          onClick: () => setDeletingDirectTxn(txn),
+          disabled: busyId === txn.id,
+        });
+      }
     }
     return actions;
   }, [busyId]);
@@ -623,10 +815,12 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       const spending = item.spending;
       const { paid, outstanding, settled } = readPaid(spending);
       const legs = legsBySpending.get(spending.id) ?? [];
+      const loan = readLoan(spending, paid);
       return {
         id: spending.id,
         title: spending.title,
         meta: [spending.dayKey]
+          .concat(loan.isLoan ? [`Lent to ${loan.to}`] : [])
           .concat(legs.length ? [`from ${legs.map((leg) => leg.accountName).join(", ")}`] : ["not paid from anywhere yet"])
           .join(" · "),
         amount: spending.amount,
@@ -635,7 +829,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
           label: settled ? "Paid" : paid > 0 ? `${formatMoney(outstanding)} left` : "Unpaid",
           tone: settled ? TONE.good : paid > 0 ? TONE.warn : TONE.quiet,
         },
-        payment: null,
+        payment: loanPill(loan),
         notes: spending.description
           ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{spending.description}</span></div>
           : null,
@@ -648,6 +842,26 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
     const returnTxn = isReturned
       ? returns.find((r) => (txn.sourceId && r.sourceId === txn.sourceId) || (txn.groupId && r.groupId === txn.groupId))
       : null;
+    const back = readPaidBack(txn);
+    const backLines = payBacksBySpending.get(txn.id) ?? [];
+    const backFrom = [...new Set(backLines.map((line) => line.fromName))].join(", ");
+    const loan = txn.type === "LOAN" ? readLoan(txn, txn.amount) : null;
+    if (loan?.isLoan) {
+      return {
+        id: txn.id,
+        title: txn.sourceLabel ?? "Loan",
+        meta: [txn.dayKey, `Lent to ${loan.to}`, `from ${pot.name}`].join(" · "),
+        amount: txn.amount,
+        category: "Utilities",
+        status: { label: "Loan", tone: TONE.quiet },
+        payment: loanPill(loan),
+        notes: txn.note
+          ? <div style={{ marginTop: 6 }}><span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>{txn.note}</span></div>
+          : null,
+        actions: buildDirectActions(txn),
+        onOpen: () => setOpenedDirectTxn(txn),
+      };
+    }
     return {
       id: txn.id,
       title: txn.sourceLabel ?? "Spending",
@@ -659,12 +873,25 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       amount: txn.amount,
       category: isReturned ? "Marketing" : "Utilities",
       status: isReturned ? { label: "Returned", tone: TONE.quiet } : { label: "Paid", tone: TONE.good },
-      payment: null,
+      // Only once something has been paid back: most spendings are never
+      // repaid, and a "Rs 249,000 to pay back" pill on all of them would nag.
+      payment: back.paidBack > 0
+        ? back.settled
+          ? { label: "Paid back", tone: TONE.good }
+          : { label: `${formatMoney(back.left)} left to pay back`, tone: TONE.warn }
+        : null,
       notes: (
         <>
           {isReturned && (
             <div style={{ marginTop: 4 }}>
               <span style={{ fontSize: 11.5, color: X.faint, fontWeight: 500 }}>Capital returned to pot (reinvested)</span>
+            </div>
+          )}
+          {back.paidBack > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ fontSize: 11.5, color: X.deep, fontWeight: 600 }}>
+                {formatMoney(back.paidBack)} paid back{backFrom ? ` from ${backFrom}` : ""}
+              </span>
             </div>
           )}
           {txn.note && (
@@ -746,6 +973,21 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
       accent: "#c99a2e",
       icon: ICON.bars,
     },
+    ...(figures.loanCount > 0
+      ? [{
+          label: "Lent Out",
+          value: formatMoney(figures.lentOut),
+          note: figures.lentOut > 0
+            ? `still owed on ${figures.loanCount} loan${figures.loanCount === 1 ? "" : "s"} · not counted as spent`
+            : "every loan has come back",
+          pill: figures.lentOut > 0 ? "Owed" : "Back",
+          tone: (figures.lentOut > 0 ? "warn" : "good") as "warn" | "good",
+          pct: figures.lentTotal ? Math.round((figures.lentOut / figures.lentTotal) * 100) : 0,
+          color: figures.lentOut > 0 ? "#a5762a" : "#2f7d78",
+          accent: "#4f9c99",
+          icon: HAND,
+        } satisfies StatCard]
+      : []),
     { label: "Not Paid Yet", value: formatMoney(figures.unfunded), note: figures.unfunded > 0 ? "no account behind them yet" : "every spending is funded", pill: figures.unfunded > 0 ? "Owed" : "Clear", tone: figures.unfunded > 0 ? "warn" : "good", pct: figures.cost ? Math.round((figures.unfunded / figures.cost) * 100) : 0, color: figures.unfunded > 0 ? "#a5762a" : "#2f7d78", accent: "#c0574a", icon: ICON.clock },
   ];
 
@@ -864,6 +1106,14 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
                 { label: "Note", value: openedSpending.description ?? "—", wide: true },
               ]}
               legs={legsBySpending.get(openedSpending.id) ?? []}
+              extra={openedSpending.loanTo ? (
+                <LoanPanel
+                  loan={readLoan(openedSpending, paid)}
+                  lines={loanReturnsBy.get(openedSpending.id) ?? []}
+                  busyId={busyId}
+                  onRemove={(line) => { setOpened(null); setRemovingLoanReturn(line); }}
+                />
+              ) : undefined}
               notFunded="Nothing has paid for this yet. Choose which account funds it — it does not have to be this investment."
               history={openedSpending.history.map((entry) => ({
                 at: stamp(entry.at),
@@ -876,7 +1126,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
                 <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
                   disabled={action.disabled}
                   onClick={() => {
-                    if (action.key === "pay" || action.key === "edit") setOpened(null);
+                    if (action.key !== "delete") setOpened(null);
                     action.onClick();
                   }} />
               ))}
@@ -890,6 +1140,8 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         const returnTxn = isReturned
           ? returns.find((r) => (openedDirectTxn.sourceId && r.sourceId === openedDirectTxn.sourceId) || (openedDirectTxn.groupId && r.groupId === openedDirectTxn.groupId))
           : null;
+        const back = readPaidBack(openedDirectTxn);
+        const backLines = payBacksBySpending.get(openedDirectTxn.id) ?? [];
         return (
           <OverlayPanel
             title={openedDirectTxn.sourceLabel ?? "Direct spending"}
@@ -901,8 +1153,31 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
               title={openedDirectTxn.sourceLabel ?? "Direct spending"}
               amountLabel={formatMoney(openedDirectTxn.amount)}
               formatMoney={formatMoney}
-              status={isReturned ? { label: "Returned", tone: TONE.quiet } : { label: "Paid", tone: TONE.good }}
-              payment={{ paid: openedDirectTxn.amount, outstanding: 0, label: isReturned ? "Returned" : "Paid", tone: isReturned ? TONE.quiet : TONE.good }}
+              status={isReturned ? { label: "Returned", tone: TONE.quiet } : openedDirectTxn.type === "LOAN" ? { label: "Loan", tone: TONE.quiet } : { label: "Paid", tone: TONE.good }}
+              payment={back.paidBack > 0
+                ? {
+                    paid: back.paidBack,
+                    outstanding: back.left,
+                    label: back.settled ? "Paid back" : `${formatMoney(back.left)} left to pay back`,
+                    tone: back.settled ? TONE.good : TONE.warn,
+                  }
+                : { paid: openedDirectTxn.amount, outstanding: 0, label: isReturned ? "Returned" : "Paid", tone: isReturned ? TONE.quiet : TONE.good }}
+              figureLabels={back.paidBack > 0 ? { paid: "Paid back", outstanding: "Left to pay back" } : undefined}
+              extra={openedDirectTxn.type === "LOAN" && openedDirectTxn.loanTo ? (
+                <LoanPanel
+                  loan={readLoan(openedDirectTxn, openedDirectTxn.amount)}
+                  lines={loanReturnsBy.get(openedDirectTxn.id) ?? []}
+                  busyId={busyId}
+                  onRemove={(line) => { setOpenedDirectTxn(null); setRemovingLoanReturn(line); }}
+                />
+              ) : backLines.length > 0 ? (
+                <PayBackList
+                  potName={pot.name}
+                  lines={backLines}
+                  busyId={busyId}
+                  onRemove={(line) => { setOpenedDirectTxn(null); setRemovingPayBack(line); }}
+                />
+              ) : undefined}
               fields={[
                 { label: "Investment", value: pot.name },
                 { label: "Date", value: openedDirectTxn.dayKey },
@@ -922,7 +1197,7 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
                 },
               ]}
               notFunded=""
-              history={txnHistory(openedDirectTxn)}
+              history={txnHistory(openedDirectTxn, accountNames)}
               actions={buildDirectActions(openedDirectTxn).map((action) => (
                 <DetailAction key={action.key} label={action.label} d={action.d} tone={action.tone}
                   disabled={action.disabled}
@@ -1064,8 +1339,146 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
           <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
             Deleting this removes the entry and restores {formatMoney(deletingDirectTxn.amount)} back into {pot.name}. A copy is kept under Removed, with who removed it and when.
           </p>
+          {readPaidBack(deletingDirectTxn).paidBack > 0 && (
+            <p style={{ marginTop: 10, borderRadius: 10, background: "#fdf5e6", border: "1px solid #ecdcae", padding: "11px 13px", fontSize: 12.5, fontWeight: 600, color: "#8a6321", lineHeight: 1.6 }}>
+              {formatMoney(readPaidBack(deletingDirectTxn).paidBack)} has been paid back against this
+              {(() => {
+                const from = [...new Set((payBacksBySpending.get(deletingDirectTxn.id) ?? []).map((line) => line.fromName))];
+                return from.length ? ` from ${from.join(", ")}` : "";
+              })()}.
+              Deleting it removes those pay-backs too: the money goes back where it came from and comes out of {pot.name} again.
+            </p>
+          )}
         </OverlayPanel>
       )}
+
+      {removingPayBack && (
+        <OverlayPanel title="Remove this pay-back?" maxWidth={440} onClose={() => setRemovingPayBack(null)}
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button type="button" onClick={() => setRemovingPayBack(null)}
+                style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Keep it</button>
+              <button type="button" disabled={busyId === removingPayBack.id} onClick={() => void confirmRemovePayBack()}
+                style={{ borderRadius: 10, border: "none", background: "#a8483c", color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busyId === removingPayBack.id ? 0.5 : 1 }}>
+                {busyId === removingPayBack.id ? "Removing…" : "Remove"}
+              </button>
+            </div>
+          }>
+          <p style={{ fontSize: 13.5, color: X.body, lineHeight: 1.6 }}>
+            <strong style={{ color: X.ink }}>{formatMoney(removingPayBack.amount)}</strong> from {removingPayBack.fromName} · {removingPayBack.dayKey}
+          </p>
+          <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
+            The money goes back into {removingPayBack.fromName} and comes out of {pot.name} again, and the spending owes it again.
+            A copy of both rows is kept under Removed, with who removed them and when.
+          </p>
+        </OverlayPanel>
+      )}
+
+      {markingLoan && (
+        <LoanForm
+          target={markingLoan}
+          potName={pot.name}
+          getIdToken={getIdToken}
+          onClose={() => setMarkingLoan(null)}
+          onSaved={(text) => { setBanner({ ok: true, text }); setMarkingLoan(null); }}
+        />
+      )}
+
+      {returningLoan && (
+        <LoanReturnForm
+          target={returningLoan}
+          pot={pot}
+          accounts={ledger.accounts}
+          balances={ledger.balances}
+          getIdToken={getIdToken}
+          onClose={() => setReturningLoan(null)}
+          onSaved={(text) => { setBanner({ ok: true, text }); setReturningLoan(null); }}
+        />
+      )}
+
+      {removingLoanReturn && (
+        <OverlayPanel title="Remove this return?" maxWidth={440} onClose={() => setRemovingLoanReturn(null)}
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button type="button" onClick={() => setRemovingLoanReturn(null)}
+                style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Keep it</button>
+              <button type="button" disabled={busyId === removingLoanReturn.id} onClick={() => void confirmRemoveLoanReturn()}
+                style={{ borderRadius: 10, border: "none", background: "#a8483c", color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busyId === removingLoanReturn.id ? 0.5 : 1 }}>
+                {busyId === removingLoanReturn.id ? "Removing…" : "Remove"}
+              </button>
+            </div>
+          }>
+          <p style={{ fontSize: 13.5, color: X.body, lineHeight: 1.6 }}>
+            <strong style={{ color: X.ink }}>{formatMoney(removingLoanReturn.amount)}</strong> into {removingLoanReturn.intoName} · {removingLoanReturn.dayKey}
+          </p>
+          <p style={{ marginTop: 10, fontSize: 12.5, color: X.faint, lineHeight: 1.6 }}>
+            The money comes out of {removingLoanReturn.intoName} again and the loan owes it again.
+            A copy is kept under Removed, with who removed it and when.
+          </p>
+        </OverlayPanel>
+      )}
+
+      {/*
+        **Pay back** uses the same "where is the money coming from?" control as
+        paying an expense — one line per account, the same checks — with the
+        pay-back's own action behind it. The account the spending came out of
+        is not offered: it cannot pay itself back. Income accounts are listed
+        first, since a profit is what the owner pays back from.
+      */}
+      {payingBack && (() => {
+        const back = readPaidBack(payingBack);
+        const label = payingBack.sourceLabel ?? "Spending";
+        const sources = ledger.accounts
+          .filter((account) => account.id !== pot.id)
+          .slice()
+          .sort((a, b) => Number(b.kind === "INCOME") - Number(a.kind === "INCOME"));
+        return (
+          <PayFromAccounts
+            open
+            onClose={() => setPayingBack(null)}
+            onPaid={(text) => setBanner({ ok: true, text })}
+            accounts={sources}
+            balances={ledger.balances}
+            getIdToken={getIdToken}
+            source={{
+              module: "PAY_BACK",
+              collection: "transactions",
+              id: payingBack.id,
+              label,
+              amount: payingBack.amount,
+              alreadyPaid: back.paidBack,
+              direction: "OUT",
+              type: "TRANSFER",
+            }}
+            copy={{
+              title: `Pay back into ${pot.name}`,
+              full: "Pay back in full",
+              part: "Record part pay-back",
+              linesTitle: "Paying back from",
+              done: "paid back",
+              noun: "spending",
+              settledWord: "paid back",
+            }}
+            submit={async ({ allocations, dayKey, note }) => {
+              const result = await payBackSpending(await getIdToken(), {
+                transactionId: payingBack.id,
+                allocations,
+                dayKey,
+                note,
+              });
+              return result.ok
+                ? { ok: true, fullyPaid: result.data.fullyPaid, posted: result.data.posted }
+                : { ok: false, error: result.error };
+            }}
+            extra={
+              <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+                The money leaves the account above and goes back into <strong style={{ color: X.muted }}>{pot.name}</strong>.
+                It is not counted as income or as spending: the {formatMoney(payingBack.amount)} was counted once, when it was spent.
+              </p>
+            }
+          />
+        );
+      })()}
 
       {removingContribution && (
         <OverlayPanel title="Remove this money in?" maxWidth={420} onClose={() => setRemovingContribution(null)}
@@ -1116,6 +1529,301 @@ function VentureView({ pot, ledger, spendings, loading, getIdToken, isMobile, on
         />
       )}
     </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* What has been paid back                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every pay-back against one spending: how much, from which account, when —
+ * with Remove on each, so a pay-back recorded by mistake is taken off in the
+ * place it was made rather than by hunting for two rows on two statements.
+ */
+function PayBackList({ potName, lines, busyId, onRemove }: {
+  potName: string;
+  lines: PayBackLine[];
+  busyId: string | null;
+  onRemove: (line: PayBackLine) => void;
+}) {
+  return (
+    <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 16, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "11px 16px", borderBottom: `1px solid ${X.panelLine}`, background: X.tint }}>
+        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>
+          Paid back into {potName}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: X.faint, whiteSpace: "nowrap" }}>
+          {lines.length} payment{lines.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {lines.map((line) => (
+        <div key={line.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderTop: `1px solid ${X.rowLine}` }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              From {line.fromName}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 500, color: X.faint, marginTop: 2, fontVariantNumeric: "tabular-nums", wordBreak: "break-word" }}>
+              {line.dayKey}{line.by ? ` · ${line.by}` : ""}{line.note ? ` · ${line.note}` : ""}
+            </div>
+          </div>
+          <span style={{ fontSize: 13.5, fontWeight: 800, color: X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+            +{formatMoney(line.amount)}
+          </span>
+          <button
+            type="button"
+            onClick={() => onRemove(line)}
+            disabled={busyId === line.id}
+            aria-label={`Remove the ${formatMoney(line.amount)} pay-back from ${line.fromName}`}
+            className="acc-press"
+            style={{
+              flexShrink: 0, borderRadius: 999, border: "1px solid #f0dcd8", background: "#fff", color: "#a8483c",
+              padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: busyId === line.id ? "wait" : "pointer",
+              fontFamily: "inherit", opacity: busyId === line.id ? 0.55 : 1,
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Loans                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A loan's figures and every repayment, with Remove on each — in the loan's
+ * own panel, so a return recorded by mistake is taken off where it was made.
+ */
+function LoanPanel({ loan, lines, busyId, onRemove }: {
+  loan: LoanReading;
+  lines: LoanReturnLine[];
+  busyId: string | null;
+  onRemove: (line: LoanReturnLine) => void;
+}) {
+  const figure = (label: string, value: number, color: string) => (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.1px", textTransform: "uppercase", color: X.faint }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color, fontVariantNumeric: "tabular-nums", marginTop: 3 }}>{formatMoney(value)}</div>
+    </div>
+  );
+  return (
+    <section style={{ background: "#fff", border: `1px solid ${X.line}`, borderRadius: 16, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "11px 16px", borderBottom: `1px solid ${X.panelLine}`, background: X.tint }}>
+        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>
+          Lent to {loan.to}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: loan.settled ? X.deep : "#a5762a", whiteSpace: "nowrap" }}>
+          {loan.lent <= 0 ? "Not paid out yet" : loan.settled ? "All back" : `${formatMoney(loan.owed)} owed`}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, padding: "12px 16px" }}>
+        {figure("Lent", loan.lent, X.ink)}
+        {figure("Returned", loan.returned, X.deep)}
+        {figure("Still owed", loan.owed, loan.owed > 0 ? "#a5762a" : X.deep)}
+      </div>
+      <p style={{ padding: "0 16px 12px", fontSize: 11.5, color: X.faint, lineHeight: 1.55 }}>
+        A loan is not counted as spending on Group Income or Group Expense, and what comes back is not counted as income.
+      </p>
+      {lines.map((line) => (
+        <div key={line.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderTop: `1px solid ${X.rowLine}` }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: X.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              Back into {line.intoName}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 500, color: X.faint, marginTop: 2, fontVariantNumeric: "tabular-nums", wordBreak: "break-word" }}>
+              {line.dayKey}{line.by ? ` · ${line.by}` : ""}{line.note ? ` · ${line.note}` : ""}
+            </div>
+          </div>
+          <span style={{ fontSize: 13.5, fontWeight: 800, color: X.deep, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+            +{formatMoney(line.amount)}
+          </span>
+          <button
+            type="button"
+            onClick={() => onRemove(line)}
+            disabled={busyId === line.id}
+            aria-label={`Remove the ${formatMoney(line.amount)} return into ${line.intoName}`}
+            className="acc-press"
+            style={{
+              flexShrink: 0, borderRadius: 999, border: "1px solid #f0dcd8", background: "#fff", color: "#a8483c",
+              padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: busyId === line.id ? "wait" : "pointer",
+              fontFamily: "inherit", opacity: busyId === line.id ? 0.55 : 1,
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/**
+ * Marks a spending as a loan to somebody, changes who, or takes the mark off.
+ */
+function LoanForm({ target, potName, getIdToken, onClose, onSaved }: {
+  target: LoanTarget;
+  potName: string;
+  getIdToken: () => Promise<string>;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const isMobile = useIsMobile();
+  const [borrower, setBorrower] = useState(target.loan.to);
+  const [busy, setBusy] = useState<"save" | "unmark" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const field = { ...designField, fontSize: isMobile ? 16 : 13.5 };
+  const name = normalizeBorrower(borrower);
+  const wasLoan = target.loan.isLoan;
+
+  const submit = async (unmark: boolean) => {
+    setBusy(unmark ? "unmark" : "save");
+    setError(null);
+    const result = await setSpendingLoan(await getIdToken(), { kind: target.kind, id: target.id, borrower: unmark ? null : name });
+    setBusy(null);
+    if (!result.ok) { setError(result.error); return; }
+    onSaved(unmark
+      ? `"${target.label}" is a plain spending again and counts as spent.`
+      : wasLoan
+        ? `"${target.label}" is now lent to ${name}.`
+        : `"${target.label}" marked as a loan to ${name}. It no longer counts as spending.`);
+  };
+
+  return (
+    <OverlayPanel title={wasLoan ? "Loan" : "Mark as loan"} subtitle={target.label} icon={<Wallet2 size={18} />} maxWidth={480} onClose={onClose}
+      footer={
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%", flexWrap: "wrap" }}>
+          {wasLoan && target.loan.returned <= 0 && (
+            <button type="button" disabled={busy !== null} onClick={() => void submit(true)}
+              style={{ marginRight: "auto", borderRadius: 10, border: "1px solid #f0dcd8", background: "#fff", color: "#a8483c", padding: "10px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy ? 0.5 : 1 }}>
+              {busy === "unmark" ? "Saving…" : "Not a loan"}
+            </button>
+          )}
+          <button type="button" onClick={onClose}
+            style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+          <button type="button" disabled={busy !== null || !name || name === target.loan.to} onClick={() => void submit(false)}
+            style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy !== null || !name || name === target.loan.to ? 0.5 : 1 }}>
+            {busy === "save" ? "Saving…" : wasLoan ? "Save" : "Mark as loan"}
+          </button>
+        </div>
+      }>
+      <OverlayCard title="Who has the money">
+        <div style={{ display: "grid", gap: 11, padding: "14px 16px" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, ...designLabel }}>
+            <span>Lent to</span>
+            <input value={borrower} onChange={(event) => setBorrower(event.target.value)} placeholder="Muhammad Hussain" autoFocus style={field} />
+          </label>
+        </div>
+      </OverlayCard>
+      <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+        The money stays out of {potName}, but as a loan: it is not counted as spending on Group Income or Group Expense,
+        and when it comes back you record it with <strong style={{ color: X.muted }}>Loan returned</strong>.
+      </p>
+      {wasLoan && target.loan.returned > 0 && (
+        <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+          {formatMoney(target.loan.returned)} has already come back, so this cannot be turned back into a plain spending until those returns are removed.
+        </p>
+      )}
+      {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
+    </OverlayPanel>
+  );
+}
+
+/**
+ * Records money a borrower gave back. It goes into the account the loan came
+ * out of unless another is chosen.
+ */
+function LoanReturnForm({ target, pot, accounts, balances, getIdToken, onClose, onSaved }: {
+  target: LoanTarget;
+  pot: Ledger["accounts"][number];
+  accounts: Ledger["accounts"];
+  balances: Ledger["balances"];
+  getIdToken: () => Promise<string>;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const isMobile = useIsMobile();
+  const open = accounts.filter((account) => account.status !== "ARCHIVED" || account.id === pot.id);
+  const [accountId, setAccountId] = useState(pot.id);
+  const [amount, setAmount] = useState(String(target.loan.owed));
+  const [dayKey, setDayKey] = useState(karachiDayKey());
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const field = { ...designField, fontSize: isMobile ? 16 : 13.5 };
+  const value = Number(amount) || 0;
+  const tooMuch = value > target.loan.owed;
+  const intoName = open.find((account) => account.id === accountId)?.name ?? pot.name;
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await recordLoanReturn(await getIdToken(), {
+      kind: target.kind, id: target.id, accountId, amount: value, dayKey, note: note.trim() || null,
+    });
+    setBusy(false);
+    if (!result.ok) { setError(result.error); return; }
+    onSaved(result.data.settled
+      ? `${formatMoney(value)} back from ${target.loan.to} into ${intoName}. The loan is fully returned.`
+      : `${formatMoney(value)} back from ${target.loan.to} into ${intoName}. ${formatMoney(result.data.owed)} is still owed.`);
+  };
+
+  return (
+    <OverlayPanel title="Loan returned" subtitle={`${target.loan.to} · ${target.label}`} icon={<Wallet2 size={18} />} maxWidth={500} onClose={onClose}
+      footer={
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+          <button type="button" onClick={onClose}
+            style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+          <button type="button" disabled={busy || !(value > 0) || tooMuch} onClick={() => void save()}
+            style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy || !(value > 0) || tooMuch ? 0.5 : 1 }}>
+            {busy ? "Saving…" : value >= target.loan.owed ? "Record full return" : "Record part return"}
+          </button>
+        </div>
+      }>
+      <p style={{ fontSize: 13, color: X.body, lineHeight: 1.6 }}>
+        Lent {formatMoney(target.loan.lent)}
+        {target.loan.returned > 0 ? `, ${formatMoney(target.loan.returned)} back so far` : ""} —{" "}
+        <strong style={{ color: "#a5762a" }}>{formatMoney(target.loan.owed)} still owed</strong>.
+      </p>
+      <OverlayCard title="What came back">
+        <div style={{ display: "grid", gap: 11, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", padding: "14px 16px" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1", ...designLabel }}>
+            <span>Into account</span>
+            <select value={accountId} onChange={(event) => setAccountId(event.target.value)} style={field}>
+              {open.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}{account.id === pot.id ? " (where it was lent from)" : ""} · {formatMoney(balances.get(account.id)?.balance ?? 0)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, ...designLabel }}>
+            <span>Amount</span>
+            <input type="number" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} style={field} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, ...designLabel }}>
+            <span>Date</span>
+            <input type="date" value={dayKey} max={karachiDayKey()} onChange={(event) => setDayKey(event.target.value)} style={field} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, gridColumn: "1 / -1", ...designLabel }}>
+            <span>Note</span>
+            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Cash, bank transfer…" style={field} />
+          </label>
+        </div>
+      </OverlayCard>
+      {tooMuch && (
+        <p role="alert" style={{ fontSize: 12.5, fontWeight: 600, color: "#a33a29" }}>
+          Only {formatMoney(target.loan.owed)} is still owed.
+        </p>
+      )}
+      <p style={{ fontSize: 12, color: X.faint, lineHeight: 1.6 }}>
+        The money goes into {intoName}. It is not counted as income or as new money put in — it is the loan coming home.
+      </p>
+      {error && <p role="alert" style={{ color: "#a33a29", fontSize: 12.5, fontWeight: 600 }}>{error}</p>}
+    </OverlayPanel>
   );
 }
 
@@ -1296,6 +2004,8 @@ function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
     description: spending?.description ?? "",
   });
   const [payDirectly, setPayDirectly] = useState(!spending);
+  const [isLoan, setIsLoan] = useState(false);
+  const [borrower, setBorrower] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (key: keyof typeof form, value: string) => setForm((f) => ({ ...f, [key]: value }));
@@ -1314,10 +2024,13 @@ function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
         dayKey: form.dayKey,
         label: form.title.trim(),
         note: form.description.trim() || null,
+        ...(isLoan ? { loanTo: normalizeBorrower(borrower) } : {}),
       });
       setBusy(false);
       if (result.ok) {
-        onSaved(`${formatMoney(Number(form.amount) || 0)} spending recorded and debited from ${pot.name}.`);
+        onSaved(isLoan
+          ? `${formatMoney(Number(form.amount) || 0)} lent to ${normalizeBorrower(borrower)} from ${pot.name}. It is not counted as spending.`
+          : `${formatMoney(Number(form.amount) || 0)} spending recorded and debited from ${pot.name}.`);
       } else {
         setError(result.error);
       }
@@ -1330,6 +2043,7 @@ function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
           amount: Number(form.amount) || 0,
           dayKey: form.dayKey,
           description: form.description.trim() || "",
+          ...(!spending && isLoan ? { loanTo: normalizeBorrower(borrower) } : {}),
         },
         spending?.id
       );
@@ -1348,9 +2062,9 @@ function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
           <button type="button" onClick={onClose}
             style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.muted, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-          <button type="button" disabled={busy || !form.title.trim() || !(Number(form.amount) > 0)} onClick={() => void save()}
+          <button type="button" disabled={busy || !form.title.trim() || !(Number(form.amount) > 0) || (isLoan && !normalizeBorrower(borrower))} onClick={() => void save()}
             style={{ borderRadius: 10, border: "none", background: X.teal, color: "#fff", padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: busy ? 0.5 : 1 }}>
-            {busy ? "Saving…" : spending ? "Save changes" : "Add spending"}
+            {busy ? "Saving…" : spending ? "Save changes" : isLoan ? "Add loan" : "Add spending"}
           </button>
         </div>
       }>
@@ -1391,6 +2105,29 @@ function SpendingForm({ spending, pot, getIdToken, onClose, onSaved }: {
               Debits {pot.name} directly and syncs with Central Ledger and Group Income sheet.
             </span>
           </div>
+        </label>
+      )}
+
+      {!spending && (
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: "0 4px" }}>
+          <input
+            type="checkbox"
+            checked={isLoan}
+            onChange={(e) => setIsLoan(e.target.checked)}
+            style={{ marginTop: 2, accentColor: X.teal, width: 16, height: 16, cursor: "pointer" }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: X.ink }}>This is a loan</span>
+            <span style={{ fontSize: 11.5, color: X.faint }}>
+              The money is lent to somebody and will come back. Not counted as spending.
+            </span>
+          </div>
+        </label>
+      )}
+      {!spending && isLoan && (
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 4px", ...designLabel }}>
+          <span>Lent to</span>
+          <input value={borrower} onChange={(event) => setBorrower(event.target.value)} placeholder="Muhammad Hussain" style={{ ...designField, fontSize: isMobile ? 16 : 13.5 }} />
         </label>
       )}
 

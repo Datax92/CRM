@@ -161,7 +161,8 @@ export const TRANSACTION_TYPES = [
    * Money coming back on a receivable, or going back on a payable
    * (`lib/receivableSheet`). Settling a debt is neither income nor expense —
    * the money was always somebody's — so it is its own type, which every
-   * income and spending reading leaves out.
+   * income and spending reading leaves out. Also money lent out of an
+   * account, and its repayments (`lib/spendingLoan`).
    */
   'LOAN',
 ] as const;
@@ -175,7 +176,7 @@ export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   TRANSFER: 'Transfer',
   REIMBURSEMENT: 'Reimbursement',
   ADJUSTMENT: 'Adjustment',
-  LOAN: 'Receivable / payable',
+  LOAN: 'Loan / receivable / payable',
 };
 
 /**
@@ -199,6 +200,17 @@ export const SOURCE_MODULES = [
   'AMANAT',
   'PAYROLL',
   'TRANSFER',
+  /**
+   * Money put back into a pot against a spending that came out of it — the
+   * owner's "UBL CC covered September's 249,000 shortfall; pay part of it back
+   * from the Investment with X profit". See `payBackTransactions`.
+   */
+  'PAY_BACK',
+  /**
+   * Money a borrower paid back on a spending marked as a loan (`lib/spendingLoan`).
+   * Typed `LOAN`, so it is neither income nor money put in.
+   */
+  'LOAN_RETURN',
   'MANUAL',
 ] as const;
 
@@ -634,6 +646,132 @@ export function validateTransfer(input: {
   }
   if (money(input.amount) <= 0) errors.push('Enter an amount greater than zero.');
   return errors;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Paying a spending back                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether a row is a spending that can be paid back: money typed straight out
+ * of an account, still standing.
+ *
+ * Only a hand-typed outflow. A leg that paid an expense or handed capital to a
+ * partner belongs to that record, which has its own way of coming back.
+ */
+export function canPayBack(
+  txn: Pick<LedgerTransaction, 'direction' | 'sourceModule'> & {
+    status?: string | null;
+    reversedBy?: string | null;
+    reversalOf?: string | null;
+    /** A loan is repaid by its borrower (`lib/spendingLoan`), not paid back. */
+    type?: string | null;
+  }
+): boolean {
+  return (
+    (txn.status ?? 'POSTED') === 'POSTED' &&
+    txn.direction === 'OUT' &&
+    txn.sourceModule === 'MANUAL' &&
+    txn.type !== 'LOAN' &&
+    !txn.reversedBy &&
+    !txn.reversalOf
+  );
+}
+
+/**
+ * How much of a spending has been paid back, and how much is left.
+ *
+ * The paid-back figure is clamped to the amount, so a spending edited down can
+ * never report a negative amount still to pay back.
+ */
+export function readPaidBack(spending: { amount: number; paidBack?: unknown }): {
+  paidBack: number;
+  left: number;
+  settled: boolean;
+} {
+  const amount = money(spending.amount);
+  const paidBack = Math.min(money(spending.paidBack), amount);
+  const left = round(amount - paidBack);
+  return { paidBack, left, settled: amount > 0 && left <= 0 };
+}
+
+/**
+ * What is wrong with a proposed pay-back, in the words the person needs.
+ *
+ * `checkAllocations`' rules — each account once, every line positive, never
+ * more than is left — plus one of its own: the account the money was spent
+ * from cannot pay itself back. Those two legs would cancel and leave the
+ * spending claiming a repayment that moved nothing.
+ */
+export function checkPayBack(input: {
+  amount: number;
+  paidBack: number;
+  potAccountId: string;
+  potName: string;
+  allocations: PaymentAllocation[];
+}): string[] {
+  if (input.allocations.some((line) => line.accountId === input.potAccountId)) {
+    return [`${input.potName} cannot pay itself back. Choose the account the money comes from.`];
+  }
+  return checkAllocations(input.amount, input.allocations, input.paidBack).errors;
+}
+
+/**
+ * The movements a pay-back becomes: for every account it comes from, money
+ * **out** of that account and the same money **in** to the account the
+ * spending came out of.
+ *
+ * Both legs are typed `TRANSFER`. Paying back a credit card from a profit is
+ * the company's own money moving between its own accounts: the spending was
+ * already counted when it happened, and the profit when it arrived, so the
+ * repayment is neither — counting it would spend the 249,000 twice.
+ *
+ * One pair per funding account, each pair naming the other side
+ * (`counterAccountId`) and the spending (`sourceId`), so removing one pair
+ * removes exactly that account's part.
+ */
+export function payBackTransactions(input: {
+  potAccountId: string;
+  potName: string;
+  spendingId: string;
+  spendingLabel: string;
+  allocations: Array<PaymentAllocation & { accountName: string }>;
+  dayKey: string;
+  groupId: string;
+  createdByUid: string;
+  note?: string | null;
+}): Array<Omit<LedgerTransaction, 'id'>> {
+  const legs: Array<Omit<LedgerTransaction, 'id'>> = [];
+  for (const line of input.allocations) {
+    const shared = {
+      amount: money(line.amount),
+      type: 'TRANSFER' as const,
+      dayKey: input.dayKey,
+      sourceModule: 'PAY_BACK' as const,
+      sourceId: input.spendingId,
+      groupId: input.groupId,
+      status: 'POSTED' as const,
+      note: input.note ?? null,
+      createdByUid: input.createdByUid,
+    };
+    legs.push(
+      {
+        ...shared,
+        accountId: line.accountId,
+        direction: 'OUT',
+        counterAccountId: input.potAccountId,
+        sourceLabel: `Paid back to ${input.potName} — ${input.spendingLabel}`,
+      },
+      {
+        ...shared,
+        accountId: input.potAccountId,
+        direction: 'IN',
+        counterAccountId: line.accountId,
+        sourceLabel: `Paid back from ${line.accountName} — ${input.spendingLabel}`,
+      }
+    );
+  }
+  return legs;
 }
 
 /* -------------------------------------------------------------------------- */

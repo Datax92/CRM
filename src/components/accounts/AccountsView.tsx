@@ -77,8 +77,33 @@ const SOURCE_LABELS: Record<string, string> = {
   DEAL_PAYOUT: "Deal Payout",
   PAYROLL: "Payroll",
   TRANSFER: "Transfer",
+  PAY_BACK: "Pay back",
+  LOAN_RETURN: "Loan returned",
   MANUAL: "Manual entry",
 };
+
+/**
+ * What else a delete takes with it, said before the button is pressed.
+ *
+ * A pay-back is two rows on two statements; deleting either removes both and
+ * makes the spending owe that amount again. A spending that was paid back
+ * takes its pay-backs with it.
+ */
+function deleteWarning(row: TransactionDoc): string {
+  if (row.sourceModule === "PAY_BACK") {
+    return "\n\nThis removes the whole pay-back, from both accounts, and the spending it paid back owes that amount again.";
+  }
+  if (row.sourceModule === "LOAN_RETURN") {
+    return "\n\nThe loan it repaid owes this amount again.";
+  }
+  if (row.type === "LOAN" && (row.loanReturned ?? 0) > 0) {
+    return `\n\n${formatMoney(row.loanReturned ?? 0)} of this loan has come back. Remove those returns first; this delete will be refused.`;
+  }
+  if ((row.paidBack ?? 0) > 0) {
+    return `\n\n${formatMoney(row.paidBack ?? 0)} has been paid back against this. Deleting it removes those pay-backs too and puts the money back where it came from.`;
+  }
+  return row.sourceModule === "MANUAL" ? "" : "\n\nThis was funding another record, which will go back to unpaid.";
+}
 
 /* -------------------------------------------------------------------------- */
 
@@ -176,7 +201,7 @@ export function AccountsView({ accountId }: { accountId?: string }) {
           onAdd={() => setEnteringOn(account.id)}
           onEdit={setEditingRow}
           onDelete={async (row) => {
-            const extra = row.sourceModule === "MANUAL" ? "" : "\n\nThis was funding another record, which will go back to unpaid.";
+            const extra = deleteWarning(row);
             if (!window.confirm(`Delete "${row.sourceLabel ?? "this row"}"?${extra}`)) return;
             const res = await deleteTransaction(await getIdToken(), row.id);
             setBanner(res.ok ? "Deleted." : res.error);
@@ -1155,10 +1180,7 @@ function StatementColumn({
                       aria-label={`Delete ${row.sourceLabel ?? "row"}`}
                       className="acc-press"
                       onClick={async () => {
-                        const extra =
-                          row.sourceModule === "MANUAL"
-                            ? ""
-                            : "\n\nThis was funding another record, which will go back to unpaid.";
+                        const extra = deleteWarning(row);
                         if (!window.confirm(`Delete "${row.sourceLabel ?? "this row"}" (${formatMoney(row.amount)})?${extra}`)) return;
                         const res = await deleteTransaction(await getIdToken(), row.id);
                         onDone(res.ok ? "Deleted." : res.error);

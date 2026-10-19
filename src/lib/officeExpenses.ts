@@ -166,6 +166,12 @@ export const HISTORY_LABELS: Record<string, string> = {
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
   CANCELLED: 'Cancelled',
+  // Loans out of an account (`lib/spendingLoan`).
+  MARKED_LOAN: 'Marked as a loan',
+  LOAN_RENAMED: 'Borrower changed',
+  UNMARKED_LOAN: 'No longer a loan',
+  LOAN_RETURNED: 'Loan returned',
+  LOAN_RETURN_REMOVED: 'Loan return removed',
 };
 
 /** Unpaid is the absence of a payment, so it is what an absent field reads as. */

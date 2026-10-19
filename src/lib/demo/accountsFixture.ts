@@ -23,6 +23,7 @@ const accounts: Row[] = [
   { id: 'acc_jazz', name: 'JazzCash', kind: 'WALLET', openingBalance: 60_000, status: 'ACTIVE' },
   { id: 'acc_committee_dec', name: 'December Committee', kind: 'COMMITTEE', openingBalance: 600_000, status: 'ACTIVE' },
   { id: 'acc_partner_a', name: 'Capital — Partner A', kind: 'INVESTMENT', openingBalance: 0, status: 'ACTIVE' },
+  { id: 'acc_card_ubl', name: 'UBL Credit Card', kind: 'INVESTMENT', openingBalance: 0, status: 'ACTIVE' },
   { id: 'acc_marketing', name: 'Marketing Income', kind: 'INCOME', openingBalance: 0, status: 'ACTIVE' },
   { id: 'invx_book_plots', name: 'Investment with X — Plot Flips', kind: 'INCOME', openingBalance: 0, status: 'ACTIVE' },
   { id: 'amanat_main', name: 'Amanat', kind: 'AMANAT', openingBalance: 0, status: 'ACTIVE' },
@@ -76,6 +77,20 @@ const transactions: Row[] = [
   txn('t20', 'acc_cash', 'OUT', 18_500, 'EXPENSE', '2026-10-07', 'MANUAL', 'Fuel and tea'),
   txn('t21', 'acc_jazz', 'OUT', 12_000, 'EXPENSE', '2026-10-08', 'MANUAL', 'Mobile packages'),
   txn('t22', 'acc_hbl', 'IN', 450_000, 'INCOME', '2026-10-09', 'DEAL_PAYOUT', 'Deal — DHA Phase 6 down payment'),
+  // A credit card covers a month's shortfall, and part of it is paid back
+  // from Marketing Income: the spending stays 249,000, and the pay-back is a
+  // pair of TRANSFER legs naming it (`payBackSpending`).
+  txn('t23', 'acc_card_ubl', 'IN', 950_000, 'INVESTMENT', '2026-09-01', 'MANUAL', 'Card limit'),
+  txn('t24', 'acc_card_ubl', 'OUT', 249_000, 'EXPENSE', '2026-09-30', 'MANUAL', 'Shortfall till 30 September', {
+    paidBack: 77_000,
+    paidBackStatus: 'PART_PAID_BACK',
+    history: [{
+      at: '2026-10-16T10:20:00.000Z', action: 'PAID_BACK', byName: by.createdByName, amount: 77_000,
+      allocations: [{ accountId: 'acc_marketing', accountName: 'Marketing Income', amount: 77_000 }],
+    }],
+  }),
+  txn('t25', 'acc_marketing', 'OUT', 77_000, 'TRANSFER', '2026-10-16', 'PAY_BACK', 'Paid back to UBL Credit Card — Shortfall till 30 September', { sourceId: 't24', groupId: 'g_pb1', counterAccountId: 'acc_card_ubl' }),
+  txn('t26', 'acc_card_ubl', 'IN', 77_000, 'TRANSFER', '2026-10-16', 'PAY_BACK', 'Paid back from Marketing Income — Shortfall till 30 September', { sourceId: 't24', groupId: 'g_pb1', counterAccountId: 'acc_marketing' }),
 ].sort((a, b) => String(b.dayKey).localeCompare(String(a.dayKey)));
 
 const investmentBooks: Row[] = [

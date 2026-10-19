@@ -974,11 +974,14 @@ export function ExpenseDetail({
   formatMoney: fmt, actions, footnote, extra,
   legsHeading = "Where the money came from",
   legsIn = false,
+  figureLabels = { paid: "Paid", outstanding: "Outstanding" },
 }: {
   title: string;
   amountLabel: string;
   status: { label: string; tone: Tone };
   payment: { paid: number; outstanding: number; label: string; tone: Tone } | null;
+  /** What the two figures under the headline are called — "Paid back", say. */
+  figureLabels?: { paid: string; outstanding: string };
   fields: DetailField[];
   legs: FundingLeg[];
   history: HistoryEntry[];
@@ -1024,8 +1027,8 @@ export function ExpenseDetail({
 
       {payment && payment.paid > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Figure label="Paid" value={fmt(payment.paid)} color={X.deep} />
-          <Figure label="Outstanding" value={fmt(payment.outstanding)} color={payment.outstanding > 0 ? "#a5762a" : X.faint} />
+          <Figure label={figureLabels.paid} value={fmt(payment.paid)} color={X.deep} />
+          <Figure label={figureLabels.outstanding} value={fmt(payment.outstanding)} color={payment.outstanding > 0 ? "#a5762a" : X.faint} />
         </div>
       )}
 

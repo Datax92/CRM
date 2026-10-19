@@ -136,6 +136,7 @@ import {
   recalculateBalances as _recalculateBalances,
   payFromAccounts as _payFromAccounts,
   createTransfer as _createTransfer,
+  payBackSpending as _payBackSpending,
   addManualTransaction as _addManualTransaction,
   reverseTransaction as _reverseTransaction,
   updateTransaction as _updateTransaction,
@@ -146,7 +147,13 @@ import {
   countAccountContents as _countAccountContents,
   type AccountInput,
   type PayInput,
+  type PayBackInput,
 } from '@/app/actions/ledger';
+import {
+  setSpendingLoan as _setSpendingLoan,
+  recordLoanReturn as _recordLoanReturn,
+  type LoanReturnInput,
+} from '@/app/actions/spendingLoan';
 import {
   savePersonalExpense as _savePersonalExpense,
   deletePersonalExpense as _deletePersonalExpense,
@@ -1179,6 +1186,24 @@ export async function createTransfer(
   return _createTransfer(token, input);
 }
 
+/** Puts money back into an account against a spending that came out of it. */
+export async function payBackSpending(token: string, input: PayBackInput) {
+  return _payBackSpending(token, input);
+}
+
+/** Marks a spending as a loan to somebody, or back to a plain spending. */
+export async function setSpendingLoan(
+  token: string,
+  input: { kind: 'TXN' | 'TICKET'; id: string; borrower: string | null }
+) {
+  return _setSpendingLoan(token, input);
+}
+
+/** Records money a borrower gave back on a loan. */
+export async function recordLoanReturn(token: string, input: LoanReturnInput) {
+  return _recordLoanReturn(token, input);
+}
+
 export async function addManualTransaction(
   token: string,
   input: {
@@ -1189,6 +1214,7 @@ export async function addManualTransaction(
     dayKey?: string;
     label: string;
     note?: string | null;
+    loanTo?: string | null;
   }
 ) {
   return _addManualTransaction(token, input);

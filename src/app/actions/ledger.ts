@@ -26,10 +26,14 @@ import { karachiDayKey } from "@/lib/dates";
 import {
   accountBalance,
   allocationsToTransactions,
+  canPayBack,
   checkAllocations,
+  checkPayBack,
   distributeAcrossObligations,
   money,
   normalizeAccountKind,
+  payBackTransactions,
+  readPaidBack,
   reversalOf,
   transferTransactions,
   validateTransfer,
@@ -38,8 +42,11 @@ import {
   type SourceModule,
   type TransactionType,
 } from "@/lib/ledger";
+import { formatMoney } from "@/lib/money";
 import { FieldValue, Transaction } from "firebase-admin/firestore";
-import { archiveInBatch, DELETED_RECORDS } from "@/lib/server/deletedArchive";
+import { archiveInBatch, archiveInTransaction, DELETED_RECORDS } from "@/lib/server/deletedArchive";
+import { loanBlocksRemoval, removeLoanReturn } from "@/lib/server/loanLedger";
+import { normalizeBorrower } from "@/lib/spendingLoan";
 
 const ACCOUNTS = "accounts";
 const TRANSACTIONS = "transactions";
@@ -283,10 +290,13 @@ export async function payFromAccounts(
         void index;
       });
 
+      // A spending record marked as a loan lends its money rather than spending
+      // it (`lib/spendingLoan`), so every payment on it is typed LOAN.
+      const isLoan = input.sourceModule === "CAPITAL_INVESTMENT" && Boolean(normalizeBorrower(source.loanTo));
       const legs = allocationsToTransactions({
         allocations,
         direction: input.direction ?? "OUT",
-        type: input.type ?? "EXPENSE",
+        type: isLoan ? "LOAN" : input.type ?? "EXPENSE",
         dayKey,
         sourceModule: input.sourceModule,
         sourceId: input.sourceId,
@@ -552,6 +562,216 @@ export async function createTransfer(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Paying a spending back                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface PayBackInput {
+  /** The spending: a hand-typed outflow from an account. */
+  transactionId: string;
+  /** "Where is the money coming from?" — one line per account. */
+  allocations: PaymentAllocation[];
+  dayKey?: string;
+  note?: string | null;
+}
+
+/**
+ * **Puts money back into an account against a spending that came out of it.**
+ *
+ * The owner's case: UBL CC (a credit card) covered September's 249,000
+ * shortfall, and he wants to pay part of it back out of the Investment with X
+ * profit. Each funding account gives one pair of legs — out of it, into the
+ * account the spending came from — both typed `TRANSFER`, so neither the
+ * spending nor the profit is counted twice (`lib/ledger.payBackTransactions`).
+ *
+ * The spending itself never changes: it stays 249,000. What it gains is
+ * `paidBack`, re-read inside the transaction exactly as `payFromAccounts`
+ * re-reads `paidAmount`, so a double-click or two people at once cannot pay
+ * back more than was spent.
+ */
+export async function payBackSpending(
+  token: string,
+  input: PayBackInput
+): Promise<ActionResult<{ groupId: string; posted: number; fullyPaid: boolean }>> {
+  return runAction("payBackSpending", async () => {
+    const auth = await requireFinance(token);
+
+    const allocations = (input.allocations ?? []).map((line) => ({
+      accountId: (line.accountId ?? "").trim(),
+      amount: money(line.amount),
+    }));
+    if (allocations.length === 0) throw new UserFacingError("Add at least one account to pay back from.");
+
+    const dayKey = input.dayKey && /^\d{4}-\d{2}-\d{2}$/.test(input.dayKey) ? input.dayKey : karachiDayKey();
+    const groupId = adminDb.collection(TRANSACTIONS).doc().id;
+    const spendingRef = adminDb.collection(TRANSACTIONS).doc(input.transactionId);
+
+    const result = await adminDb.runTransaction(async (t: Transaction) => {
+      const spendingSnap = await t.get(spendingRef);
+      if (!spendingSnap.exists) throw new UserFacingError("That spending no longer exists.");
+      const spending = spendingSnap.data()!;
+      if (!canPayBack({
+        direction: spending.direction,
+        sourceModule: spending.sourceModule,
+        status: spending.status,
+        reversedBy: spending.reversedBy,
+        reversalOf: spending.reversalOf,
+        type: spending.type,
+      })) {
+        throw new UserFacingError(
+          spending.type === "LOAN"
+            ? "This is a loan. Record what the borrower returns with Loan returned instead."
+            : "Only money spent straight out of an account can be paid back."
+        );
+      }
+
+      const potId = spending.accountId as string;
+      const [potSnap, ...sourceSnaps] = await Promise.all([
+        t.get(adminDb.collection(ACCOUNTS).doc(potId)),
+        ...allocations.map((line) => t.get(adminDb.collection(ACCOUNTS).doc(line.accountId || "_"))),
+      ]);
+      if (!potSnap.exists) throw new UserFacingError("The account this was spent from no longer exists.");
+      const potName = (potSnap.data()?.name as string) ?? "That account";
+      if (potSnap.data()?.status === "ARCHIVED") {
+        throw new UserFacingError(`${potName} is archived and cannot be paid back into.`);
+      }
+
+      // **The guard, inside the transaction**, against the figure as it is now.
+      const amount = money(spending.amount);
+      const { paidBack } = readPaidBack({ amount, paidBack: spending.paidBack });
+      const errors = checkPayBack({ amount, paidBack, potAccountId: potId, potName, allocations });
+      if (errors.length > 0) throw new UserFacingError(errors[0]);
+
+      const named = allocations.map((line, index) => {
+        const snap = sourceSnaps[index];
+        if (!snap.exists) throw new UserFacingError("One of those accounts no longer exists.");
+        if (snap.data()?.status === "ARCHIVED") {
+          throw new UserFacingError(`${snap.data()?.name ?? "That account"} is archived and cannot be paid from.`);
+        }
+        return { ...line, accountName: (snap.data()?.name as string) ?? "Another account" };
+      });
+
+      const legs = payBackTransactions({
+        potAccountId: potId,
+        potName,
+        spendingId: spendingSnap.id,
+        spendingLabel: (spending.sourceLabel as string) || "Spending",
+        allocations: named,
+        dayKey,
+        groupId,
+        createdByUid: auth.uid,
+        note: (input.note ?? "").trim() || null,
+      });
+      for (const leg of legs) {
+        t.create(adminDb.collection(TRANSACTIONS).doc(), {
+          ...leg,
+          createdByName: auth.name ?? auth.email ?? null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      const total = Math.round(named.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
+      const now = Math.round((paidBack + total) * 100) / 100;
+      t.update(spendingRef, {
+        paidBack: now,
+        paidBackStatus: now >= amount ? "PAID_BACK" : "PART_PAID_BACK",
+        history: FieldValue.arrayUnion({
+          at: new Date().toISOString(),
+          action: "PAID_BACK",
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          amount: total,
+          groupId,
+          dayKey,
+          allocations: named.map((line) => ({ accountId: line.accountId, accountName: line.accountName, amount: line.amount })),
+        }),
+      });
+
+      return { potId, total, posted: named.length, fullyPaid: now >= amount };
+    });
+
+    await Promise.all([
+      ...allocations.map((line) => bumpBalance(line.accountId, -line.amount)),
+      bumpBalance(result.potId, result.total),
+    ]);
+    return { groupId, posted: result.posted, fullyPaid: result.fullyPaid };
+  });
+}
+
+/**
+ * Takes one pay-back off again: **both** of its legs, and its amount off the
+ * spending.
+ *
+ * Deleting either leg from a statement lands here, because removing only one
+ * would leave money arriving in UBL CC from nowhere (or leaving Investment
+ * with X for nowhere) while the spending still claimed to be paid back. Both
+ * rows are copied to `deletedRecords` first, like every other ledger delete.
+ */
+async function removePayBack(
+  auth: DecodedAuth,
+  legId: string
+): Promise<void> {
+  const legRef = adminDb.collection(TRANSACTIONS).doc(legId);
+
+  const moves = await adminDb.runTransaction(async (t: Transaction) => {
+    const legSnap = await t.get(legRef);
+    if (!legSnap.exists) return [];
+    const leg = legSnap.data()!;
+
+    // The other half: same pay-back, the other direction, the two accounts swapped.
+    const group = leg.groupId
+      ? await t.get(adminDb.collection(TRANSACTIONS).where("groupId", "==", leg.groupId))
+      : null;
+    const partner = group?.docs.find((doc) => {
+      const row = doc.data();
+      return (
+        doc.id !== legSnap.id &&
+        row.sourceModule === "PAY_BACK" &&
+        row.direction !== leg.direction &&
+        row.accountId === leg.counterAccountId &&
+        row.counterAccountId === leg.accountId
+      );
+    });
+
+    const spendingRef = leg.sourceId ? adminDb.collection(TRANSACTIONS).doc(leg.sourceId as string) : null;
+    const spendingSnap = spendingRef ? await t.get(spendingRef) : null;
+
+    const removed = [legSnap, ...(partner ? [partner] : [])];
+    for (const snap of removed) {
+      archiveInTransaction(t, snap, auth, "PAY_BACK_REMOVED");
+      t.delete(snap.ref);
+    }
+
+    const amount = money(leg.amount);
+    if (spendingRef && spendingSnap?.exists) {
+      const spending = spendingSnap.data()!;
+      const now = Math.max(0, Math.round((money(spending.paidBack) - amount) * 100) / 100);
+      // The account the money had come from: the OUT leg's own account.
+      const fromAccountId = (leg.direction === "OUT" ? leg.accountId : leg.counterAccountId) as string;
+      t.update(spendingRef, {
+        paidBack: now,
+        paidBackStatus: now <= 0 ? null : now >= money(spending.amount) ? "PAID_BACK" : "PART_PAID_BACK",
+        history: FieldValue.arrayUnion({
+          at: new Date().toISOString(),
+          action: "PAY_BACK_REMOVED",
+          byUid: auth.uid,
+          byName: auth.name ?? auth.email ?? null,
+          amount,
+          accountId: fromAccountId,
+        }),
+      });
+    }
+
+    // Undo each removed leg's effect on its own account.
+    return removed.map((snap) => {
+      const row = snap.data()!;
+      return { accountId: row.accountId as string, delta: -deltaOf(row.direction as "IN" | "OUT", money(row.amount)) };
+    });
+  });
+
+  await Promise.all(moves.map((move) => bumpBalance(move.accountId, move.delta)));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Manual entries and corrections                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -565,6 +785,8 @@ export async function addManualTransaction(
     dayKey?: string;
     label: string;
     note?: string | null;
+    /** Money lent out rather than spent: who to (`lib/spendingLoan`). OUT only. */
+    loanTo?: string | null;
   }
 ): Promise<ActionResult<{ transactionId: string }>> {
   return runAction("addManualTransaction", async () => {
@@ -573,6 +795,10 @@ export async function addManualTransaction(
     if (amount <= 0) throw new UserFacingError("Enter an amount greater than zero.");
     const label = (input.label ?? "").trim();
     if (!label) throw new UserFacingError("Say what this was for.");
+    const loanTo = input.direction === "OUT" ? normalizeBorrower(input.loanTo) : "";
+    if (input.loanTo !== undefined && input.loanTo !== null && input.direction === "OUT" && !loanTo) {
+      throw new UserFacingError("Say who the money was lent to.");
+    }
 
     const account = await adminDb.collection(ACCOUNTS).doc(input.accountId).get();
     if (!account.exists) throw new UserFacingError("That account no longer exists.");
@@ -582,7 +808,8 @@ export async function addManualTransaction(
       accountId: input.accountId,
       direction: input.direction,
       amount,
-      type: input.type ?? (input.direction === "IN" ? "INCOME" : "EXPENSE"),
+      type: loanTo ? "LOAN" : input.type ?? (input.direction === "IN" ? "INCOME" : "EXPENSE"),
+      ...(loanTo ? { loanTo, loanReturned: 0 } : {}),
       dayKey: input.dayKey && /^\d{4}-\d{2}-\d{2}$/.test(input.dayKey) ? input.dayKey : karachiDayKey(),
       sourceModule: "MANUAL",
       sourceId: null,
@@ -627,6 +854,19 @@ export async function reverseTransaction(
     const original = { id: snap.id, ...snap.data() } as LedgerTransaction;
     if (original.status === "VOIDED") throw new UserFacingError("That transaction was voided and cannot be reversed.");
     if (original.reversedBy) throw new UserFacingError("That transaction has already been reversed.");
+    if (original.sourceModule === "PAY_BACK") {
+      throw new UserFacingError("This is a pay-back. Remove it from the spending it paid back instead.");
+    }
+    if (money(snap.data()?.paidBack) > 0) {
+      // Reversing puts the whole amount back, on top of what was already paid
+      // back, so the account would be credited twice.
+      throw new UserFacingError("Part of this has been paid back. Remove those pay-backs first.");
+    }
+    if (original.sourceModule === "LOAN_RETURN") {
+      throw new UserFacingError("This is a loan repayment. Remove it from the loan it repaid instead.");
+    }
+    const loanBlock = await loanBlocksRemoval(snap.data()!);
+    if (loanBlock) throw new UserFacingError(loanBlock);
 
     const reversal = reversalOf(original, {
       dayKey: karachiDayKey(),
@@ -694,6 +934,10 @@ export async function reversePayments(
       const ref = adminDb.collection(TRANSACTIONS).doc(id);
       const reversalRef = adminDb.collection(TRANSACTIONS).doc();
 
+      // A loan with money already back on it cannot have its outflow reversed.
+      const before = await ref.get();
+      if (before.exists && (await loanBlocksRemoval(before.data()!))) { skipped += 1; continue; }
+
       // In a transaction, so two people pressing Reverse at once reverse it once.
       const done = await adminDb.runTransaction(async (t: Transaction) => {
         const snap = await t.get(ref);
@@ -701,6 +945,8 @@ export async function reversePayments(
         const original = { id: snap.id, ...snap.data() } as LedgerTransaction;
         if ((original.status ?? "POSTED") !== "POSTED" || original.reversedBy || original.reversalOf) return null;
         if (original.direction !== "OUT") return null;
+        // Already part paid back: reversing would credit the account twice.
+        if (money(snap.data()?.paidBack) > 0) return null;
         const fromModule = original.sourceModule as SourceModule;
         if (fromModule !== "MANUAL" && !SOURCE_COLLECTIONS[fromModule]) return null;
 
@@ -787,6 +1033,13 @@ export async function updateTransaction(
         // The pair cancels only while both halves carry the same amount.
         throw new UserFacingError("This entry was reversed. Both rows are kept as the record of it and cannot be edited.");
       }
+      if (current.sourceModule === "PAY_BACK") {
+        // Its two legs must stay equal, and the spending counts their total.
+        throw new UserFacingError("This is a pay-back. Remove it from the spending it paid back and record it again.");
+      }
+      if (current.sourceModule === "LOAN_RETURN") {
+        throw new UserFacingError("This is a loan repayment. Remove it from the loan and record it again.");
+      }
       if (current.sourceModule !== "MANUAL") {
         // Still refused, and this one is worth keeping: the amount belongs to the
         // expense that created it, and editing it here would leave the two
@@ -808,6 +1061,18 @@ export async function updateTransaction(
         const next = money(input.amount);
         if (next <= 0) throw new UserFacingError("Enter an amount greater than zero.");
         const was = money(current.amount);
+        const paidBack = money(current.paidBack);
+        if (paidBack > 0 && next < paidBack) {
+          throw new UserFacingError(
+            `${formatMoney(paidBack)} has already been paid back against this. Remove a pay-back before making it smaller than that.`
+          );
+        }
+        const loanReturned = current.type === "LOAN" ? money(current.loanReturned) : 0;
+        if (loanReturned > 0 && next < loanReturned) {
+          throw new UserFacingError(
+            `${formatMoney(loanReturned)} of this loan has already come back. Remove a return before making it smaller than that.`
+          );
+        }
         if (next !== was) {
           previous.amount = was;
           patch.amount = next;
@@ -877,17 +1142,52 @@ export async function deleteTransaction(token: string, transactionId: string): P
 
     const txn = snap.data()!;
     const amount = money(txn.amount);
+    if (txn.sourceModule === "PAY_BACK") {
+      // Either leg takes the whole pay-back with it, and its amount off the spending.
+      await removePayBack(auth, transactionId);
+      return;
+    }
+    if (txn.sourceModule === "LOAN_RETURN") {
+      // The borrower owes that amount again.
+      await removeLoanReturn(auth, transactionId);
+      return;
+    }
+    const loanBlock = await loanBlocksRemoval(txn);
+    if (loanBlock) throw new UserFacingError(loanBlock);
     if (txn.reversedBy || txn.reversalOf) {
       // Deleting either half of a reversal would move the balance and the
       // expense a second time. The pair is the record of what happened.
       throw new UserFacingError("This payment was reversed. Both rows are kept as the record of it and cannot be deleted.");
     }
 
+    /*
+      **A spending that was paid back takes its pay-backs with it**, the way a
+      capital spending takes its payments: left behind, they would show money
+      moved against a spending that no longer exists. The confirmation on the
+      screen says so before anybody presses it. One equality query; empty for
+      almost every row, at the cost of one read.
+    */
+    const payBacks = txn.sourceModule === "MANUAL" && txn.direction === "OUT"
+      ? (await adminDb.collection(TRANSACTIONS).where("sourceId", "==", transactionId).get())
+          .docs.filter((doc) => doc.data().sourceModule === "PAY_BACK")
+      : [];
+
     // The row leaves the statement; a whole copy of it is kept (deletedArchive).
     const batch = adminDb.batch();
+    for (const leg of payBacks) {
+      archiveInBatch(batch, leg, auth, "PAID_BACK_SPENDING_DELETED");
+      batch.delete(leg.ref);
+    }
     archiveInBatch(batch, snap, auth, "TRANSACTION_DELETED");
     batch.delete(ref);
     await batch.commit();
+
+    await Promise.all(
+      payBacks.map((leg) => {
+        const row = leg.data();
+        return bumpBalance(row.accountId as string, -deltaOf(row.direction as "IN" | "OUT", money(row.amount)));
+      })
+    );
 
     if (txn.status === "POSTED") {
       // Undo its effect on the balance: the opposite of what it contributed.
