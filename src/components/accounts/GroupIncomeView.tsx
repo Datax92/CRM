@@ -55,6 +55,7 @@ import { Field, FooterButtons, FormError, Glyph, Notice, fieldStyle } from "./sh
 const money = (n: number) => formatMoney(n);
 const LOCK = "M6 11V8a6 6 0 1 1 12 0v3M5 11h14v10H5z";
 const PERF_ICON = "M4 16l5-5 4 3 7-8M15 6h6v6";
+const NOTE = "M6 3h9l4 4v14H6zM9 11h7M9 15h7M9 19h4";
 
 export function GroupIncomeView() {
   const { role, getIdToken } = useAuth();
@@ -119,12 +120,13 @@ export function GroupIncomeView() {
           event.stopPropagation();
           setCell({ month, column });
         }}
-        title={column.overridden ? `Edited — the records say ${money(column.auto)}` : "Click to see and edit what is behind it"}
+        title={[column.note, column.overridden ? `Edited — the records say ${money(column.auto)}` : "Click to see and edit what is behind it"].filter(Boolean).join("\n")}
         style={{
           border: "none", background: "transparent", padding: 0, font: "inherit", color: "inherit",
           cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
         }}
       >
+        {column.note && <span aria-hidden style={{ color: X.faint, display: "inline-flex" }}><Glyph d={NOTE} size={11} /></span>}
         {column.overridden && !closed && <span style={{ fontSize: 9, fontWeight: 900, color: "#a5762a" }}>✎</span>}
         {value ? money(value) : <span style={{ color: "#c3d5d3" }}>–</span>}
       </button>
@@ -187,7 +189,7 @@ export function GroupIncomeView() {
           figures={[
             ...month.figures.columns
               .filter((column) => month.shown.column(column.key) !== 0)
-              .map((column) => ({ label: column.label, value: money(month.shown.column(column.key)), tone: (column.type === "INCOME" ? "good" : "warn") as "good" | "warn", hint: column.overridden ? "edited" : null })),
+              .map((column) => ({ label: column.label, value: money(month.shown.column(column.key)), tone: (column.type === "INCOME" ? "good" : "warn") as "good" | "warn", hint: column.note ?? (column.overridden ? "edited" : null) })),
             { label: "Total expense", value: money(month.shown.spent), tone: "warn" as const },
             { label: "Remaining", value: money(month.shown.remaining), tone: (month.shown.remaining < 0 ? "bad" : "good") as "bad" | "good", strong: true },
           ]}
@@ -297,6 +299,9 @@ export function GroupIncomeView() {
                     {column.label}
                     {column.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: "#a5762a" }}>edited</span>}
                   </span>
+                  {column.note && (
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: X.body, overflowWrap: "anywhere" }}>{column.note}</span>
+                  )}
                   <span style={{ fontSize: 11.5, fontWeight: 600, color: X.faint }}>
                     {(() => {
                       const count = opened.figures.lines.filter((line) => line.columnKey === column.key).length;
@@ -377,10 +382,13 @@ function CellDetail({ month, column, getIdToken, onClose, onSaved }: {
   const shown = month.shown.column(column.key);
 
   const [value, setValue] = useState(String(live.value));
+  const [noteText, setNoteText] = useState(live.note ?? "");
   const [editingLine, setEditingLine] = useState<{ id: string; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const typed = Number(String(value).replace(/[,\s]/g, ""));
+  const figureChanged = Number.isFinite(typed) && typed !== live.value;
+  const noteChanged = noteText.trim() !== (live.note ?? "");
 
   const run = async (work: () => Promise<{ ok: boolean; error?: string }>, done: string, close: boolean) => {
     setBusy(true);
@@ -398,12 +406,16 @@ function CellDetail({ month, column, getIdToken, onClose, onSaved }: {
     }
   };
 
-  const saveCell = (next: number | null) =>
-    run(
-      async () => setGroupCell(await getIdToken(), month.monthKey, column.key, next),
-      next === null ? `${live.label} for ${monthLabel(month.monthKey)} is automatic again.` : `${live.label} for ${monthLabel(month.monthKey)} set to ${formatMoney(next)}.`,
-      true
-    );
+  /** `next`: a figure, `null` for automatic, `undefined` to leave the figure and save only the description. */
+  const saveCell = (next: number | null | undefined) => {
+    const note = noteChanged ? noteText.trim() : undefined;
+    const where = `${live.label} for ${monthLabel(month.monthKey)}`;
+    const said = [
+      next === null ? `${where} is automatic again.` : next !== undefined ? `${where} set to ${formatMoney(next)}.` : null,
+      note === undefined ? null : note ? `Description saved on ${next === undefined ? where : "it"}.` : `Description removed from ${next === undefined ? where : "it"}.`,
+    ].filter(Boolean).join(" ");
+    return run(async () => setGroupCell(await getIdToken(), month.monthKey, column.key, next, note), said, true);
+  };
   const saveLine = (line: SheetLine, next: number | null) =>
     run(async () => setGroupIncomeEdit(await getIdToken(), month.monthKey, line.id, next), "", false);
 
@@ -436,7 +448,7 @@ function CellDetail({ month, column, getIdToken, onClose, onSaved }: {
         closed ? (
           <FooterButtons onCancel={onClose} onSubmit={onClose} busy={false} submitLabel="Done" />
         ) : (
-          <FooterButtons onCancel={onClose} onSubmit={() => void saveCell(typed)} busy={busy} submitLabel="Set cell" disabled={!Number.isFinite(typed) || typed === live.value}
+          <FooterButtons onCancel={onClose} onSubmit={() => void saveCell(figureChanged ? typed : undefined)} busy={busy} submitLabel="Save" disabled={!Number.isFinite(typed) || (!figureChanged && !noteChanged)}
             left={live.overridden ? (
               <button type="button" onClick={() => void saveCell(null)} disabled={busy}
                 style={{ borderRadius: 10, border: `1px solid ${X.line}`, background: "#fff", color: X.deep, padding: "9px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
@@ -450,6 +462,12 @@ function CellDetail({ month, column, getIdToken, onClose, onSaved }: {
         <Notice ok={false}>
           {monthLabel(month.monthKey)} is closed — it shows {formatMoney(shown)} as frozen. Below is what the records say now. Reopen the month in Group Expense to change it.
         </Notice>
+      )}
+
+      {closed && live.note && (
+        <OverlayCard title="Description">
+          <p style={{ fontSize: 13.5, color: X.body, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{live.note}</p>
+        </OverlayCard>
       )}
 
       <OverlayCard title={`What makes up ${formatMoney(live.auto)}`} hint={`From ${source}`}>
@@ -513,9 +531,16 @@ function CellDetail({ month, column, getIdToken, onClose, onSaved }: {
 
       {!closed && (
         <OverlayCard title="The whole cell" hint={live.overridden ? `Typed over — the records say ${formatMoney(live.auto)}` : "Type a figure to use instead of the records"}>
-          <Field label="Figure on the sheet">
-            <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} style={fieldStyle(isMobile)} />
-          </Field>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Figure on the sheet">
+              <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} style={fieldStyle(isMobile)} />
+            </Field>
+            <Field label="Description" hint="Shown under the figure on the sheet. Saving only a description leaves the figure as it is.">
+              <textarea rows={3} maxLength={500} value={noteText} onChange={(e) => setNoteText(e.target.value)}
+                placeholder="What this figure is — tour to Murree, plot instalment…"
+                style={{ ...fieldStyle(isMobile), resize: "vertical" }} />
+            </Field>
+          </div>
         </OverlayCard>
       )}
       <FormError text={error} />

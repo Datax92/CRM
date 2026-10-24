@@ -240,26 +240,48 @@ export async function setGroupIncomeEdit(
   });
 }
 
-/** Overrides one cell of the month — `null` gives the automatic value back. */
+/**
+ * Overrides one cell of the month and/or describes it, in one transaction.
+ *
+ * `value`: a number types over the automatic figure, `null` gives it back,
+ * `undefined` leaves the figure as it is — so a description can be written on
+ * a figure without turning it into an override. `note`: text describes the
+ * figure, `""`/`null` removes the description, `undefined` leaves it.
+ */
 export async function setGroupCell(
   token: string,
   monthKey: string,
   columnKey: string,
-  value: number | null
+  value: number | null | undefined,
+  note?: string | null
 ): Promise<ActionResult> {
   return runAction("setGroupCell", async () => {
     const auth = await requireFinance(token);
     if (!/^[a-z0-9_]+$/.test(columnKey)) throw new UserFacingError("That column no longer exists.");
-    if (value !== null && !Number.isFinite(Number(value))) throw new UserFacingError("Enter a number.");
+    if (value != null && !Number.isFinite(Number(value))) throw new UserFacingError("Enter a number.");
+    if (value === undefined && note === undefined) throw new UserFacingError("Nothing to save.");
+    const text = note === undefined ? undefined : (note ?? "").trim().slice(0, 500);
+
+    const details: string[] = [];
+    if (value !== undefined) details.push(value === null ? `${columnKey} automatic` : `${columnKey} → ${value}`);
+    if (text !== undefined) details.push(text ? `${columnKey} described: ${text}` : `${columnKey} description removed`);
+
     await editOpenMonth(
       auth,
       monthKey,
-      value === null ? "CELL_RESET" : "CELL_EDITED",
-      value === null ? columnKey : `${columnKey} → ${value}`,
+      value === undefined ? "CELL_DESCRIBED" : value === null ? "CELL_RESET" : "CELL_EDITED",
+      details.join(" · "),
+      // Nested rather than dotted keys: `set` with `merge` reads a dotted key
+      // as one literal field name.
       () => ({
-        cellOverrides: {
-          [columnKey]: value === null ? FieldValue.delete() : Math.round(Number(value) * 100) / 100,
-        },
+        ...(value !== undefined && {
+          cellOverrides: {
+            [columnKey]: value === null ? FieldValue.delete() : Math.round(Number(value) * 100) / 100,
+          },
+        }),
+        ...(text !== undefined && {
+          cellNotes: { [columnKey]: text ? text : FieldValue.delete() },
+        }),
       })
     );
   });

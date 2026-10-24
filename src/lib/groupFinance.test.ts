@@ -159,6 +159,25 @@ test('a cell override wins, keeps the automatic figure beside it, and moves the 
   assert.equal(month.spent, 47_150 + 90_000);
 });
 
+test('a figure carries its description, whether or not it was typed over, and the description moves no money', () => {
+  const stored = readGroupMonth({
+    cellOverrides: { misc: 50_000 },
+    cellNotes: { misc: '  Tour to Murree ', office: 'Rent and bills', personal: '   ', investor: 42 },
+  });
+  assert.deepEqual(stored.cellNotes, { misc: 'Tour to Murree', office: 'Rent and bills' });
+
+  const described = computeGroupMonth({ ...base, month: stored });
+  const plain = computeGroupMonth({ ...base, month: { ...stored, cellNotes: {} } });
+  const office = described.columns.find((c) => c.key === 'office')!;
+  assert.equal(office.note, 'Rent and bills');
+  assert.equal(office.overridden, false);
+  assert.equal(office.value, office.auto);
+  assert.equal(described.columns.find((c) => c.key === 'personal')!.note, null);
+  assert.equal(described.spent, plain.spent);
+  assert.equal(described.income, plain.income);
+  assert.deepEqual(readGroupMonth({}).cellNotes, {});
+});
+
 test('a closed month shows its frozen figures, and notices when the records moved since', () => {
   const live = computeGroupMonth({ ...base, month: null });
   const closing = closingFrom(live, 'Client Admin', new Date('2026-10-01T10:00:00Z'));

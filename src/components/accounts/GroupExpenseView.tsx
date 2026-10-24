@@ -179,7 +179,7 @@ export function GroupExpenseView() {
     label: column.label,
     value: money(shown.column(column.key)),
     tone: "warn",
-    hint: column.overridden ? `edited · auto ${money(column.auto)}` : column.key === "office" ? `${figures.officeCount} expenses` : column.key === "personal" ? `${figures.personalCount} expenses` : null,
+    hint: column.note ? column.note : column.overridden ? `edited · auto ${money(column.auto)}` : column.key === "office" ? `${figures.officeCount} expenses` : column.key === "personal" ? `${figures.personalCount} expenses` : null,
   }));
 
   const kindLabel = (row: SpendRow) => (row.kind === "OFFICE" ? "Office" : row.kind === "PERSONAL" ? "Personal" : row.kind === "ACCOUNT" ? "Account" : "Added");
@@ -446,7 +446,7 @@ export function GroupExpenseView() {
               <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1.3px", textTransform: "uppercase", color: X.faint }}>Income by column</div>
               <FigureStrip
                 isMobile={isMobile}
-                figures={incomeColumns.map((column) => ({ label: column.label, value: money(shown.column(column.key)), tone: "good" as const, hint: column.overridden ? `edited · auto ${money(column.auto)}` : null }))}
+                figures={incomeColumns.map((column) => ({ label: column.label, value: money(shown.column(column.key)), tone: "good" as const, hint: column.note ?? (column.overridden ? `edited · auto ${money(column.auto)}` : null) }))}
               />
             </section>
           )}

@@ -348,6 +348,12 @@ export interface GroupMonthDoc {
   incomeEdits: Record<string, IncomeEdit>;
   /** Column key → the value a person typed over the automatic one. */
   cellOverrides: Record<string, number>;
+  /**
+   * Column key → what the figure is ("Tour to Murree"). Independent of the
+   * override: an automatic figure can be described too, and resetting the
+   * figure does not take its description away.
+   */
+  cellNotes: Record<string, string>;
   description: string | null;
   closing: GroupClosing | null;
 }
@@ -357,6 +363,7 @@ export const EMPTY_MONTH: GroupMonthDoc = {
   entries: [],
   incomeEdits: {},
   cellOverrides: {},
+  cellNotes: {},
   description: null,
   closing: null,
 };
@@ -381,6 +388,8 @@ export interface ColumnValue {
   /** What is shown and counted — the override when there is one. */
   value: number;
   overridden: boolean;
+  /** The month's description of this figure, if anybody wrote one. */
+  note: string | null;
   builtin: boolean;
 }
 
@@ -602,7 +611,8 @@ export function computeGroupMonth(input: {
     const auto = autoByKey[definition.key] ?? 0;
     const override = month.cellOverrides?.[definition.key];
     const overridden = typeof override === 'number' && Number.isFinite(override);
-    return { ...definition, auto, value: overridden ? roundMoney(override) : auto, overridden };
+    const note = month.cellNotes?.[definition.key] || null;
+    return { ...definition, auto, value: overridden ? roundMoney(override) : auto, overridden, note };
   });
 
   const income = roundMoney(columns.filter((c) => c.type === 'INCOME').reduce((sum, c) => sum + c.value, 0));
@@ -705,12 +715,19 @@ export function readGroupMonth(raw: Record<string, unknown> | null | undefined):
       if (value !== null && Number.isFinite(Number(value))) cellOverrides[key] = roundMoney(Number(value));
     }
   }
+  const cellNotes: Record<string, string> = {};
+  if (raw.cellNotes && typeof raw.cellNotes === 'object') {
+    for (const [key, value] of Object.entries(raw.cellNotes as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.trim()) cellNotes[key] = value.trim();
+    }
+  }
   const closingRaw = raw.closing as Record<string, unknown> | null | undefined;
   return {
     status: raw.status === 'CLOSED' ? 'CLOSED' : 'OPEN',
     entries,
     incomeEdits,
     cellOverrides,
+    cellNotes,
     description: typeof raw.description === 'string' && raw.description ? raw.description : null,
     closing: closingRaw
       ? {

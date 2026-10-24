@@ -1436,8 +1436,14 @@ export async function setGroupIncomeEdit(
 ) {
   return _setGroupIncomeEdit(token, monthKey, transactionId, amount, note);
 }
-export async function setGroupCell(token: string, monthKey: string, columnKey: string, value: number | null) {
-  return _setGroupCell(token, monthKey, columnKey, value);
+export async function setGroupCell(
+  token: string,
+  monthKey: string,
+  columnKey: string,
+  value: number | null | undefined,
+  note?: string | null
+) {
+  return _setGroupCell(token, monthKey, columnKey, value, note);
 }
 export async function setGroupDescription(token: string, monthKey: string, description: string) {
   return _setGroupDescription(token, monthKey, description);

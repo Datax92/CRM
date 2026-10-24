@@ -151,7 +151,24 @@ const personalExpenses: Row[] = [
   { id: 'pe_2', employeeUid: 'demo-admin', title: 'Site visit fuel', category: 'Travel', vendor: 'PSO', amount: 6_000, paidAmount: 6_000, dayKey: '2026-10-02', purpose: 'DHA Phase 6 visit' },
 ];
 
+// October's sheet carries a figure typed over by hand and described, and one
+// automatic figure described without being typed over — the two ways a
+// description is used.
+const groupMonths2026: Row[] = [
+  {
+    id: '2026-10',
+    monthKey: '2026-10',
+    status: 'OPEN',
+    cellOverrides: { misc: 50_000 },
+    cellNotes: {
+      misc: 'Tour to Murree — team trip, 12–14 October',
+      office: 'Includes the October rent and electricity',
+    },
+  },
+];
+
 const FIXTURE: Record<string, Row[]> = {
+  'groupMonths:2026': groupMonths2026,
   accounts,
   transactions,
   investmentBooks,
